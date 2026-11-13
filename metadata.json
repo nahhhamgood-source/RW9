@@ -1,0 +1,6 @@
+{
+  "name": "ASCEND",
+  "description": "Personal 100% offline self-care, daily protocol, lifestyle tracker, and on-device facial landmark analysis system.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
