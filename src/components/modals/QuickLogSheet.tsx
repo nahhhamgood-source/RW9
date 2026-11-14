@@ -189,8 +189,13 @@ export const QuickLogSheet: React.FC<QuickLogSheetProps> = ({
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm no-print">
-      <div className="w-full max-w-lg rounded-t-[28px] sm:rounded-[28px] bg-white dark:bg-[#080D0A]/95 dark:backdrop-blur-2xl border border-slate-200 dark:border-emerald-500/20 p-5 max-h-[88vh] overflow-y-auto shadow-2xl">
+    <div
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm no-print"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="w-full max-w-lg rounded-t-[28px] sm:rounded-[28px] bg-white dark:bg-[#080D0A]/95 dark:backdrop-blur-2xl border border-slate-200 dark:border-emerald-500/20 p-5 max-h-[88dvh] overflow-y-auto overscroll-y-contain shadow-2xl">
         <div className="w-10 h-1 rounded-full bg-slate-300 dark:bg-white/20 mx-auto mb-3 sm:hidden" />
         <div className="flex items-center justify-between mb-4">
           <div>

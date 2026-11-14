@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { X, ArrowRight, Check } from 'lucide-react';
-import { db, regenerateProtocolFromProfile } from '../../db/database';
+import { regenerateProtocolFromProfile, saveAndVerifyProfile } from '../../db/database';
 import { calculateMifflinStJeor } from '../../lib/fitness';
 import type {
   FocusAreaId,
@@ -76,44 +76,83 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ profile, onClo
     });
   };
 
+  const [saving, setSaving] = useState(false);
+
   const skipSetup = async () => {
-    await db.profile.update('me', {
-      onboardingSkipped: true,
-      onboardingDone: true,
-      updatedAt: Date.now(),
-    });
-    showToast('Setup skipped — editable anytime in Profile or Settings', 'info');
-    onClose();
+    setSaving(true);
+    try {
+      const skipped: UserProfile = {
+        ...profile,
+        id: 'me',
+        onboardingDone: true,
+        onboardingComplete: true,
+        onboardingSkipped: true,
+        updatedAt: Date.now(),
+      };
+      await saveAndVerifyProfile(skipped);
+      showToast('Setup saved — editable anytime in Profile or Settings', 'info');
+      onClose();
+    } catch {
+      showToast('Could not save setup to local storage.', 'warning', {
+        actionLabel: 'Retry',
+        onAction: () => void skipSetup(),
+      });
+    } finally {
+      setSaving(false);
+    }
   };
 
   const saveAndGenerate = async () => {
-    const goalMode = form.goals.includes('body_fat') ? 'cut' : form.goals.includes('training') ? 'lean_gain' : 'maintain';
-    const calc = calculateMifflinStJeor({
-      sex: form.sex,
-      weightKg: form.weightKg,
-      heightCm: form.heightCm,
-      age: form.age,
-      activityLevel: form.activityLevel,
-      goalMode,
-    });
-    const updated: UserProfile = {
-      ...form,
-      calorieGoal: calc.recommendedCalories,
-      proteinTargetG: calc.proteinGrams,
-      waterTargetMl: calc.waterMl,
-      onboardingDone: true,
-      onboardingSkipped: false,
-      updatedAt: Date.now(),
-    };
-    await db.profile.put(updated);
-    await regenerateProtocolFromProfile(updated);
-    showToast('Profile saved & daily protocol built');
-    onClose();
+    setSaving(true);
+    try {
+      const goalMode = form.goals.includes('body_fat')
+        ? 'cut'
+        : form.goals.includes('training')
+        ? 'lean_gain'
+        : 'maintain';
+      const calc = calculateMifflinStJeor({
+        sex: form.sex,
+        weightKg: form.weightKg,
+        heightCm: form.heightCm,
+        age: form.age,
+        activityLevel: form.activityLevel,
+        goalMode,
+      });
+      const updated: UserProfile = {
+        ...form,
+        id: 'me',
+        calorieGoal: calc.recommendedCalories,
+        proteinTargetG: calc.proteinGrams,
+        waterTargetMl: calc.waterMl,
+        onboardingDone: true,
+        onboardingComplete: true,
+        onboardingSkipped: false,
+        updatedAt: Date.now(),
+      };
+      const verified = await saveAndVerifyProfile(updated);
+      await regenerateProtocolFromProfile(verified);
+      showToast('Profile saved & daily protocol built');
+      onClose();
+    } catch {
+      showToast('Could not verify saved profile in local storage.', 'warning', {
+        actionLabel: 'Retry',
+        onAction: () => void saveAndGenerate(),
+      });
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-3 no-print">
-      <div className="w-full max-w-lg rounded-[28px] bg-white dark:bg-[#080D0A]/95 dark:backdrop-blur-2xl border border-slate-200 dark:border-emerald-500/20 p-5 max-h-[90vh] overflow-y-auto shadow-2xl">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 no-print"
+      onClick={(e) => {
+        if (e.target === e.currentTarget && (profile.onboardingComplete || profile.onboardingDone)) {
+          onClose();
+        }
+      }}
+    >
+      <div className="w-full max-w-lg rounded-[28px] bg-white dark:bg-[#080D0A]/95 dark:backdrop-blur-2xl border border-slate-200 dark:border-emerald-500/20 p-5 max-h-[90dvh] overflow-y-auto overscroll-y-contain shadow-2xl">
         <div className="flex items-center justify-between mb-4">
           <div>
             <p className="text-xs font-semibold text-[var(--accent)]">Personal Baseline Setup</p>
@@ -124,19 +163,22 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ profile, onClo
           <div className="flex items-center gap-2">
             <button
               type="button"
+              disabled={saving}
               onClick={skipSetup}
-              className="px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/5 min-h-[36px]"
+              className="px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/5 min-h-[44px]"
             >
               Skip
             </button>
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close setup"
-              className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-slate-100 dark:hover:bg-white/5"
-            >
-              <X className="w-4 h-4" />
-            </button>
+            {(profile.onboardingComplete || profile.onboardingDone) && (
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label="Close setup"
+                className="w-11 h-11 rounded-full flex items-center justify-center hover:bg-slate-100 dark:hover:bg-white/5"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
           </div>
         </div>
 
@@ -499,11 +541,12 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ profile, onClo
           ) : (
             <button
               type="button"
+              disabled={saving}
               onClick={saveAndGenerate}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-sm font-semibold min-h-[44px]"
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-sm font-semibold min-h-[44px] disabled:opacity-60"
             >
               <Check className="w-4 h-4" />
-              Save &amp; Build Plan
+              {saving ? 'Saving...' : 'Save & Build Plan'}
             </button>
           )}
         </div>

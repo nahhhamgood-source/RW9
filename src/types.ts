@@ -59,6 +59,7 @@ export interface UserProfile {
   stepTarget?: number;
   detectedFaceShape: FaceShape | null;
   onboardingDone: boolean;
+  onboardingComplete?: boolean;
   onboardingSkipped: boolean;
   createdAt: number;
   updatedAt: number;
@@ -424,4 +425,16 @@ export interface MealScanEntry {
   photoThumbnail?: string;
   isManual?: boolean;
 }
+
+export interface PuffinessLogEntry {
+  id?: number;
+  date: string; // YYYY-MM-DD
+  puffiness: 1 | 2 | 3 | 4 | 5;
+  sleepHours: number;
+  alcoholOrSaltyMeal: boolean;
+  photoDataUrl?: string;
+  notes?: string;
+  createdAt: number;
+}
+
 

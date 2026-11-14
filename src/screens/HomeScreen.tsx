@@ -402,7 +402,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             <span className="text-[11px] font-medium text-slate-600 dark:text-slate-300">
               Lv.{xpState.level} {getRankForLevel(xpState.level)}
             </span>
-            {!profile.onboardingDone && (
+            {!(profile.onboardingComplete || profile.onboardingDone) && (
               <>
                 <span className="w-px h-3 bg-slate-200 dark:bg-white/15" />
                 <button

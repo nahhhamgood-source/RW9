@@ -44,6 +44,21 @@ interface NutritionScreenProps {
   mealScans: MealScanEntry[];
 }
 
+interface PendingAiEstimate {
+  name: string;
+  portion_g: number;
+  calories: number;
+  protein_g: number;
+  carbs_g: number;
+  fats_g: number;
+  sodium_mg: number;
+  sugar_g: number;
+  confidence: number;
+  notes: string;
+  photoThumbnail: string;
+  items: MealFoodItem[];
+}
+
 export const NutritionScreen: React.FC<NutritionScreenProps> = ({
   profile,
   dailyLogs,
@@ -57,6 +72,8 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
+  const [pendingEstimate, setPendingEstimate] = useState<PendingAiEstimate | null>(null);
+  const lastImageSourceRef = useRef<File | string | null>(null);
   const [activeMealId, setActiveMealId] = useState<number | null>(null);
   const [expandedTimelineId, setExpandedTimelineId] = useState<number | null>(null);
 
@@ -155,6 +172,12 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
   const openLiveCamera = async () => {
     setCameraError(null);
     setCameraOpen(true);
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError(
+        'Live camera is not supported in this browser. Use Snap Mobile Photo or Gallery Upload instead.'
+      );
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } },
@@ -165,10 +188,25 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
-    } catch {
-      setCameraError(
-        'Live camera permission unavailable on this browser. Use Native Camera or Gallery Upload instead.'
-      );
+    } catch (err) {
+      const name = err instanceof DOMException ? err.name : err instanceof Error ? err.name : '';
+      if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+        setCameraError(
+          'Camera permission was denied. Allow camera access in browser settings or use Snap Mobile Photo / Gallery Upload.'
+        );
+      } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError' || name === 'OverconstrainedError') {
+        setCameraError(
+          'No back camera was found on this device. Use Snap Mobile Photo or Gallery Upload instead.'
+        );
+      } else if (name === 'NotReadableError' || name === 'TrackStartError') {
+        setCameraError(
+          'Camera is currently in use by another app or tab. Close it and retry, or upload a meal photo.'
+        );
+      } else {
+        setCameraError(
+          'Could not open live camera on this browser. Use Snap Mobile Photo or Gallery Upload instead.'
+        );
+      }
     }
   };
 
@@ -179,56 +217,156 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
   };
 
   const runVisionAnalysis = async (source: File | string) => {
+    lastImageSourceRef.current = source;
     setScanError(null);
+    setPendingEstimate(null);
     setAnalyzing(true);
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 25000);
+
     try {
       const { apiBase64, mimeType, previewDataUrl, thumbnailDataUrl } =
         await prepareMealImageAssets(source);
       setPreviewUrl(previewDataUrl);
 
-      const res = await fetch('/api/nutrition/analyze', {
+      const res = await fetch('/api/analyze-food', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           imageBase64: apiBase64,
           mimeType,
-          mealNote: mealNote.trim() || undefined,
+          context: mealNote.trim() || undefined,
         }),
+        signal: controller.signal,
       });
 
-      const payload = await res.json();
-      if (!res.ok) {
-        throw new Error(payload?.error || `Analysis failed (HTTP ${res.status})`);
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.toLowerCase().includes('application/json')) {
+        setScanError('Food scan is unavailable right now. Please retry or use Manual Quick-Add.');
+        return;
       }
 
-      const items: MealFoodItem[] = payload.items || [];
-      const sums = sumMealItems(items);
-      const debloat = computeDebloatImpact(sums.totalSodiumMg, sums.totalAddedSugarG);
+      let body: { ok?: boolean; data?: Record<string, unknown>; error?: string; code?: string } | null =
+        null;
+      try {
+        body = (await res.json()) as {
+          ok?: boolean;
+          data?: Record<string, unknown>;
+          error?: string;
+          code?: string;
+        };
+      } catch {
+        setScanError('Food scan is unavailable right now. Please retry or use Manual Quick-Add.');
+        return;
+      }
 
-      const newId = await saveMealScanEntry({
-        date: todayKey,
-        timestamp: Date.now(),
-        mealTitle: payload.mealTitle || 'Scanned Meal',
-        confidence: payload.confidence || 'Medium',
-        items,
-        ...sums,
-        debloatStatus: debloat.status,
-        debloatHeadline: debloat.headline,
-        summaryNote: payload.summaryNote || debloat.detail,
-        photoThumbnail: thumbnailDataUrl,
-        isManual: false,
+      if (!res.ok || !body?.ok || !body?.data) {
+        if (body?.code === 'MISSING_API_KEY' || res.status === 503) {
+          setScanError(
+            'Food scan is unavailable right now — the vision service key (GEMINI_API_KEY) is not configured on the server. Manual Quick-Add works offline below.'
+          );
+        } else {
+          setScanError(body?.error || 'Food scan is unavailable right now.');
+        }
+        return;
+      }
+
+      const d = body.data;
+      const confidence = Math.max(0, Math.min(1, Number(d.confidence ?? 0.6)));
+      const rawItems = Array.isArray(d.items) ? d.items : [];
+      const parsedItems: MealFoodItem[] = rawItems.map((it: Record<string, unknown>, idx: number) => {
+        const portion = Math.max(5, Math.round(Number(it.portion_g) || 100));
+        return {
+          id: String(it.id || `item-${Date.now()}-${idx}`),
+          name: String(it.name || `Food Item ${idx + 1}`).trim(),
+          portionGrams: portion,
+          baseGrams: portion,
+          calories: Math.max(0, Math.round(Number(it.calories) || 0)),
+          proteinG: Math.max(0, Number(Number(it.protein_g || 0).toFixed(1))),
+          carbsG: Math.max(0, Number(Number(it.carbs_g || 0).toFixed(1))),
+          fatsG: Math.max(0, Number(Number(it.fats_g || 0).toFixed(1))),
+          sodiumMg: Math.max(0, Math.round(Number(it.sodium_mg) || 0)),
+          addedSugarG: Math.max(0, Number(Number(it.sugar_g || 0).toFixed(1))),
+          notes: typeof it.notes === 'string' ? it.notes.trim() : '',
+        };
       });
 
-      setActiveMealId(newId);
-      setMealNote('');
-      showToast(`Logged ${payload.mealTitle} (${sums.totalCalories} kcal)`);
+      setPendingEstimate({
+        name: String(d.name || 'Estimated Meal').trim(),
+        portion_g: Math.max(5, Math.round(Number(d.portion_g) || 250)),
+        calories: Math.max(0, Math.round(Number(d.calories) || 0)),
+        protein_g: Math.max(0, Number(Number(d.protein_g || 0).toFixed(1))),
+        carbs_g: Math.max(0, Number(Number(d.carbs_g || 0).toFixed(1))),
+        fats_g: Math.max(0, Number(Number(d.fats_g || 0).toFixed(1))),
+        sodium_mg: Math.max(0, Math.round(Number(d.sodium_mg) || 0)),
+        sugar_g: Math.max(0, Number(Number(d.sugar_g || 0).toFixed(1))),
+        confidence,
+        notes: typeof d.notes === 'string' ? d.notes.trim() : '',
+        photoThumbnail: thumbnailDataUrl,
+        items: parsedItems,
+      });
+      showToast('AI estimate ready — review & edit before saving', 'info');
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Unable to analyze meal photo.';
-      setScanError(msg);
-      showToast(msg, 'warning');
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        setScanError('Food scan timed out after 25s. Please retry or use Manual Quick-Add.');
+      } else {
+        setScanError('Food scan is unavailable right now. Please retry or use Manual Quick-Add.');
+      }
     } finally {
+      window.clearTimeout(timeoutId);
       setAnalyzing(false);
     }
+  };
+
+  const handleSaveAiEstimate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pendingEstimate) return;
+    const portion = Math.max(5, Math.round(Number(pendingEstimate.portion_g) || 200));
+    const singleItem: MealFoodItem = {
+      id: `ai-${Date.now()}`,
+      name: pendingEstimate.name.trim() || 'Estimated Meal',
+      portionGrams: portion,
+      baseGrams: portion,
+      calories: Math.max(0, Math.round(Number(pendingEstimate.calories) || 0)),
+      proteinG: Math.max(0, Number(Number(pendingEstimate.protein_g || 0).toFixed(1))),
+      carbsG: Math.max(0, Number(Number(pendingEstimate.carbs_g || 0).toFixed(1))),
+      fatsG: Math.max(0, Number(Number(pendingEstimate.fats_g || 0).toFixed(1))),
+      sodiumMg: Math.max(0, Math.round(Number(pendingEstimate.sodium_mg) || 0)),
+      addedSugarG: Math.max(0, Number(Number(pendingEstimate.sugar_g || 0).toFixed(1))),
+      notes: pendingEstimate.notes.trim(),
+    };
+    const debloat = computeDebloatImpact(singleItem.sodiumMg, singleItem.addedSugarG);
+    const confLabel: MealScanEntry['confidence'] =
+      pendingEstimate.confidence >= 0.78
+        ? 'High'
+        : pendingEstimate.confidence >= 0.55
+        ? 'Medium'
+        : 'Low';
+
+    const newId = await saveMealScanEntry({
+      date: todayKey,
+      timestamp: Date.now(),
+      mealTitle: singleItem.name,
+      confidence: confLabel,
+      items: [singleItem],
+      totalCalories: singleItem.calories,
+      totalProteinG: singleItem.proteinG,
+      totalCarbsG: singleItem.carbsG,
+      totalFatsG: singleItem.fatsG,
+      totalSodiumMg: singleItem.sodiumMg,
+      totalAddedSugarG: singleItem.addedSugarG,
+      debloatStatus: debloat.status,
+      debloatHeadline: debloat.headline,
+      summaryNote: pendingEstimate.notes || debloat.detail,
+      photoThumbnail: pendingEstimate.photoThumbnail,
+      isManual: false,
+    });
+
+    setActiveMealId(newId);
+    setPendingEstimate(null);
+    setMealNote('');
+    showToast(`Saved AI estimate: ${singleItem.name} (${singleItem.calories} kcal)`);
   };
 
   const handleCaptureSnapshot = async () => {
@@ -240,7 +378,7 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.drawImage(video, 0, 0);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
     closeLiveCamera();
     await runVisionAnalysis(dataUrl);
   };
@@ -592,7 +730,7 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
             value={mealNote}
             onChange={(e) => setMealNote(e.target.value)}
             placeholder="Optional context (e.g., cooked in 1 tbsp olive oil, soy sauce, whey shake)..."
-            className="flex-1 px-3.5 py-2.5 rounded-2xl bg-slate-100 dark:bg-black/40 border border-slate-200 dark:border-white/10 text-xs min-h-[44px] focus:outline-none focus:border-[var(--accent)]"
+            className="flex-1 px-3.5 py-2.5 rounded-2xl bg-slate-100 dark:bg-black/40 border border-slate-200 dark:border-white/10 text-base sm:text-xs min-h-[44px] focus:outline-none focus:border-[var(--accent)]"
           />
         </div>
 
@@ -661,27 +799,219 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
                 Analyzing Plate Geometry &amp; Nutrients...
               </p>
               <p className="text-[11px] text-emerald-300/90">
-                Estimating gram portions, protein, sodium &amp; added sugars
+                Estimating gram portions, protein, sodium &amp; sugars (max 25s)
               </p>
             </div>
           </div>
         )}
 
-        {/* API / Vision Error Banner */}
+        {/* Friendly API / Vision Error Banner with Retry + Manual Fallback */}
         {scanError && (
-          <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/35 flex items-start gap-2.5 text-xs">
-            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-            <div className="flex-1 min-w-0 space-y-1.5">
-              <p className="font-semibold text-amber-800 dark:text-amber-200">{scanError}</p>
+          <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/35 flex flex-col gap-3 text-xs">
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <p className="font-semibold text-amber-800 dark:text-amber-200 leading-relaxed">
+                {scanError}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {lastImageSourceRef.current && (
+                <button
+                  type="button"
+                  disabled={analyzing}
+                  onClick={() => lastImageSourceRef.current && runVisionAnalysis(lastImageSourceRef.current)}
+                  className="px-4 py-2 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-bold min-h-[44px]"
+                >
+                  Retry Scan
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setManualOpen(true)}
-                className="text-[11px] font-bold text-[var(--accent)] hover:underline"
+                className="px-4 py-2 rounded-xl bg-white dark:bg-white/10 border border-slate-200 dark:border-white/15 text-xs font-bold min-h-[44px]"
               >
-                Use Manual Quick-Add Fallback →
+                Use Manual Quick-Add
               </button>
             </div>
           </div>
+        )}
+
+        {/* Editable AI Estimate Review Form (before saving) */}
+        {pendingEstimate && (
+          <form
+            onSubmit={handleSaveAiEstimate}
+            className="p-4 rounded-2xl bg-emerald-500/[0.06] border border-emerald-500/30 space-y-3"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                {pendingEstimate.photoThumbnail && (
+                  <img
+                    src={pendingEstimate.photoThumbnail}
+                    alt="Meal preview"
+                    className="w-11 h-11 rounded-xl object-cover border border-white/10 shrink-0"
+                  />
+                )}
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="px-2 py-0.5 rounded-lg bg-[var(--accent-soft)] text-[var(--accent)] text-[10px] font-bold uppercase tracking-wider">
+                      AI estimate
+                    </span>
+                    <span className="text-[11px] font-mono-num text-slate-500 dark:text-slate-300">
+                      {Math.round(pendingEstimate.confidence * 100)}% confidence
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                    Edit any value below before saving to your daily log.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {pendingEstimate.confidence < 0.6 && (
+              <div className="p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/35 text-xs text-amber-800 dark:text-amber-200 flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>Low confidence estimate — double-check portion grams and calories before saving.</span>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              <div className="col-span-2">
+                <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                  Meal Name
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={pendingEstimate.name}
+                  onChange={(e) => setPendingEstimate({ ...pendingEstimate, name: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-black/40 border border-slate-200 dark:border-white/15 text-base sm:text-xs min-h-[44px]"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                  Portion (g)
+                </label>
+                <input
+                  type="number"
+                  min={5}
+                  value={pendingEstimate.portion_g}
+                  onChange={(e) =>
+                    setPendingEstimate({ ...pendingEstimate, portion_g: Number(e.target.value) })
+                  }
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-black/40 border border-slate-200 dark:border-white/15 font-mono-num text-base sm:text-xs min-h-[44px]"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                  Calories (kcal)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  value={pendingEstimate.calories}
+                  onChange={(e) =>
+                    setPendingEstimate({ ...pendingEstimate, calories: Number(e.target.value) })
+                  }
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-black/40 border border-slate-200 dark:border-white/15 font-mono-num text-base sm:text-xs min-h-[44px]"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                  Protein (g)
+                </label>
+                <input
+                  type="number"
+                  step="0.5"
+                  min={0}
+                  value={pendingEstimate.protein_g}
+                  onChange={(e) =>
+                    setPendingEstimate({ ...pendingEstimate, protein_g: Number(e.target.value) })
+                  }
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-black/40 border border-slate-200 dark:border-white/15 font-mono-num text-base sm:text-xs min-h-[44px]"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                  Carbs (g)
+                </label>
+                <input
+                  type="number"
+                  step="0.5"
+                  min={0}
+                  value={pendingEstimate.carbs_g}
+                  onChange={(e) =>
+                    setPendingEstimate({ ...pendingEstimate, carbs_g: Number(e.target.value) })
+                  }
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-black/40 border border-slate-200 dark:border-white/15 font-mono-num text-base sm:text-xs min-h-[44px]"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                  Fats (g)
+                </label>
+                <input
+                  type="number"
+                  step="0.5"
+                  min={0}
+                  value={pendingEstimate.fats_g}
+                  onChange={(e) =>
+                    setPendingEstimate({ ...pendingEstimate, fats_g: Number(e.target.value) })
+                  }
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-black/40 border border-slate-200 dark:border-white/15 font-mono-num text-base sm:text-xs min-h-[44px]"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                  Sodium (mg) / Sugar (g)
+                </label>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <input
+                    type="number"
+                    min={0}
+                    aria-label="Estimated sodium mg"
+                    value={pendingEstimate.sodium_mg}
+                    onChange={(e) =>
+                      setPendingEstimate({ ...pendingEstimate, sodium_mg: Number(e.target.value) })
+                    }
+                    className="w-full px-2 py-2 rounded-xl bg-white dark:bg-black/40 border border-slate-200 dark:border-white/15 font-mono-num text-base sm:text-xs min-h-[44px]"
+                  />
+                  <input
+                    type="number"
+                    step="0.5"
+                    min={0}
+                    aria-label="Estimated sugar g"
+                    value={pendingEstimate.sugar_g}
+                    onChange={(e) =>
+                      setPendingEstimate({ ...pendingEstimate, sugar_g: Number(e.target.value) })
+                    }
+                    className="w-full px-2 py-2 rounded-xl bg-white dark:bg-black/40 border border-slate-200 dark:border-white/15 font-mono-num text-base sm:text-xs min-h-[44px]"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {pendingEstimate.notes && (
+              <p className="text-[11px] text-slate-500 dark:text-slate-300">
+                Note: {pendingEstimate.notes}
+              </p>
+            )}
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="submit"
+                className="flex-1 sm:flex-none px-5 py-2.5 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-bold min-h-[44px]"
+              >
+                Save AI Estimate
+              </button>
+              <button
+                type="button"
+                onClick={() => setPendingEstimate(null)}
+                className="px-4 py-2.5 rounded-xl bg-white dark:bg-white/10 text-xs font-semibold min-h-[44px]"
+              >
+                Discard
+              </button>
+            </div>
+          </form>
         )}
 
         {/* Manual Quick-Add Fallback Form */}
@@ -704,7 +1034,7 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
                   value={manualName}
                   onChange={(e) => setManualName(e.target.value)}
                   placeholder="e.g. Chicken Breast & Jasmine Rice"
-                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs min-h-[40px]"
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 text-base sm:text-xs min-h-[44px]"
                 />
               </div>
               <div>
@@ -716,7 +1046,7 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
                   min={5}
                   value={manualGrams}
                   onChange={(e) => setManualGrams(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-xs min-h-[40px]"
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-base sm:text-xs min-h-[44px]"
                 />
               </div>
               <div>
@@ -728,7 +1058,7 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
                   min={0}
                   value={manualCalories}
                   onChange={(e) => setManualCalories(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-xs min-h-[40px]"
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-base sm:text-xs min-h-[44px]"
                 />
               </div>
               <div>
@@ -741,7 +1071,7 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
                   min={0}
                   value={manualProtein}
                   onChange={(e) => setManualProtein(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-xs min-h-[40px]"
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-base sm:text-xs min-h-[44px]"
                 />
               </div>
               <div>
@@ -754,7 +1084,7 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
                   min={0}
                   value={manualCarbs}
                   onChange={(e) => setManualCarbs(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-xs min-h-[40px]"
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-base sm:text-xs min-h-[44px]"
                 />
               </div>
               <div>
@@ -767,7 +1097,7 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
                   min={0}
                   value={manualFats}
                   onChange={(e) => setManualFats(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-xs min-h-[40px]"
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-base sm:text-xs min-h-[44px]"
                 />
               </div>
               <div>
@@ -781,7 +1111,7 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
                     aria-label="Sodium mg"
                     value={manualSodium}
                     onChange={(e) => setManualSodium(e.target.value)}
-                    className="w-full px-2 py-2 rounded-xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-xs min-h-[40px]"
+                    className="w-full px-2 py-2 rounded-xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-base sm:text-xs min-h-[44px]"
                   />
                   <input
                     type="number"
@@ -790,14 +1120,14 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
                     aria-label="Added sugar grams"
                     value={manualSugar}
                     onChange={(e) => setManualSugar(e.target.value)}
-                    className="w-full px-2 py-2 rounded-xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-xs min-h-[40px]"
+                    className="w-full px-2 py-2 rounded-xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-base sm:text-xs min-h-[44px]"
                   />
                 </div>
               </div>
             </div>
             <button
               type="submit"
-              className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-bold min-h-[42px]"
+              className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-bold min-h-[44px]"
             >
               Log Food to Daily Vault
             </button>
@@ -1089,7 +1419,12 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
 
       {/* Live Camera Viewfinder Modal */}
       {cameraOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-3 no-print">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 no-print"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeLiveCamera();
+          }}
+        >
           <div className="ascend-card max-w-md w-full p-4 space-y-3 border-emerald-500/30">
             <div className="flex items-center justify-between">
               <h3 className="font-display text-base font-bold flex items-center gap-2">
@@ -1100,7 +1435,7 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
                 type="button"
                 onClick={closeLiveCamera}
                 aria-label="Close camera"
-                className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/10"
+                className="w-11 h-11 rounded-full flex items-center justify-center hover:bg-white/10"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1109,17 +1444,29 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
             {cameraError ? (
               <div className="py-8 px-4 text-center space-y-3">
                 <AlertTriangle className="w-7 h-7 text-amber-400 mx-auto" />
-                <p className="text-xs text-slate-300">{cameraError}</p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    closeLiveCamera();
-                    galleryInputRef.current?.click();
-                  }}
-                  className="px-4 py-2.5 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-bold min-h-[42px]"
-                >
-                  Choose Meal Photo Instead
-                </button>
+                <p className="text-xs text-slate-300 leading-relaxed">{cameraError}</p>
+                <div className="flex flex-wrap justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      closeLiveCamera();
+                      nativeCameraInputRef.current?.click();
+                    }}
+                    className="px-4 py-2.5 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-bold min-h-[44px]"
+                  >
+                    Snap Mobile Photo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      closeLiveCamera();
+                      galleryInputRef.current?.click();
+                    }}
+                    className="px-4 py-2.5 rounded-xl bg-white/10 text-xs font-semibold min-h-[44px]"
+                  >
+                    Upload from Gallery
+                  </button>
+                </div>
               </div>
             ) : (
               <>

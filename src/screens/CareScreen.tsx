@@ -9,17 +9,20 @@ import {
   Copy,
   AlertTriangle,
   Camera,
+  Droplets,
 } from 'lucide-react';
 import { db, recalculateXpAndBadges } from '../db/database';
 import { HAIRCUT_BY_FACE_SHAPE, SKIN_STARTER_GUIDE, STYLE_BASICS } from '../data/care';
 import { toLocalDateKey } from '../lib/date';
 import { BeforeAfterSlider } from '../components/ui/Charts';
+import { LeanFaceModule } from '../components/care/LeanFaceModule';
 import type {
   FaceScanResult,
   FaceShape,
   HairPreference,
   OutfitRecord,
   OwnedProduct,
+  PuffinessLogEntry,
   SkinEntry,
   SkinType,
   UserProfile,
@@ -35,6 +38,8 @@ interface CareScreenProps {
   wardrobe: WardrobeItem[];
   outfits: OutfitRecord[];
   scans: FaceScanResult[];
+  puffinessLogs: PuffinessLogEntry[];
+  initialTab?: string;
 }
 
 export const CareScreen: React.FC<CareScreenProps> = ({
@@ -45,9 +50,21 @@ export const CareScreen: React.FC<CareScreenProps> = ({
   wardrobe,
   outfits,
   scans,
+  puffinessLogs,
+  initialTab,
 }) => {
   const { showToast } = useToast();
-  const [tab, setTab] = useState<'skin' | 'hair' | 'style'>('skin');
+  const [tab, setTab] = useState<'skin' | 'hair' | 'style' | 'lean_face'>(() =>
+    initialTab === 'lean_face' || initialTab === 'hair' || initialTab === 'style'
+      ? initialTab
+      : 'skin'
+  );
+
+  React.useEffect(() => {
+    if (initialTab === 'lean_face' || initialTab === 'hair' || initialTab === 'style' || initialTab === 'skin') {
+      setTab(initialTab);
+    }
+  }, [initialTab]);
 
   // Skin Lab state
   const [prodName, setProdName] = useState('');
@@ -226,6 +243,7 @@ export const CareScreen: React.FC<CareScreenProps> = ({
       <div className="flex gap-1.5 p-1 rounded-2xl bg-slate-200/70 dark:bg-white/5 w-fit max-w-full overflow-x-auto">
         {([
           { id: 'skin', label: 'Skin Lab', icon: <Sparkles className="w-3.5 h-3.5" /> },
+          { id: 'lean_face', label: 'Lean Face', icon: <Droplets className="w-3.5 h-3.5" /> },
           { id: 'hair', label: 'Hair & Grooming', icon: <Scissors className="w-3.5 h-3.5" /> },
           { id: 'style', label: 'Style', icon: <Shirt className="w-3.5 h-3.5" /> },
         ] as const).map((t) => (
@@ -233,7 +251,7 @@ export const CareScreen: React.FC<CareScreenProps> = ({
             key={t.id}
             type="button"
             onClick={() => setTab(t.id)}
-            className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold min-h-[38px] whitespace-nowrap shrink-0 transition ${
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold min-h-[44px] whitespace-nowrap shrink-0 transition ${
               tab === t.id
                 ? 'bg-white dark:bg-[#0E1612] text-slate-900 dark:text-white shadow-sm border border-transparent dark:border-emerald-500/20'
                 : 'text-slate-600 dark:text-slate-400'
@@ -244,6 +262,11 @@ export const CareScreen: React.FC<CareScreenProps> = ({
           </button>
         ))}
       </div>
+
+      {/* LEAN FACE (DEBLOAT) */}
+      {tab === 'lean_face' && (
+        <LeanFaceModule profile={profile} puffinessLogs={puffinessLogs} />
+      )}
 
       {/* SKIN LAB */}
       {tab === 'skin' && (

@@ -27,7 +27,9 @@ import {
   db,
   ensureDatabaseReady,
   getOrCreateDailyLog,
+  requestPersistentStorageAndCheck,
 } from './db/database';
+import type { AppSettings, UserProfile } from './types';
 import { toLocalDateKey } from './lib/date';
 import { sha256Hex } from './lib/crypto';
 import { initFaceLandmarker } from './lib/faceAnalysis';
@@ -76,6 +78,10 @@ const AppShell: React.FC = () => {
   const isOnline = useOnlineStatus();
   const [dbReady, setDbReady] = useState(false);
   const [dbError, setDbError] = useState<string | null>(null);
+  const [initialProfile, setInitialProfile] = useState<UserProfile | null>(null);
+  const [initialSettings, setInitialSettings] = useState<AppSettings | null>(null);
+  const [storageWarning, setStorageWarning] = useState<string | null>(null);
+  const [isInputFocused, setIsInputFocused] = useState(false);
   const [screen, setScreen] = useState<ScreenId>('home');
   const [subTab, setSubTab] = useState<string | undefined>(undefined);
   const [selectedDate, setSelectedDate] = useState<string>(toLocalDateKey());
@@ -114,10 +120,30 @@ const AppShell: React.FC = () => {
   const bootDb = async () => {
     setDbError(null);
     try {
-      await Promise.race([
-        ensureDatabaseReady(),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('Database startup timed out.')), 8000)),
+      const [bootResult, storageResult] = await Promise.all([
+        Promise.race([
+          ensureDatabaseReady(),
+          new Promise<never>((_, rej) =>
+            setTimeout(() => rej(new Error('Database startup timed out.')), 8000)
+          ),
+        ]),
+        requestPersistentStorageAndCheck(),
       ]);
+
+      setInitialProfile(bootResult.profile);
+      setInitialSettings(bootResult.settings);
+      if (storageResult.warning) {
+        setStorageWarning(storageResult.warning);
+      }
+      const isCompleted = Boolean(
+        bootResult.profile &&
+          (bootResult.profile.onboardingComplete ||
+            bootResult.profile.onboardingDone ||
+            bootResult.profile.onboardingSkipped)
+      );
+      if (!isCompleted) {
+        setOnboardingOpen(true);
+      }
       setDbReady(true);
     } catch (err) {
       setDbError(err instanceof Error ? err.message : 'Failed to open local IndexedDB.');
@@ -132,8 +158,38 @@ const AppShell: React.FC = () => {
     return () => clearTimeout(t);
   }, []);
 
-  const profile = useLiveQuery(() => (dbReady ? db.profile.get('me') : undefined), [dbReady]) ?? createDefaultProfile();
-  const settings = useLiveQuery(() => (dbReady ? db.settings.get('app') : undefined), [dbReady]) ?? createDefaultSettings();
+  // Hide floating bottom dock + FAB while an editable input/textarea/select is focused on mobile
+  useEffect(() => {
+    const isEditableField = (el: EventTarget | null) => {
+      if (!(el instanceof HTMLElement)) return false;
+      const tag = el.tagName;
+      if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
+      if (tag === 'INPUT') {
+        const type = (el as HTMLInputElement).type;
+        return !['range', 'checkbox', 'radio', 'file', 'button', 'submit', 'reset'].includes(type);
+      }
+      return el.isContentEditable;
+    };
+    const onFocusIn = (e: FocusEvent) => {
+      if (isEditableField(e.target)) setIsInputFocused(true);
+    };
+    const onFocusOut = () => {
+      window.setTimeout(() => {
+        setIsInputFocused(isEditableField(document.activeElement));
+      }, 60);
+    };
+    document.addEventListener('focusin', onFocusIn);
+    document.addEventListener('focusout', onFocusOut);
+    return () => {
+      document.removeEventListener('focusin', onFocusIn);
+      document.removeEventListener('focusout', onFocusOut);
+    };
+  }, []);
+
+  const profileQuery = useLiveQuery(() => (dbReady ? db.profile.get('me') : undefined), [dbReady]);
+  const settingsQuery = useLiveQuery(() => (dbReady ? db.settings.get('app') : undefined), [dbReady]);
+  const profile = profileQuery ?? initialProfile ?? createDefaultProfile();
+  const settings = settingsQuery ?? initialSettings ?? createDefaultSettings();
   const xpState = useLiveQuery(() => (dbReady ? db.xpState.get('xp') : undefined), [dbReady]) ?? createDefaultXpState();
   const tasks =
     useLiveQuery(
@@ -175,6 +231,14 @@ const AppShell: React.FC = () => {
           : [],
       [dbReady]
     ) ?? [];
+  const puffinessLogs =
+    useLiveQuery(
+      () =>
+        dbReady
+          ? db.puffinessLogs.toArray().then((arr) => arr.sort((a, b) => a.date.localeCompare(b.date)))
+          : [],
+      [dbReady]
+    ) ?? [];
 
   useEffect(() => {
     const root = document.documentElement;
@@ -185,12 +249,6 @@ const AppShell: React.FC = () => {
     }
     root.setAttribute('data-accent', settings.accent);
   }, [settings.theme, settings.accent]);
-
-  useEffect(() => {
-    if (dbReady && !profile.onboardingDone && !profile.onboardingSkipped) {
-      setOnboardingOpen(true);
-    }
-  }, [dbReady, profile.onboardingDone, profile.onboardingSkipped]);
 
   const flushQueuedSteps = useCallback(async () => {
     const queued = stepsQueueRef.current;
@@ -329,13 +387,18 @@ const AppShell: React.FC = () => {
 
   if (!dbReady) {
     return (
-      <div className="min-h-[100dvh] max-w-5xl mx-auto px-4 py-8 space-y-4">
-        <div className="h-10 w-44 rounded-2xl bg-slate-200 dark:bg-white/5 animate-pulse" />
-        <div className="h-36 rounded-[28px] bg-slate-200 dark:bg-white/5 animate-pulse" />
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          {[1, 2, 3, 4].map((i) => (
-            <div key={i} className="h-24 rounded-[28px] bg-slate-200 dark:bg-white/5 animate-pulse" />
-          ))}
+      <div className="min-h-[100dvh] flex flex-col items-center justify-center px-4 py-8 gap-3">
+        <div
+          className="w-12 h-12 rounded-2xl bg-[var(--accent-soft)] border border-[var(--accent)]/40 flex items-center justify-center"
+          style={{ boxShadow: '0 0 24px var(--accent-glow)' }}
+        >
+          <svg viewBox="0 0 24 24" className="w-6 h-6 text-[var(--accent)] animate-pulse" fill="none" stroke="currentColor" strokeWidth="2.4">
+            <path d="M12 3L4 19h4l4-8 4 8h4L12 3z" strokeLinejoin="round" />
+          </svg>
+        </div>
+        <div className="text-center space-y-1">
+          <p className="font-display text-base font-bold tracking-tight">ASCEND.OS</p>
+          <p className="text-xs text-slate-500 dark:text-slate-400">Loading your local vault...</p>
         </div>
       </div>
     );
@@ -384,17 +447,17 @@ const AppShell: React.FC = () => {
   const isSubScreen = ['care', 'academy', 'settings'].includes(screen);
 
   return (
-    <div className="h-[100dvh] min-h-[100dvh] flex flex-col">
+    <div className="h-[100dvh] min-h-[100dvh] w-full max-w-full overflow-x-clip flex flex-col">
       {/* Luxury Obsidian Top Bar: Left Circular Menu · Center Branded Title · Right Circular Alerts & Profile */}
       <header className="shrink-0 z-30 backdrop-blur-xl bg-[#F3F6F4]/85 dark:bg-[#040407]/85 border-b border-slate-200/70 dark:border-emerald-500/15 no-print">
-        <div className="max-w-6xl mx-auto px-3 sm:px-4 h-14 grid grid-cols-3 items-center">
+        <div className="max-w-6xl mx-auto px-4 h-14 grid grid-cols-3 items-center">
           {/* Left Zone */}
           <div className="flex items-center gap-1.5 justify-start">
             <button
               type="button"
               onClick={() => setNavDrawerOpen(true)}
               aria-label="Open navigation menu"
-              className="w-10 h-10 rounded-full bg-white dark:bg-white/[0.06] border border-slate-200 dark:border-white/10 flex items-center justify-center hover:border-[var(--accent)]/40 transition"
+              className="w-11 h-11 rounded-full bg-white dark:bg-white/[0.06] border border-slate-200 dark:border-white/10 flex items-center justify-center hover:border-[var(--accent)]/40 transition"
             >
               <Menu className="w-4 h-4" />
             </button>
@@ -403,7 +466,7 @@ const AppShell: React.FC = () => {
                 type="button"
                 onClick={() => navigate('home')}
                 aria-label="Back to Dashboard"
-                className="w-9 h-9 rounded-full bg-white dark:bg-white/[0.06] border border-slate-200 dark:border-white/10 flex items-center justify-center hover:border-[var(--accent)]/40 transition"
+                className="w-11 h-11 rounded-full bg-white dark:bg-white/[0.06] border border-slate-200 dark:border-white/10 flex items-center justify-center hover:border-[var(--accent)]/40 transition"
               >
                 <ArrowLeft className="w-4 h-4" />
               </button>
@@ -414,7 +477,7 @@ const AppShell: React.FC = () => {
           <button
             type="button"
             onClick={() => navigate('home')}
-            className="flex items-center justify-center gap-2 whitespace-nowrap shrink-0 mx-auto"
+            className="flex items-center justify-center gap-2 whitespace-nowrap shrink-0 mx-auto min-h-[44px]"
           >
             <span
               className="w-6 h-6 rounded-full bg-[var(--accent-soft)] border border-[var(--accent)]/45 flex items-center justify-center shrink-0"
@@ -443,7 +506,7 @@ const AppShell: React.FC = () => {
               type="button"
               onClick={() => setRemindersOpen(true)}
               aria-label="View reminders"
-              className="relative w-10 h-10 rounded-full bg-white dark:bg-white/[0.06] border border-slate-200 dark:border-white/10 flex items-center justify-center hover:border-[var(--accent)]/40 transition"
+              className="relative w-11 h-11 rounded-full bg-white dark:bg-white/[0.06] border border-slate-200 dark:border-white/10 flex items-center justify-center hover:border-[var(--accent)]/40 transition"
             >
               <Bell className="w-4 h-4" />
               {dueReminders.length > 0 && (
@@ -454,7 +517,7 @@ const AppShell: React.FC = () => {
               type="button"
               onClick={() => navigate('settings')}
               aria-label="Open Profile and Settings"
-              className={`w-10 h-10 rounded-full border flex items-center justify-center transition ${
+              className={`w-11 h-11 rounded-full border flex items-center justify-center transition ${
                 screen === 'settings'
                   ? 'bg-[var(--accent-soft)] border-[var(--accent)]/45 text-[var(--accent)]'
                   : 'bg-white dark:bg-white/[0.06] border-slate-200 dark:border-white/10 hover:border-[var(--accent)]/40'
@@ -469,9 +532,25 @@ const AppShell: React.FC = () => {
       {/* Scrollable Main Content */}
       <main
         ref={mainRef}
-        className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain [-webkit-overflow-scrolling:touch] pb-28"
+        className={`flex-1 min-h-0 overflow-y-auto overflow-x-clip overscroll-y-contain touch-pan-y [-webkit-overflow-scrolling:touch] ${
+          isInputFocused
+            ? 'pb-8'
+            : 'pb-[calc(104px+env(safe-area-inset-bottom))]'
+        }`}
       >
-        <div className="max-w-6xl w-full mx-auto px-3 sm:px-4 pt-4 min-w-0">
+        <div className="max-w-6xl w-full mx-auto px-4 pt-4 min-w-0">
+        {storageWarning && (
+          <div className="mb-4 p-3.5 rounded-2xl bg-amber-500/15 border border-amber-500/40 text-xs text-amber-800 dark:text-amber-200 flex items-start justify-between gap-3">
+            <span>{storageWarning}</span>
+            <button
+              type="button"
+              onClick={() => setStorageWarning(null)}
+              className="px-2 py-1 rounded-lg bg-black/20 text-[11px] font-semibold shrink-0 min-h-[32px]"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         <div key={screen} className="ascend-panel-enter">
         {screen === 'home' && (
           <ErrorBoundary screenName="Dashboard">
@@ -564,6 +643,8 @@ const AppShell: React.FC = () => {
               wardrobe={wardrobe}
               outfits={outfits}
               scans={scans}
+              puffinessLogs={puffinessLogs}
+              initialTab={subTab}
             />
           </ErrorBoundary>
         )}
@@ -614,8 +695,9 @@ const AppShell: React.FC = () => {
         </div>
       </main>
 
-      {/* Floating Glassmorphism Pill Bottom Dock + Floating Quick Log Orb */}
-      <div className="fixed bottom-3 left-0 right-0 z-40 px-3 pointer-events-none no-print">
+      {/* Floating Glassmorphism Pill Bottom Dock + Floating Quick Log Orb (hidden when typing) */}
+      {!isInputFocused && (
+      <div className="fixed bottom-3 left-0 right-0 z-40 px-4 pointer-events-none no-print">
         <div className="max-w-lg mx-auto flex items-center justify-center gap-2.5">
           <nav
             aria-label="Primary navigation"
@@ -662,6 +744,7 @@ const AppShell: React.FC = () => {
           </button>
         </div>
       </div>
+      )}
 
       {/* Hamburger Slide-Over Navigation Drawer */}
       {navDrawerOpen && (
@@ -704,7 +787,7 @@ const AppShell: React.FC = () => {
                   { id: 'psl', label: 'PSL LAB (3-Angle)', icon: <ScanFace className="w-4 h-4" /> },
                   { id: 'progress', label: 'Insights & Reports', icon: <TrendingUp className="w-4 h-4" /> },
                   { id: 'trackers', label: 'Health & Gym', icon: <HeartPulse className="w-4 h-4" /> },
-                  { id: 'care', label: 'Care Hub (Skin/Hair/Style)', icon: <Sparkles className="w-4 h-4" /> },
+                  { id: 'care', label: 'Care Hub (Skin/Lean Face/Hair)', icon: <Sparkles className="w-4 h-4" /> },
                   { id: 'academy', label: 'Academy & Myths Wall', icon: <BookOpen className="w-4 h-4" /> },
                   { id: 'settings', label: 'Settings & Backup', icon: <Settings className="w-4 h-4" /> },
                 ].map((navItem) => {
@@ -784,7 +867,12 @@ const AppShell: React.FC = () => {
       />
 
       {remindersOpen && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-3 no-print">
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-4 no-print"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setRemindersOpen(false);
+          }}
+        >
           <div className="ascend-card max-w-md w-full p-5 space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="font-display text-base font-bold">In-App Reminders</h2>

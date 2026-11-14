@@ -4,6 +4,7 @@ import type { Request, Response } from 'express';
 import path from 'node:path';
 import fs from 'node:fs';
 import { GoogleGenAI, Type } from '@google/genai';
+import analyzeFoodHandler from './api/analyze-food';
 
 const PORT = Number(process.env.PORT || 3000);
 const isProduction = process.env.NODE_ENV === 'production';
@@ -138,6 +139,10 @@ async function startServer() {
 
   app.get('/api/health', (_req: Request, res: Response) => {
     res.json({ ok: true, service: 'ascend-nutrition-vision' });
+  });
+
+  app.all('/api/analyze-food', async (req: Request, res: Response) => {
+    await analyzeFoodHandler(req, res);
   });
 
   app.post('/api/nutrition/analyze', async (req: Request, res: Response) => {

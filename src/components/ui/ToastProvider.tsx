@@ -3,14 +3,22 @@ import { CheckCircle2, AlertTriangle, Info, X } from 'lucide-react';
 
 type ToastVariant = 'success' | 'warning' | 'info';
 
+interface ToastOptions {
+  actionLabel?: string;
+  onAction?: () => void;
+  durationMs?: number;
+}
+
 interface ToastItem {
   id: number;
   message: string;
   variant: ToastVariant;
+  actionLabel?: string;
+  onAction?: () => void;
 }
 
 interface ToastContextValue {
-  showToast: (message: string, variant?: ToastVariant) => void;
+  showToast: (message: string, variant?: ToastVariant, options?: ToastOptions) => void;
 }
 
 const ToastContext = createContext<ToastContextValue>({ showToast: () => {} });
@@ -22,16 +30,33 @@ export function useToast() {
 export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
-  const showToast = useCallback((message: string, variant: ToastVariant = 'success') => {
-    const id = Date.now() + Math.random();
-    setToasts((prev) => {
-      const filtered = prev.filter((t) => t.message !== message);
-      return [...filtered.slice(-1), { id, message, variant }];
-    });
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 3200);
+  const dismiss = useCallback((id: number) => {
+    setToasts((prev) => prev.filter((item) => item.id !== id));
   }, []);
+
+  const showToast = useCallback(
+    (message: string, variant: ToastVariant = 'success', options?: ToastOptions) => {
+      const id = Date.now() + Math.random();
+      setToasts((prev) => {
+        const filtered = prev.filter((t) => t.message !== message);
+        return [
+          ...filtered.slice(-1),
+          {
+            id,
+            message,
+            variant,
+            actionLabel: options?.actionLabel,
+            onAction: options?.onAction,
+          },
+        ];
+      });
+      const timeoutMs = options?.durationMs ?? (options?.actionLabel ? 6500 : 3200);
+      setTimeout(() => {
+        setToasts((prev) => prev.filter((t) => t.id !== id));
+      }, timeoutMs);
+    },
+    []
+  );
 
   return (
     <ToastContext.Provider value={{ showToast }}>
@@ -49,14 +74,29 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               {t.variant === 'info' && <Info className="w-4 h-4 shrink-0 text-sky-400" />}
               <span className="truncate font-medium">{t.message}</span>
             </div>
-            <button
-              type="button"
-              onClick={() => setToasts((prev) => prev.filter((item) => item.id !== t.id))}
-              aria-label="Dismiss notification"
-              className="p-1 text-white/60 hover:text-white shrink-0"
-            >
-              <X className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-1.5 shrink-0">
+              {t.actionLabel && t.onAction && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const cb = t.onAction;
+                    dismiss(t.id);
+                    cb?.();
+                  }}
+                  className="px-2.5 py-1.5 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-bold min-h-[34px]"
+                >
+                  {t.actionLabel}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => dismiss(t.id)}
+                aria-label="Dismiss notification"
+                className="p-1 text-white/60 hover:text-white shrink-0 min-h-[34px] min-w-[34px] flex items-center justify-center"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         ))}
       </div>

@@ -157,8 +157,8 @@ export async function prepareMealImageAssets(
     return canvas.toDataURL('image/jpeg', quality);
   };
 
-  const previewDataUrl = resize(1024, 0.86);
-  const thumbnailDataUrl = resize(420, 0.72);
+  const previewDataUrl = resize(1024, 0.7);
+  const thumbnailDataUrl = resize(420, 0.7);
   const apiBase64 = previewDataUrl.split(',')[1] || '';
 
   return {

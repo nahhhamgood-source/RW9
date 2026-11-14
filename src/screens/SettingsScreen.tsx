@@ -15,6 +15,7 @@ import {
   exportAllDataJson,
   importAllDataJson,
   regenerateProtocolFromProfile,
+  saveAndVerifyProfile,
   wipeAllData,
 } from '../db/database';
 import { decryptBackupJson, encryptBackupJson, sha256Hex } from '../lib/crypto';
@@ -120,8 +121,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       focusAreas: nextFocus,
       updatedAt: Date.now(),
     };
-    await db.profile.put(updated);
-    await regenerateProtocolFromProfile(updated);
+    const verified = await saveAndVerifyProfile(updated);
+    await regenerateProtocolFromProfile(verified);
     showToast('My focus updated & daily stack rebuilt');
   };
 
@@ -139,8 +140,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       mindSubGoals: nextSub,
       updatedAt: Date.now(),
     };
-    await db.profile.put(updated);
-    await regenerateProtocolFromProfile(updated);
+    const verified = await saveAndVerifyProfile(updated);
+    await regenerateProtocolFromProfile(verified);
     showToast('Mind goal updated & daily stack rebuilt');
   };
 
@@ -637,20 +638,28 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             )}
           </div>
 
-          {/* Local PIN Lock */}
+          {/* PIN lock */}
           <div className="ascend-card p-4 space-y-3">
-            <h2 className="font-display text-base font-bold flex items-center gap-2">
-              <Lock className="w-4 h-4 text-[var(--accent)]" /> Local PIN Lock
-            </h2>
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="font-display text-base font-bold flex items-center gap-2">
+                <Lock className="w-4 h-4 text-[var(--accent)]" /> PIN lock
+              </h2>
+              <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                {settings.pinHash ? 'On' : 'Off'}
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              No lock screen appears unless you turn on PIN lock here.
+            </p>
             {settings.pinHash ? (
               <div className="flex items-center justify-between text-xs">
-                <span className="text-emerald-500 font-semibold">4-digit local PIN active</span>
+                <span className="text-emerald-500 font-semibold">4-digit PIN lock active</span>
                 <button
                   type="button"
                   onClick={() => updateSettings({ pinHash: null })}
-                  className="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-white/5 font-semibold"
+                  className="px-3 py-2 rounded-xl bg-slate-100 dark:bg-white/5 font-semibold min-h-[44px]"
                 >
-                  Remove PIN
+                  Turn Off PIN lock
                 </button>
               </div>
             ) : (
@@ -662,28 +671,35 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                   placeholder="4-digit PIN"
                   value={pinInput}
                   onChange={(e) => setPinInput(e.target.value)}
-                  className="flex-1 px-3 py-2 rounded-xl bg-slate-100 dark:bg-white/5 font-mono-num text-xs min-h-[40px]"
+                  className="flex-1 px-3 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 font-mono-num text-base sm:text-xs min-h-[44px]"
                 />
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold min-h-[40px]"
+                  className="px-4 py-2.5 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold min-h-[44px]"
                 >
-                  Set PIN
+                  Enable PIN lock
                 </button>
               </form>
             )}
           </div>
 
-          {/* Storage & About */}
+          {/* About my data & Storage */}
           <div className="ascend-card p-4 space-y-3 text-xs">
-            <h2 className="font-display text-base font-bold">Local Storage Summary</h2>
-            <div className="grid grid-cols-3 gap-2 font-mono-num">
-              {Object.entries(storageCounts).map(([k, v]) => (
-                <div key={k} className="p-2 rounded-xl bg-slate-50 dark:bg-white/[0.03]">
-                  <div className="text-slate-500 capitalize text-[11px]">{k}</div>
-                  <div className="text-sm font-bold">{v}</div>
-                </div>
-              ))}
+            <h2 className="font-display text-base font-bold">About my data</h2>
+            <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+              Your profile, logs, meals, and scans live separately on each device inside this browser&apos;s local storage. To move your progress between phone and PC, export a JSON backup above and import it on your other device.
+            </p>
+
+            <div className="pt-2 border-t border-slate-200 dark:border-white/10 space-y-2">
+              <p className="font-semibold">Local Storage Summary</p>
+              <div className="grid grid-cols-3 gap-2 font-mono-num">
+                {Object.entries(storageCounts).map(([k, v]) => (
+                  <div key={k} className="p-2 rounded-xl bg-slate-50 dark:bg-white/[0.03]">
+                    <div className="text-slate-500 capitalize text-[11px]">{k}</div>
+                    <div className="text-sm font-bold">{v}</div>
+                  </div>
+                ))}
+              </div>
             </div>
 
             <div className="pt-2 border-t border-slate-200 dark:border-white/10 space-y-1.5">

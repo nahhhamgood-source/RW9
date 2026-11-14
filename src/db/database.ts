@@ -14,6 +14,7 @@ import type {
   MealScanEntry,
   OutfitRecord,
   OwnedProduct,
+  PuffinessLogEntry,
   SkinEntry,
   TaskCompletion,
   UnlockedBadge,
@@ -22,6 +23,99 @@ import type {
   WorkoutSession,
   XpState,
 } from '../types';
+
+const BOOT_MIRROR_KEY = 'ascend_boot_mirror_v1';
+
+export interface BootMirrorPayload {
+  onboardingComplete: boolean;
+  profile: UserProfile;
+  updatedAt: number;
+}
+
+export function readBootMirror(): BootMirrorPayload | null {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return null;
+    const raw = window.localStorage.getItem(BOOT_MIRROR_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as BootMirrorPayload;
+    if (!parsed || typeof parsed !== 'object' || !parsed.profile) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function writeBootMirror(profile: UserProfile): boolean {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return false;
+    const payload: BootMirrorPayload = {
+      onboardingComplete: Boolean(
+        profile.onboardingComplete || profile.onboardingDone || profile.onboardingSkipped
+      ),
+      profile,
+      updatedAt: Date.now(),
+    };
+    window.localStorage.setItem(BOOT_MIRROR_KEY, JSON.stringify(payload));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function clearBootMirror(): void {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.removeItem(BOOT_MIRROR_KEY);
+    }
+  } catch {
+    // ignore storage errors
+  }
+}
+
+export async function requestPersistentStorageAndCheck(): Promise<{
+  persisted: boolean;
+  storageAvailable: boolean;
+  warning: string | null;
+}> {
+  let localStorageOk = false;
+  try {
+    const testKey = '__ascend_storage_probe__';
+    window.localStorage.setItem(testKey, '1');
+    localStorageOk = window.localStorage.getItem(testKey) === '1';
+    window.localStorage.removeItem(testKey);
+  } catch {
+    localStorageOk = false;
+  }
+
+  let persisted = false;
+  try {
+    if (navigator.storage?.persisted) {
+      persisted = await navigator.storage.persisted();
+    }
+    if (!persisted && navigator.storage?.persist) {
+      persisted = await navigator.storage.persist();
+    }
+  } catch {
+    persisted = false;
+  }
+
+  const idbAvailable = typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined';
+
+  if (!localStorageOk || !idbAvailable) {
+    return {
+      persisted,
+      storageAvailable: false,
+      warning:
+        'Browser storage appears blocked (private mode or in-app browser). Changes may not persist after closing this tab.',
+    };
+  }
+
+  return {
+    persisted,
+    storageAvailable: true,
+    warning: null,
+  };
+}
 
 export class AscendDB extends Dexie {
   profile!: Table<UserProfile, string>;
@@ -39,6 +133,7 @@ export class AscendDB extends Dexie {
   scans!: Table<FaceScanResult, number>;
   xpState!: Table<XpState, string>;
   mealScans!: Table<MealScanEntry, number>;
+  puffinessLogs!: Table<PuffinessLogEntry, number>;
 
   constructor() {
     super('ascend_offline_db');
@@ -91,6 +186,24 @@ export class AscendDB extends Dexie {
       xpState: 'id',
       mealScans: '++id, date, timestamp',
     });
+    this.version(4).stores({
+      profile: 'id',
+      settings: 'id',
+      protocolTasks: 'id, protocolId, block, category, enabled, sortOrder',
+      taskCompletions: 'id, date, taskId',
+      dailyLogs: 'date',
+      bodyMetrics: '++id, date',
+      skinEntries: '++id, date, createdAt',
+      products: '++id, domain, routineSlot, inUse',
+      hairPreferences: '++id, faceShape, isFavorite',
+      wardrobeItems: '++id, category',
+      outfits: '++id, date, isSavedCombo',
+      workouts: '++id, date',
+      scans: '++id, date, timestamp',
+      xpState: 'id',
+      mealScans: '++id, date, timestamp',
+      puffinessLogs: '++id, date, createdAt',
+    });
   }
 }
 
@@ -134,6 +247,7 @@ export function createDefaultProfile(): UserProfile {
     stepTarget: 10000,
     detectedFaceShape: null,
     onboardingDone: false,
+    onboardingComplete: false,
     onboardingSkipped: false,
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -331,12 +445,32 @@ export function buildPlanForProfile(
   }));
 }
 
-export async function ensureDatabaseReady(): Promise<void> {
-  let profile = await db.profile.get('me');
+export async function ensureDatabaseReady(): Promise<{
+  profileExists: boolean;
+  profile: UserProfile | null;
+  settings: AppSettings;
+}> {
+  let profile = (await db.profile.get('me')) ?? null;
+
+  // Recover from tiny localStorage mirror if IndexedDB record is absent
   if (!profile) {
-    profile = createDefaultProfile();
-    await db.profile.put(profile);
+    const mirror = readBootMirror();
+    if (mirror?.profile && mirror.onboardingComplete) {
+      const restored: UserProfile = {
+        ...createDefaultProfile(),
+        ...mirror.profile,
+        id: 'me',
+        onboardingDone: true,
+        onboardingComplete: true,
+      };
+      await db.profile.put(restored);
+      profile = (await db.profile.get('me')) ?? restored;
+    }
+  } else if (profile.onboardingDone || profile.onboardingComplete || profile.onboardingSkipped) {
+    // Keep mirror synced when profile is already onboarded
+    writeBootMirror(profile);
   }
+
   let settings = await db.settings.get('app');
   if (!settings) {
     settings = createDefaultSettings();
@@ -348,9 +482,30 @@ export async function ensureDatabaseReady(): Promise<void> {
   }
   const existingTasks = await db.protocolTasks.count();
   if (existingTasks === 0) {
-    const initialTasks = buildPlanForProfile(profile, null, settings);
+    const initialTasks = buildPlanForProfile(profile ?? createDefaultProfile(), null, settings);
     await db.protocolTasks.bulkPut(initialTasks);
   }
+
+  return {
+    profileExists: Boolean(profile),
+    profile,
+    settings,
+  };
+}
+
+export async function saveAndVerifyProfile(profile: UserProfile): Promise<UserProfile> {
+  const payload: UserProfile = {
+    ...profile,
+    id: 'me',
+    updatedAt: Date.now(),
+  };
+  await db.profile.put(payload);
+  writeBootMirror(payload);
+  const verified = await db.profile.get('me');
+  if (!verified || (payload.onboardingComplete && !verified.onboardingComplete && !verified.onboardingDone)) {
+    throw new Error('Profile verification read-back failed.');
+  }
+  return verified;
 }
 
 export async function regenerateProtocolFromProfile(profile: UserProfile): Promise<void> {
@@ -624,6 +779,7 @@ export async function exportAllDataJson(): Promise<string> {
       scans: await db.scans.toArray(),
       xpState: await db.xpState.toArray(),
       mealScans: await db.mealScans.toArray(),
+      puffinessLogs: await db.puffinessLogs.toArray(),
     },
   };
   return JSON.stringify(payload, null, 2);
@@ -653,6 +809,7 @@ export async function importAllDataJson(jsonString: string): Promise<void> {
       db.scans,
       db.xpState,
       db.mealScans,
+      db.puffinessLogs,
     ],
     async () => {
       await Promise.all([
@@ -671,6 +828,7 @@ export async function importAllDataJson(jsonString: string): Promise<void> {
         db.scans.clear(),
         db.xpState.clear(),
         db.mealScans.clear(),
+        db.puffinessLogs.clear(),
       ]);
 
       if (Array.isArray(d.profile) && d.profile.length) await db.profile.bulkPut(d.profile);
@@ -688,6 +846,7 @@ export async function importAllDataJson(jsonString: string): Promise<void> {
       if (Array.isArray(d.scans) && d.scans.length) await db.scans.bulkPut(d.scans);
       if (Array.isArray(d.xpState) && d.xpState.length) await db.xpState.bulkPut(d.xpState);
       if (Array.isArray(d.mealScans) && d.mealScans.length) await db.mealScans.bulkPut(d.mealScans);
+      if (Array.isArray(d.puffinessLogs) && d.puffinessLogs.length) await db.puffinessLogs.bulkPut(d.puffinessLogs);
     }
   );
   await ensureDatabaseReady();
@@ -695,6 +854,7 @@ export async function importAllDataJson(jsonString: string): Promise<void> {
 }
 
 export async function wipeAllData(): Promise<void> {
+  clearBootMirror();
   await Promise.all([
     db.profile.clear(),
     db.settings.clear(),
@@ -711,6 +871,7 @@ export async function wipeAllData(): Promise<void> {
     db.scans.clear(),
     db.xpState.clear(),
     db.mealScans.clear(),
+    db.puffinessLogs.clear(),
   ]);
   await ensureDatabaseReady();
 }
