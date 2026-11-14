@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { BADGE_DEFINITIONS, getRankForLevel } from '../data/badges';
 import { addDays, toLocalDateKey } from '../lib/date';
+import { getPslTierMeta, PSL_HONEST_DISCLAIMER } from '../lib/faceMetricsConstants';
 import { estimateHealthAndMetabolicAge } from '../lib/fitness';
 import {
   DailyScoreBarChart,
@@ -44,6 +45,7 @@ interface ProgressScreenProps {
   bodyMetrics: BodyMetricEntry[];
   scans: FaceScanResult[];
   workouts: WorkoutSession[];
+  slangTierNames?: boolean;
   initialSubTab?: string;
   onOpenQuickLog: (tab?: 'water' | 'nutrition' | 'sleep' | 'body' | 'mood' | 'skin') => void;
   onOpenOnboarding: () => void;
@@ -70,6 +72,7 @@ export const ProgressScreen: React.FC<ProgressScreenProps> = ({
   bodyMetrics,
   scans,
   workouts,
+  slangTierNames = true,
   initialSubTab,
   onOpenQuickLog,
   onOpenOnboarding,
@@ -268,7 +271,12 @@ export const ProgressScreen: React.FC<ProgressScreenProps> = ({
       { label: 'Est. Metabolic Age', val: `${biometricSummary.metabolicAge} yrs` },
       { label: 'Consistency Rate', val: `${overviewMetrics.consistencyPct}%` },
       { label: 'Skincare Adherence', val: `${overviewMetrics.skinPct}%` },
-      { label: 'Latest PSL LAB', val: scans[0] ? `${scans[0].pslEstimate}/8 (${scans[0].tier})` : 'No scan' },
+      {
+        label: 'Latest PSL LAB',
+        val: scans[0]
+          ? `${scans[0].pslEstimate}/8 (${getPslTierMeta(scans[0].pslEstimate, slangTierNames).displayLabel})`
+          : 'No scan',
+      },
       { label: 'Current Streak', val: `${xpState.currentStreak} days` },
     ];
 
@@ -631,6 +639,9 @@ export const ProgressScreen: React.FC<ProgressScreenProps> = ({
             maxVal={7.5}
             emptyLabel="Log 2+ PSL LAB scans to chart progress."
           />
+          <p className="text-[10.5px] text-slate-500 dark:text-slate-400 pt-1">
+            {PSL_HONEST_DISCLAIMER}
+          </p>
         </div>
 
         <div className="lg:col-span-4 ascend-card p-4 space-y-2">

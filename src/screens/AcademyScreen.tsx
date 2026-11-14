@@ -10,7 +10,7 @@ import {
 export const AcademyScreen: React.FC = () => {
   const [tab, setTab] = useState<'guides' | 'myths' | 'glossary' | 'medical'>('guides');
   const [query, setQuery] = useState('');
-  const [verdictFilter, setVerdictFilter] = useState<'All' | 'True' | 'Partly true' | 'False'>('All');
+  const [verdictFilter, setVerdictFilter] = useState<'All' | 'True' | 'Partly true' | 'False' | 'False and risky'>('All');
   const [openGuideId, setOpenGuideId] = useState<string | null>(ACADEMY_GUIDES[0].id);
 
   const q = query.trim().toLowerCase();
@@ -62,7 +62,7 @@ export const AcademyScreen: React.FC = () => {
       <div>
         <h1 className="font-display text-2xl font-bold">Academy &amp; Myths Wall</h1>
         <p className="text-xs text-slate-500 dark:text-slate-400">
-          14 deep guides · 42 verified claims · Honest glossary · Neutral medical info cards
+          {ACADEMY_GUIDES.length} deep guides · {MYTHS_WALL.length} verified claims · Honest glossary · Neutral medical info cards
         </p>
       </div>
 
@@ -183,8 +183,8 @@ export const AcademyScreen: React.FC = () => {
       {/* 42 MYTHS WALL */}
       {tab === 'myths' && (
         <div className="space-y-3">
-          <div className="flex gap-1.5">
-            {(['All', 'True', 'Partly true', 'False'] as const).map((v) => (
+          <div className="flex flex-wrap gap-1.5">
+            {(['All', 'True', 'Partly true', 'False', 'False and risky'] as const).map((v) => (
               <button
                 key={v}
                 type="button"
@@ -250,12 +250,21 @@ export const AcademyScreen: React.FC = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {filteredMedical.map((c) => (
               <div key={c.id} className="ascend-card p-4 space-y-2 text-xs">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <h2 className="font-display text-sm font-bold">{c.name}</h2>
-                  <span className="font-semibold text-[var(--accent)]">{c.evidence}</span>
+                  <span className="font-semibold text-[var(--accent)] shrink-0">{c.evidence}</span>
                 </div>
                 <p className="text-slate-600 dark:text-slate-300"><strong>What it is:</strong> {c.whatItIs}</p>
+                {c.evidenceDetail && (
+                  <p className="text-slate-600 dark:text-slate-300"><strong>What the evidence says:</strong> {c.evidenceDetail}</p>
+                )}
                 <p className="text-amber-700 dark:text-amber-300"><strong>Risks:</strong> {c.risks}</p>
+                {c.legal && (
+                  <p className="text-slate-500 dark:text-slate-400"><strong>Legal:</strong> {c.legal}</p>
+                )}
+                {c.naturalSupport && (
+                  <p className="text-emerald-700 dark:text-emerald-300"><strong>What actually supports it naturally:</strong> {c.naturalSupport}</p>
+                )}
                 <p className="text-slate-500 dark:text-slate-400"><strong>Guidance:</strong> {c.guidance}</p>
               </div>
             ))}

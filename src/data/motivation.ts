@@ -1,0 +1,73 @@
+export const DAILY_MOTIVATION_LINES: readonly string[] = [
+  "Small reps. Every day. That's the whole game.",
+  'Show up for ten quiet minutes before chasing big leaps.',
+  'Calm habits today become obvious progress in ninety days.',
+  'Track your actions, not your mirror.',
+  'Consistency beats intensity when nobody is watching.',
+  'Sleep, water, and posture do more than shortcuts ever will.',
+  'One focused block today moves your week forward.',
+  'Keep the routine light enough that you never quit.',
+  'Progress hides inside boring, repeatable mornings.',
+  'Do your minimums first, then enjoy the rest of your day.',
+  'Clean skin and steady habits start with patience.',
+  'Respect your energy: train smart, eat protein, sleep on time.',
+  'You build confidence by keeping small promises to yourself.',
+  'Compare yourself only to your own baseline from last month.',
+  'A quiet mind and a sharp routine reinforce each other.',
+  'Skip the hype. Stack fundamentals that actually work.',
+  'Tidy your space, wash your face, start your focus block.',
+  'Missing once is human. Showing up the next day wins.',
+  'Let time and repetition do the heavy lifting.',
+  'Healthy habits compound even when motivation feels flat.',
+  'Ten pages and ten minutes outside beat scrolling for an hour.',
+  'Guard your bedtime like an appointment with your future self.',
+  'Stay patient with your skin barrier and gentle with your routine.',
+  'Real change takes weeks, not frantic daily checks.',
+  'Write tomorrow’s plan tonight so morning starts frictionless.',
+  'Strong posture changes how you feel before anyone notices.',
+  'One tiny project step a day builds real skill.',
+  'Protect thirty phone-free minutes to let your mind reset.',
+  'Hydrate early, move your body, keep dinner lighter.',
+  'Calm focus outperforms frantic overthinking every single week.',
+  'Make the healthy default the easiest button to press.',
+  'Discipline feels lighter when the daily list is small.',
+  'Measure trends over months, not moods over hours.',
+  'Care for your health, your mind, and your character together.',
+  'Good lighting and rest fix half of what mirrors exaggerate.',
+  'Learn one small concept today and test it with your hands.',
+  'Steady steps beat bursts followed by burnout.',
+  'Your routine serves your life, never the other way around.',
+  'Breathe through your nose, drop your shoulders, stay unhurried.',
+  'Build strength in the gym and steadiness in your study blocks.',
+  'Simple food, clean grooming, and solid sleep never go out of style.',
+  'Keep expectations honest and daily standards calm.',
+  'Finish one hard twenty-five minute block before checking your phone.',
+  'Little adjustments each week beat total overhauls.',
+  'Let consistency make the results inevitable.',
+  'Choose long-term health over quick internet trends.',
+  'Take a brisk walk when your head feels crowded.',
+  'Review your notes for five minutes to lock what you learned.',
+  'Keep your jaw relaxed, your back tall, and your focus clear.',
+  'One glass of water and five minutes of sunlight wake you up.',
+  'Notice what is going right today before listing fixes.',
+  'Tiny daily wins remove the need for extreme sprints.',
+  'Be patient with what takes time to grow.',
+  'Clean inputs in food, media, and sleep show up everywhere.',
+  'Code one small thing today; skill builds line by line.',
+  'Rest without guilt once your daily minimums are done.',
+  'Confidence comes from preparation you actually lived through.',
+  'Keep your face care gentle, simple, and protected from sun.',
+  'Character, competence, and health grow on the same quiet schedule.',
+  'Start small right now; momentum follows action.',
+] as const;
+
+export function getDailyMotivationalLine(dateKey?: string): string {
+  const key = dateKey ?? new Date().toISOString().slice(0, 10);
+  const [y, m, d] = key.split('-').map(Number);
+  if (Number.isFinite(y) && Number.isFinite(m) && Number.isFinite(d)) {
+    const dayNum = Math.floor(Date.UTC(y, m - 1, d) / 86400000);
+    const idx = ((dayNum % DAILY_MOTIVATION_LINES.length) + DAILY_MOTIVATION_LINES.length) % DAILY_MOTIVATION_LINES.length;
+    return DAILY_MOTIVATION_LINES[idx];
+  }
+  return DAILY_MOTIVATION_LINES[0];
+}

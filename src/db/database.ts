@@ -9,6 +9,7 @@ import type {
   BodyMetricEntry,
   DailyLog,
   FaceScanResult,
+  FocusAreaId,
   HairPreference,
   MealScanEntry,
   OutfitRecord,
@@ -123,6 +124,8 @@ export function createDefaultProfile(): UserProfile {
     targetSleepHours: 8,
     sunExposure: 'moderate',
     goals: ['skin', 'consistency', 'body_fat'],
+    focusAreas: ['face', 'body'],
+    mindSubGoals: [],
     dailyTimeBudgetMin: 30,
     activityLevel: 'moderate',
     calorieGoal: calc.recommendedCalories,
@@ -144,6 +147,17 @@ export function createDefaultSettings(): AppSettings {
     accent: 'mint',
     units: 'metric',
     saveThumbnails: true,
+    slangTierNames: true,
+    prayerTrackingEnabled: false,
+    dhikrTaskEnabled: false,
+    prayerTimes: {
+      fajr: '05:15',
+      dhuhr: '12:30',
+      asr: '15:45',
+      maghrib: '18:15',
+      isha: '19:45',
+    },
+    tongueReminderTimes: ['10:00', '14:30', '19:00'],
     pinHash: null,
     reminders: {
       enabled: true,
@@ -171,51 +185,133 @@ export function createDefaultXpState(): XpState {
   };
 }
 
+export function isDayCompleteForStreak(completedCount: number, enabledCount: number): boolean {
+  const safeTotal = Math.max(1, enabledCount);
+  const threshold = Math.max(1, Math.ceil(safeTotal * 0.7));
+  return completedCount >= threshold;
+}
+
 export function buildPlanForProfile(
   profile: UserProfile,
-  latestScan?: FaceScanResult | null
+  latestScan?: FaceScanResult | null,
+  settings?: Partial<AppSettings> | null
 ): ActiveProtocolTask[] {
   const budget = profile.dailyTimeBudgetMin;
-  const targetCount = budget === 15 ? 6 : budget === 30 ? 8 : budget === 60 ? 10 : 12;
+  // Never exceed 8-10 active tasks per day
+  const targetCount = budget === 15 ? 6 : budget === 30 ? 8 : 10;
 
-  const focusTags = new Set<string>(profile.goals);
-  if (profile.skinConcerns.length > 0) focusTags.add('skin');
-  if (profile.hairConcerns.length > 0) focusTags.add('hair');
+  const activeFocus: FocusAreaId[] =
+    profile.focusAreas && profile.focusAreas.length > 0
+      ? profile.focusAreas
+      : ['face', 'body'];
+  const mindSub = new Set(profile.mindSubGoals ?? []);
+  const focusSet = new Set<string>(activeFocus);
+  const goalTags = new Set<string>(profile.goals);
+  if (profile.skinConcerns.length > 0) goalTags.add('skin');
+  if (profile.hairConcerns.length > 0) goalTags.add('hair');
   if (latestScan) {
     latestScan.focusAreas.forEach((f) => {
       f.actions.forEach((a) => {
         if (a.protocolId) {
           const def = PROTOCOL_MAP[a.protocolId];
-          def?.tags.forEach((t) => focusTags.add(t));
+          def?.tags.forEach((t) => goalTags.add(t));
         }
       });
     });
   }
 
-  // Always include foundational daily tasks (gentle skin basics + sleep + water + posture + hygiene)
-  const coreIds = [
-    'skin-gentle-cleanse',
-    'skin-moisturizer-lock',
-    'skin-spf-daily',
-    'hydration-water-target',
-    'sleep-fixed-anchor',
-    'hair-hygiene-standard',
-  ];
+  const candidateIds = new Set<string>();
+  const scoreMap = new Map<string, { score: number; focusLabel: string }>();
 
-  const scored = CURATED_PROTOCOLS.filter((p) => !p.isAdvancedOptional).map((p) => {
-    let priority = coreIds.includes(p.id) ? 100 : 10;
-    for (const tag of p.tags) {
-      if (focusTags.has(tag)) priority += 18;
+  const boost = (id: string, delta: number, focusLabel: string) => {
+    candidateIds.add(id);
+    const prev = scoreMap.get(id);
+    scoreMap.set(id, {
+      score: (prev?.score ?? 0) + delta,
+      focusLabel: prev?.focusLabel ?? focusLabel,
+    });
+  };
+
+  if (focusSet.has('face')) {
+    boost('face-cleanse-am', 110, 'Face');
+    boost('face-moisturize', 108, 'Face');
+    boost('face-spf-daily', 106, 'Face');
+    boost('face-cleanse-pm', 92, 'Face');
+    boost('face-debloat-water', 88, 'Face');
+    boost('face-tongue-posture', 72, 'Face');
+    boost('face-brow-tidy', 64, 'Face');
+    boost('face-weekly-photo', 60, 'Face');
+  }
+
+  if (focusSet.has('body')) {
+    boost('body-10min-walk', 104, 'Body');
+    boost('body-posture-reset', 98, 'Body');
+    boost('body-sleep-fixed', 96, 'Body');
+    boost('body-protein-check', 90, 'Body');
+    boost('body-workout-day', profile.workoutDaysPerWeek >= 2 ? 95 : 75, 'Body');
+    boost('body-sleep-winddown', 82, 'Body');
+    boost('body-wall-angels', 74, 'Body');
+    boost('body-mobility-flow', 68, 'Body');
+    boost('body-neck-set', 58, 'Body');
+  }
+
+  if (focusSet.has('mind')) {
+    if (mindSub.size === 0 || mindSub.has('study')) {
+      boost('mind-study-block', 115, 'Mind · Study');
+      boost('mind-review-notes', 94, 'Mind · Study');
+      boost('mind-read-10pages', 78, 'Mind');
     }
-    if (p.category === 'training' && profile.workoutDaysPerWeek >= 2) priority += 15;
-    if (p.category === 'posture') priority += 12;
-    if (p.id === 'hydration-protein-anchor' && profile.goals.includes('body_fat')) priority += 20;
-    return { protocol: p, priority };
-  });
+    if (mindSub.has('programming')) {
+      boost('mind-coding-lesson', 118, 'Mind · Code');
+      boost('mind-code-tiny', 102, 'Mind · Code');
+    }
+    if (mindSub.size === 0 || mindSub.has('calm')) {
+      boost('mind-breathing-3min', 98, 'Mind · Calm');
+      boost('mind-phone-free', 86, 'Mind · Calm');
+      boost('mind-gratitude-line', 76, 'Mind · Calm');
+    }
+    boost('mind-plan-tomorrow', 88, 'Mind');
+  }
+
+  if (settings?.prayerTrackingEnabled && settings?.dhikrTaskEnabled) {
+    boost('mind-dhikr-quran', 109, 'Prayer');
+  }
+
+  // Fallback baseline if user has no explicit focus areas yet
+  if (candidateIds.size === 0) {
+    boost('face-cleanse-am', 100, 'Face');
+    boost('face-spf-daily', 98, 'Face');
+    boost('body-10min-walk', 96, 'Body');
+    boost('body-posture-reset', 94, 'Body');
+    boost('body-sleep-fixed', 92, 'Body');
+    boost('mind-plan-tomorrow', 90, 'Mind');
+  }
+
+  const scored = Array.from(candidateIds)
+    .map((id) => PROTOCOL_MAP[id])
+    .filter((p): p is NonNullable<typeof p> => Boolean(p))
+    .map((p) => {
+      const meta = scoreMap.get(p.id)!;
+      let priority = meta.score;
+      for (const tag of p.tags) {
+        if (goalTags.has(tag)) priority += 12;
+      }
+      return { protocol: p, priority, focusLabel: meta.focusLabel };
+    });
 
   scored.sort((a, b) => b.priority - a.priority);
 
-  const selected = scored.slice(0, targetCount).map((item, idx) => ({
+  // Deduplicate by protocol.id and cap strictly to 8-10 max tasks
+  const seen = new Set<string>();
+  const finalList: typeof scored = [];
+  for (const item of scored) {
+    if (seen.has(item.protocol.id)) continue;
+    seen.add(item.protocol.id);
+    finalList.push(item);
+    if (finalList.length >= Math.min(10, targetCount)) break;
+  }
+
+  return finalList.map((item, idx) => ({
     id: `task-${item.protocol.id}`,
     protocolId: item.protocol.id,
     title: item.protocol.title,
@@ -231,9 +327,8 @@ export function buildPlanForProfile(
     isCustom: false,
     enabled: true,
     sortOrder: idx,
+    sourceFocusArea: item.focusLabel,
   }));
-
-  return selected;
 }
 
 export async function ensureDatabaseReady(): Promise<void> {
@@ -242,9 +337,10 @@ export async function ensureDatabaseReady(): Promise<void> {
     profile = createDefaultProfile();
     await db.profile.put(profile);
   }
-  const settings = await db.settings.get('app');
+  let settings = await db.settings.get('app');
   if (!settings) {
-    await db.settings.put(createDefaultSettings());
+    settings = createDefaultSettings();
+    await db.settings.put(settings);
   }
   const xp = await db.xpState.get('xp');
   if (!xp) {
@@ -252,15 +348,18 @@ export async function ensureDatabaseReady(): Promise<void> {
   }
   const existingTasks = await db.protocolTasks.count();
   if (existingTasks === 0) {
-    const initialTasks = buildPlanForProfile(profile, null);
+    const initialTasks = buildPlanForProfile(profile, null, settings);
     await db.protocolTasks.bulkPut(initialTasks);
   }
 }
 
 export async function regenerateProtocolFromProfile(profile: UserProfile): Promise<void> {
-  const scans = await db.scans.orderBy('timestamp').reverse().limit(1).toArray();
+  const [scans, settings] = await Promise.all([
+    db.scans.orderBy('timestamp').reverse().limit(1).toArray(),
+    db.settings.get('app'),
+  ]);
   const latestScan = scans[0] ?? null;
-  const generated = buildPlanForProfile(profile, latestScan);
+  const generated = buildPlanForProfile(profile, latestScan, settings ?? null);
   const customTasks = await db.protocolTasks.filter((t) => t.isCustom).toArray();
   await db.transaction('rw', db.protocolTasks, async () => {
     await db.protocolTasks.clear();
@@ -341,20 +440,20 @@ export async function recalculateXpAndBadges(): Promise<XpState> {
 
   for (const c of completions) {
     totalTaskXp += c.xpEarned;
-    if (c.taskId.includes('skin-spf-daily')) spfCount++;
+    if (c.taskId.includes('spf')) spfCount++;
     const arr = byDate.get(c.date) ?? [];
     arr.push(c);
     byDate.set(c.date, arr);
   }
 
-  // Full-day completion bonuses (+30 XP per day with >= 80% tasks done)
+  // Day counts as complete at >= 70% of today's tasks. XP rewards consistency only.
   const enabledCount = Math.max(1, tasks.length);
-  let fullDayBonus = 0;
-  const activeDates = new Set<string>();
+  let consistencyDayBonus = 0;
+  const completeDates = new Set<string>();
   byDate.forEach((list, dt) => {
-    if (list.length > 0) activeDates.add(dt);
-    if (list.length >= Math.max(3, Math.ceil(enabledCount * 0.8))) {
-      fullDayBonus += 30;
+    if (isDayCompleteForStreak(list.length, enabledCount)) {
+      completeDates.add(dt);
+      consistencyDayBonus += 25;
     }
   });
 
@@ -364,11 +463,11 @@ export async function recalculateXpAndBadges(): Promise<XpState> {
   let freezesRemaining = prevXp?.lastFreezeWeek === currentWeek ? prevXp.streakFreezesRemaining : 1;
 
   let streak = 0;
-  let cursor = activeDates.has(today) ? today : addDays(today, -1);
+  let cursor = completeDates.has(today) ? today : addDays(today, -1);
   let usedFreeze = false;
 
   for (let i = 0; i < 365; i++) {
-    if (activeDates.has(cursor)) {
+    if (completeDates.has(cursor)) {
       streak++;
       cursor = addDays(cursor, -1);
     } else if (!usedFreeze && freezesRemaining > 0 && streak > 0) {
@@ -381,7 +480,7 @@ export async function recalculateXpAndBadges(): Promise<XpState> {
   }
 
   const longestStreak = Math.max(prevXp?.longestStreak ?? 0, streak);
-  const totalXp = totalTaskXp + fullDayBonus + workouts.length * 40 + scans.length * 35;
+  const totalXp = totalTaskXp + consistencyDayBonus;
 
   // Level calculation: xp needed for level L -> L+1 = 100 * L^1.3
   let level = 1;
@@ -454,6 +553,9 @@ export async function getOrCreateDailyLog(dateKey: string): Promise<DailyLog> {
     postureScore: 0,
     morningPuffiness: null,
     jawDiscomfort: false,
+    prayersCompleted: {},
+    minimumsDone: false,
+    gratitudeLine: '',
     notes: '',
     updatedAt: Date.now(),
   };

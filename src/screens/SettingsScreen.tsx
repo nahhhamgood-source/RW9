@@ -14,13 +14,41 @@ import {
   db,
   exportAllDataJson,
   importAllDataJson,
+  regenerateProtocolFromProfile,
   wipeAllData,
 } from '../db/database';
 import { decryptBackupJson, encryptBackupJson, sha256Hex } from '../lib/crypto';
 import { requestReminderPermission, syncLocalNotifications } from '../lib/notifications';
 import { usePWAInstall } from '../hooks/usePWAInstall';
-import type { AccentPreset, AppSettings, UserProfile } from '../types';
+import type {
+  AccentPreset,
+  AppSettings,
+  FocusAreaId,
+  MindSubGoalId,
+  PrayerKey,
+  UserProfile,
+} from '../types';
 import { useToast } from '../components/ui/ToastProvider';
+
+const FOCUS_AREA_OPTIONS: Array<{ id: FocusAreaId; label: string }> = [
+  { id: 'face', label: 'Face' },
+  { id: 'body', label: 'Body' },
+  { id: 'mind', label: 'Mind' },
+];
+
+const MIND_SUBGOAL_OPTIONS: Array<{ id: MindSubGoalId; label: string }> = [
+  { id: 'study', label: 'Study' },
+  { id: 'programming', label: 'Learn programming' },
+  { id: 'calm', label: 'Calm/focus' },
+];
+
+const PRAYER_LIST: Array<{ key: PrayerKey; label: string }> = [
+  { key: 'fajr', label: 'Fajr' },
+  { key: 'dhuhr', label: 'Dhuhr' },
+  { key: 'asr', label: 'Asr' },
+  { key: 'maghrib', label: 'Maghrib' },
+  { key: 'isha', label: 'Isha' },
+];
 
 interface SettingsScreenProps {
   profile: UserProfile;
@@ -65,10 +93,55 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     });
   }, []);
 
-  const updateSettings = async (patch: Partial<AppSettings>) => {
+  const updateSettings = async (patch: Partial<AppSettings>, rebuildTasks = false) => {
     const next = { ...settings, ...patch };
     await db.settings.put(next);
     await syncLocalNotifications(next);
+    if (rebuildTasks) {
+      await regenerateProtocolFromProfile(profile);
+    }
+  };
+
+  const activeFocusAreas: FocusAreaId[] =
+    profile.focusAreas && profile.focusAreas.length > 0 ? profile.focusAreas : ['face', 'body'];
+  const activeMindSubGoals: MindSubGoalId[] = profile.mindSubGoals ?? [];
+
+  const handleToggleFocusArea = async (id: FocusAreaId) => {
+    const exists = activeFocusAreas.includes(id);
+    if (exists && activeFocusAreas.length <= 1) {
+      showToast('Keep at least one focus area selected', 'info');
+      return;
+    }
+    const nextFocus = exists
+      ? activeFocusAreas.filter((x) => x !== id)
+      : [...activeFocusAreas, id];
+    const updated: UserProfile = {
+      ...profile,
+      focusAreas: nextFocus,
+      updatedAt: Date.now(),
+    };
+    await db.profile.put(updated);
+    await regenerateProtocolFromProfile(updated);
+    showToast('My focus updated & daily stack rebuilt');
+  };
+
+  const handleToggleMindSubGoal = async (id: MindSubGoalId) => {
+    const exists = activeMindSubGoals.includes(id);
+    const nextSub = exists
+      ? activeMindSubGoals.filter((x) => x !== id)
+      : [...activeMindSubGoals, id];
+    const nextFocus = activeFocusAreas.includes('mind')
+      ? activeFocusAreas
+      : ([...activeFocusAreas, 'mind'] as FocusAreaId[]);
+    const updated: UserProfile = {
+      ...profile,
+      focusAreas: nextFocus,
+      mindSubGoals: nextSub,
+      updatedAt: Date.now(),
+    };
+    await db.profile.put(updated);
+    await regenerateProtocolFromProfile(updated);
+    showToast('Mind goal updated & daily stack rebuilt');
   };
 
   const handleExport = async (encrypted: boolean) => {
@@ -240,6 +313,162 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                 {settings.saveThumbnails ? 'Enabled' : 'Disabled'}
               </button>
             </div>
+
+            <div className="flex items-center justify-between gap-3 pt-2 border-t border-slate-200 dark:border-white/10">
+              <div>
+                <span className="text-xs font-medium block">Slang tier names</span>
+                <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                  {(settings.slangTierNames ?? true)
+                    ? 'ON: Chad, Chadlite, HTN, True Normie, LTN'
+                    : 'OFF: Elite, Top, High, Average, Below average'}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => updateSettings({ slangTierNames: !(settings.slangTierNames ?? true) })}
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold border shrink-0 transition ${
+                  settings.slangTierNames ?? true
+                    ? 'bg-[var(--accent-soft)] text-[var(--accent)] border-[var(--accent)]/35'
+                    : 'bg-slate-100 dark:bg-white/5 border-transparent'
+                }`}
+              >
+                {(settings.slangTierNames ?? true) ? 'On' : 'Off'}
+              </button>
+            </div>
+          </div>
+
+          {/* My Focus (Face · Body · Mind) */}
+          <div className="ascend-card p-4 space-y-3">
+            <div>
+              <h2 className="font-display text-base font-bold">My focus</h2>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                Choose focus areas to build Today&apos;s Stack (max 8–10 small tasks/day).
+              </p>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {FOCUS_AREA_OPTIONS.map((f) => {
+                const active = activeFocusAreas.includes(f.id);
+                return (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => handleToggleFocusArea(f.id)}
+                    className={`py-2.5 rounded-xl text-xs font-bold border min-h-[40px] transition ${
+                      active
+                        ? 'bg-[var(--accent-soft)] text-[var(--accent)] border-[var(--accent)]/40'
+                        : 'bg-slate-100 dark:bg-white/5 border-transparent'
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="space-y-1.5 pt-1">
+              <span className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                Mind sub-goals
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {MIND_SUBGOAL_OPTIONS.map((sg) => {
+                  const active = activeMindSubGoals.includes(sg.id);
+                  return (
+                    <button
+                      key={sg.id}
+                      type="button"
+                      onClick={() => handleToggleMindSubGoal(sg.id)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-semibold border min-h-[36px] transition ${
+                        active
+                          ? 'bg-[var(--accent-soft)] text-[var(--accent)] border-[var(--accent)]/40'
+                          : 'bg-slate-100 dark:bg-white/5 border-transparent'
+                      }`}
+                    >
+                      {sg.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* Optional Prayer Check-Ins */}
+          <div className="ascend-card p-4 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="font-display text-base font-bold">Prayer check-ins</h2>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Five calm one-tap ticks. Missing one never affects streaks or shows negative text.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  updateSettings(
+                    { prayerTrackingEnabled: !settings.prayerTrackingEnabled },
+                    true
+                  )
+                }
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold border shrink-0 transition ${
+                  settings.prayerTrackingEnabled
+                    ? 'bg-[var(--accent-soft)] text-[var(--accent)] border-[var(--accent)]/35'
+                    : 'bg-slate-100 dark:bg-white/5 border-transparent'
+                }`}
+              >
+                {settings.prayerTrackingEnabled ? 'On' : 'Off'}
+              </button>
+            </div>
+
+            {settings.prayerTrackingEnabled && (
+              <div className="space-y-3 pt-2 border-t border-slate-200 dark:border-white/10">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium">Include optional &quot;Dhikr / Quran 5 min&quot; task</span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      updateSettings({ dhikrTaskEnabled: !settings.dhikrTaskEnabled }, true)
+                    }
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold border shrink-0 transition ${
+                      settings.dhikrTaskEnabled
+                        ? 'bg-[var(--accent-soft)] text-[var(--accent)] border-[var(--accent)]/35'
+                        : 'bg-slate-100 dark:bg-white/5 border-transparent'
+                    }`}
+                  >
+                    {settings.dhikrTaskEnabled ? 'Added' : 'Off'}
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+                  {PRAYER_LIST.map((p) => {
+                    const times = settings.prayerTimes ?? {
+                      fajr: '05:15',
+                      dhuhr: '12:30',
+                      asr: '15:45',
+                      maghrib: '18:15',
+                      isha: '19:45',
+                    };
+                    return (
+                      <div key={p.key}>
+                        <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                          {p.label}
+                        </label>
+                        <input
+                          type="time"
+                          value={times[p.key]}
+                          onChange={(e) =>
+                            updateSettings({
+                              prayerTimes: {
+                                ...times,
+                                [p.key]: e.target.value,
+                              },
+                            })
+                          }
+                          className="w-full px-2.5 py-1.5 rounded-xl bg-slate-100 dark:bg-white/5 font-mono-num"
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Reminders & PWA Install */}
@@ -309,6 +538,28 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                   }
                   className="w-full px-2.5 py-2 rounded-xl bg-slate-100 dark:bg-white/5 font-mono-num"
                 />
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-slate-200 dark:border-white/10 space-y-1.5 text-xs">
+              <span className="block font-medium">Tongue posture reminders (3 optional · zero force)</span>
+              <div className="grid grid-cols-3 gap-2">
+                {[0, 1, 2].map((idx) => {
+                  const arr = settings.tongueReminderTimes ?? ['10:00', '14:30', '19:00'];
+                  return (
+                    <input
+                      key={idx}
+                      type="time"
+                      value={arr[idx] ?? ''}
+                      onChange={(e) => {
+                        const next = [...arr];
+                        next[idx] = e.target.value;
+                        updateSettings({ tongueReminderTimes: next });
+                      }}
+                      className="w-full px-2 py-1.5 rounded-xl bg-slate-100 dark:bg-white/5 font-mono-num"
+                    />
+                  );
+                })}
               </div>
             </div>
 

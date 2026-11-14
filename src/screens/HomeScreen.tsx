@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { db, getOrCreateDailyLog, toggleTaskCompletion } from '../db/database';
 import { getRankForLevel, xpRequiredForLevel } from '../data/badges';
+import { getDailyMotivationalLine } from '../data/motivation';
 import { addDays, formatDisplayDate, getGreeting, toLocalDateKey } from '../lib/date';
 import { computeSleepStages, estimateHealthAndMetabolicAge } from '../lib/fitness';
 import { getScannerState, subscribeScannerStatus } from '../lib/faceAnalysis';
@@ -40,9 +41,11 @@ import { WeekStrip } from '../components/ui/WeekStrip';
 import { InteractiveDailyCheckin } from '../components/InteractiveDailyCheckin';
 import type {
   ActiveProtocolTask,
+  AppSettings,
   BodyMetricEntry,
   DailyLog,
   FaceScanResult,
+  PrayerKey,
   TaskCompletion,
   UserProfile,
   WorkoutSession,
@@ -51,8 +54,17 @@ import type {
 import type { PedometerState } from '../lib/pedometer';
 import { useToast } from '../components/ui/ToastProvider';
 
+const PRAYER_ITEMS: Array<{ key: PrayerKey; label: string }> = [
+  { key: 'fajr', label: 'Fajr' },
+  { key: 'dhuhr', label: 'Dhuhr' },
+  { key: 'asr', label: 'Asr' },
+  { key: 'maghrib', label: 'Maghrib' },
+  { key: 'isha', label: 'Isha' },
+];
+
 interface HomeScreenProps {
   profile: UserProfile;
+  settings?: AppSettings;
   xpState: XpState;
   tasks: ActiveProtocolTask[];
   completions: TaskCompletion[];
@@ -83,6 +95,7 @@ const MOOD_FACES = [
 
 export const HomeScreen: React.FC<HomeScreenProps> = ({
   profile,
+  settings,
   xpState,
   tasks,
   completions,
@@ -354,7 +367,20 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     showToast('Mood saved');
   };
 
+  const handleTogglePrayer = async (key: PrayerKey) => {
+    const log = await getOrCreateDailyLog(selectedDate);
+    const prev = log.prayersCompleted ?? {};
+    await db.dailyLogs.update(selectedDate, {
+      prayersCompleted: { ...prev, [key]: !prev[key] },
+      updatedAt: Date.now(),
+    });
+  };
+
   const greetingText = getGreeting();
+  const dailyMotivationalLine = useMemo(
+    () => getDailyMotivationalLine(selectedDate),
+    [selectedDate]
+  );
 
   return (
     <div className="space-y-4">
@@ -391,11 +417,14 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           </div>
         </div>
 
-        {/* Centered Greeting */}
+        {/* Centered Greeting & Daily Motivational Line */}
         <div className="text-center space-y-1">
           <h1 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-balance">
             {greetingText}, {profile.name || 'Friend'}
           </h1>
+          <p className="text-xs font-medium text-[var(--accent)]">
+            {dailyMotivationalLine}
+          </p>
           <p className="text-xs text-slate-500 dark:text-slate-400">
             {formatDisplayDate(selectedDate)} ·{' '}
             <span className="font-mono-num">{dayCompletions.length}/{enabledTasks.length}</span>{' '}
@@ -1125,6 +1154,43 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             </div>
           )}
 
+          {/* Optional Calm Prayer Check-Ins Card */}
+          {settings?.prayerTrackingEnabled && (
+            <div className="ascend-card p-4 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <h2 className="font-display text-sm font-bold">Prayer check-ins</h2>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Quiet daily ticks · optional &amp; separate from streak scoring
+                  </p>
+                </div>
+                <span className="font-mono-num text-xs text-slate-500 dark:text-slate-400">
+                  {PRAYER_ITEMS.filter((p) => Boolean(currentLog?.prayersCompleted?.[p.key])).length}/5
+                </span>
+              </div>
+              <div className="grid grid-cols-5 gap-1.5">
+                {PRAYER_ITEMS.map((p) => {
+                  const checked = Boolean(currentLog?.prayersCompleted?.[p.key]);
+                  return (
+                    <button
+                      key={p.key}
+                      type="button"
+                      onClick={() => handleTogglePrayer(p.key)}
+                      className={`py-2 px-1 rounded-xl text-center border min-h-[46px] flex flex-col items-center justify-center gap-0.5 transition ${
+                        checked
+                          ? 'bg-[var(--accent-soft)] border-[var(--accent)]/40 text-[var(--accent)]'
+                          : 'bg-slate-50 dark:bg-white/[0.03] border-slate-200 dark:border-white/10 text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      <span className="text-[11px] font-semibold">{p.label}</span>
+                      <span className="text-[10px] opacity-80">{checked ? '✓' : '·'}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Interactive Daily Sliders & Decision Flow */}
           <InteractiveDailyCheckin
             selectedDate={selectedDate}
@@ -1134,22 +1200,31 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
           {/* Today's Checklist */}
           <div className="ascend-card p-4 sm:p-5">
-            <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center justify-between mb-3 gap-2">
               <div className="min-w-0">
                 <h2 className="font-display text-base font-bold">
-                  {selectedDate === todayKey ? "Today's Protocol" : `Protocol · ${formatDisplayDate(selectedDate)}`}
+                  {selectedDate === todayKey ? "Today's Stack" : `Stack · ${formatDisplayDate(selectedDate)}`}
                 </h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  {enabledTasks.length} active tasks · {enabledTasks.reduce((s, t) => s + t.minutes, 0)} min total
+                  {enabledTasks.length} active tasks · {enabledTasks.reduce((s, t) => s + t.minutes, 0)}m · 70% locks streak
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => onNavigate('routine')}
-                className="text-xs font-semibold text-[var(--accent)] hover:underline min-h-[36px] px-2 shrink-0"
-              >
-                Customize
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => onNavigate('routine', 'mind')}
+                  className="px-2.5 py-1.5 rounded-xl bg-slate-100 dark:bg-white/5 text-xs font-semibold hover:text-[var(--accent)] min-h-[34px]"
+                >
+                  Mind
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('routine')}
+                  className="text-xs font-semibold text-[var(--accent)] hover:underline min-h-[36px] px-1"
+                >
+                  Customize
+                </button>
+              </div>
             </div>
 
             {enabledTasks.length === 0 ? (

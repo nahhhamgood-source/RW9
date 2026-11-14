@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
   Home,
@@ -50,12 +50,15 @@ import { CoachDrawer } from './components/modals/CoachDrawer';
 import { HomeScreen } from './screens/HomeScreen';
 import { RoutineScreen } from './screens/RoutineScreen';
 import { CareScreen } from './screens/CareScreen';
-import { PslLabScreen } from './screens/PslLabScreen';
 import { TrackersScreen } from './screens/TrackersScreen';
 import { ProgressScreen } from './screens/ProgressScreen';
 import { AcademyScreen } from './screens/AcademyScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { NutritionScreen } from './screens/NutritionScreen';
+
+const PslLabScreen = lazy(() =>
+  import('./screens/PslLabScreen').then((m) => ({ default: m.PslLabScreen }))
+);
 
 type ScreenId =
   | 'home'
@@ -84,8 +87,25 @@ const AppShell: React.FC = () => {
   const [remindersOpen, setRemindersOpen] = useState(false);
   const [navDrawerOpen, setNavDrawerOpen] = useState(false);
   const [pedometerState, setPedometerState] = useState<PedometerState>(() => getPedometerState());
+  const mainRef = useRef<HTMLElement | null>(null);
   const stepsQueueRef = useRef(0);
   const flushTimerRef = useRef<number | null>(null);
+
+  const hasModalOpen = quickLogOpen || onboardingOpen || coachOpen || remindersOpen || navDrawerOpen;
+  useEffect(() => {
+    if (hasModalOpen) {
+      document.body.classList.add('ascend-scroll-lock');
+    } else {
+      document.body.classList.remove('ascend-scroll-lock');
+    }
+    return () => {
+      document.body.classList.remove('ascend-scroll-lock');
+    };
+  }, [hasModalOpen]);
+
+  useEffect(() => {
+    mainRef.current?.scrollTo({ top: 0, behavior: 'auto' });
+  }, [screen, subTab]);
 
   // PIN lock state
   const [unlocked, setUnlocked] = useState(false);
@@ -282,12 +302,16 @@ const AppShell: React.FC = () => {
     setScreen(nextScreen as ScreenId);
     setSubTab(nextSubTab);
     setNavDrawerOpen(false);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    setQuickLogOpen(false);
+    setCoachOpen(false);
+    setRemindersOpen(false);
+    document.body.classList.remove('ascend-scroll-lock');
+    mainRef.current?.scrollTo({ top: 0, behavior: 'auto' });
   };
 
   if (dbError) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-6">
+      <div className="min-h-[100dvh] flex items-center justify-center p-6">
         <div className="ascend-card max-w-sm w-full p-6 text-center space-y-3">
           <h1 className="font-display text-lg font-bold">Storage Initialization Error</h1>
           <p className="text-xs text-slate-500 dark:text-slate-400">{dbError}</p>
@@ -305,7 +329,7 @@ const AppShell: React.FC = () => {
 
   if (!dbReady) {
     return (
-      <div className="min-h-screen max-w-5xl mx-auto px-4 py-8 space-y-4">
+      <div className="min-h-[100dvh] max-w-5xl mx-auto px-4 py-8 space-y-4">
         <div className="h-10 w-44 rounded-2xl bg-slate-200 dark:bg-white/5 animate-pulse" />
         <div className="h-36 rounded-[28px] bg-slate-200 dark:bg-white/5 animate-pulse" />
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -330,7 +354,7 @@ const AppShell: React.FC = () => {
       }
     };
     return (
-      <div className="min-h-screen flex items-center justify-center p-6">
+      <div className="min-h-[100dvh] flex items-center justify-center p-6">
         <form onSubmit={checkPin} className="ascend-card max-w-xs w-full p-6 text-center space-y-4">
           <div className="w-12 h-12 rounded-2xl bg-[var(--accent-soft)] text-[var(--accent)] flex items-center justify-center mx-auto">
             <Lock className="w-5 h-5" />
@@ -360,9 +384,9 @@ const AppShell: React.FC = () => {
   const isSubScreen = ['care', 'academy', 'settings'].includes(screen);
 
   return (
-    <div className="min-h-screen flex flex-col pb-32 overflow-x-hidden">
+    <div className="h-[100dvh] min-h-[100dvh] flex flex-col">
       {/* Luxury Obsidian Top Bar: Left Circular Menu · Center Branded Title · Right Circular Alerts & Profile */}
-      <header className="sticky top-0 z-30 backdrop-blur-xl bg-[#F3F6F4]/85 dark:bg-[#040407]/80 border-b border-slate-200/70 dark:border-emerald-500/15 no-print">
+      <header className="shrink-0 z-30 backdrop-blur-xl bg-[#F3F6F4]/85 dark:bg-[#040407]/85 border-b border-slate-200/70 dark:border-emerald-500/15 no-print">
         <div className="max-w-6xl mx-auto px-3 sm:px-4 h-14 grid grid-cols-3 items-center">
           {/* Left Zone */}
           <div className="flex items-center gap-1.5 justify-start">
@@ -442,13 +466,18 @@ const AppShell: React.FC = () => {
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="flex-1 max-w-6xl w-full mx-auto px-3 sm:px-4 pt-4 min-w-0">
+      {/* Scrollable Main Content */}
+      <main
+        ref={mainRef}
+        className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain [-webkit-overflow-scrolling:touch] pb-28"
+      >
+        <div className="max-w-6xl w-full mx-auto px-3 sm:px-4 pt-4 min-w-0">
         <div key={screen} className="ascend-panel-enter">
         {screen === 'home' && (
           <ErrorBoundary screenName="Dashboard">
             <HomeScreen
               profile={profile}
+              settings={settings}
               xpState={xpState}
               tasks={tasks}
               completions={completions}
@@ -478,16 +507,27 @@ const AppShell: React.FC = () => {
           <ErrorBoundary screenName="Routine">
             <RoutineScreen
               profile={profile}
+              settings={settings}
               tasks={tasks}
               completions={completions}
+              dailyLogs={dailyLogs}
               selectedDate={selectedDate}
+              initialView={subTab}
             />
           </ErrorBoundary>
         )}
 
         {screen === 'psl' && (
           <ErrorBoundary screenName="PSL LAB">
-            <PslLabScreen scans={scans} settings={settings} onBack={() => navigate('home')} />
+            <Suspense
+              fallback={
+                <div className="ascend-card p-8 text-center text-xs text-slate-500 dark:text-slate-400">
+                  Loading Face Scanner &amp; Report module...
+                </div>
+              }
+            >
+              <PslLabScreen scans={scans} settings={settings} onBack={() => navigate('home')} />
+            </Suspense>
           </ErrorBoundary>
         )}
 
@@ -502,6 +542,7 @@ const AppShell: React.FC = () => {
               bodyMetrics={bodyMetrics}
               scans={scans}
               workouts={workouts}
+              slangTierNames={settings.slangTierNames ?? true}
               initialSubTab={subTab}
               onOpenQuickLog={(t) => {
                 setQuickLogTab(t ?? 'water');
@@ -570,6 +611,7 @@ const AppShell: React.FC = () => {
         <footer className="py-6 text-center text-[11px] text-slate-500 dark:text-slate-500">
           Self-tracking estimates, not medical advice. 100% local offline data.
         </footer>
+        </div>
       </main>
 
       {/* Floating Glassmorphism Pill Bottom Dock + Floating Quick Log Orb */}
@@ -658,7 +700,7 @@ const AppShell: React.FC = () => {
                 {[
                   { id: 'home', label: 'Dashboard', icon: <Home className="w-4 h-4" /> },
                   { id: 'nutrition', label: 'AI Nutrition & Calorie Vision', icon: <Utensils className="w-4 h-4" /> },
-                  { id: 'routine', label: 'Daily Protocol', icon: <ListChecks className="w-4 h-4" /> },
+                  { id: 'routine', label: 'Daily Stack & Mind', icon: <ListChecks className="w-4 h-4" /> },
                   { id: 'psl', label: 'PSL LAB (3-Angle)', icon: <ScanFace className="w-4 h-4" /> },
                   { id: 'progress', label: 'Insights & Reports', icon: <TrendingUp className="w-4 h-4" /> },
                   { id: 'trackers', label: 'Health & Gym', icon: <HeartPulse className="w-4 h-4" /> },

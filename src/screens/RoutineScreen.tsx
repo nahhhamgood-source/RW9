@@ -1,15 +1,29 @@
-import React, { useMemo, useState } from 'react';
-import { Check, Plus, RefreshCw, Trash2, ChevronDown, ChevronUp, Calendar } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  AlertTriangle,
+  Brain,
+  Check,
+  Plus,
+  RefreshCw,
+  Trash2,
+  ChevronDown,
+  ChevronUp,
+  Calendar,
+  Wind,
+} from 'lucide-react';
 import { CURATED_PROTOCOLS } from '../data/protocols';
 import {
   addProtocolToPlan,
   db,
+  getOrCreateDailyLog,
   regenerateProtocolFromProfile,
   toggleTaskCompletion,
 } from '../db/database';
-import { daysBetween, toLocalDateKey } from '../lib/date';
+import { addDays, daysBetween, toLocalDateKey } from '../lib/date';
 import type {
   ActiveProtocolTask,
+  AppSettings,
+  DailyLog,
   ProtocolCategory,
   TaskCompletion,
   TimeBlock,
@@ -19,19 +33,44 @@ import { useToast } from '../components/ui/ToastProvider';
 
 interface RoutineScreenProps {
   profile: UserProfile;
+  settings?: AppSettings;
   tasks: ActiveProtocolTask[];
   completions: TaskCompletion[];
+  dailyLogs?: DailyLog[];
   selectedDate: string;
+  initialView?: string;
 }
+
+const MENTALITY_CARDS = [
+  {
+    title: 'Habits over obsession',
+    body: 'Track daily actions you control, not mirror fluctuations every hour.',
+  },
+  {
+    title: 'Same setup, same time',
+    body: 'Compare check-in photos at eye level in steady daylight every two weeks.',
+  },
+  {
+    title: 'Looks are one part of life',
+    body: 'Study, real skills, physical health, and character compound together over years.',
+  },
+];
 
 export const RoutineScreen: React.FC<RoutineScreenProps> = ({
   profile,
+  settings,
   tasks,
   completions,
+  dailyLogs = [],
   selectedDate,
+  initialView,
 }) => {
   const { showToast } = useToast();
-  const [view, setView] = useState<'plan' | 'library' | 'roadmap'>('plan');
+  const [view, setView] = useState<'plan' | 'mind' | 'library' | 'roadmap'>(
+    initialView === 'mind' || initialView === 'library' || initialView === 'roadmap'
+      ? initialView
+      : 'plan'
+  );
   const [catFilter, setCatFilter] = useState<'all' | ProtocolCategory>('all');
   const [showCustomForm, setShowCustomForm] = useState(false);
   const [customTitle, setCustomTitle] = useState('');
@@ -40,6 +79,68 @@ export const RoutineScreen: React.FC<RoutineScreenProps> = ({
   const [customCategory, setCustomCategory] = useState<ProtocolCategory>('skin');
   const [customMinutes, setCustomMinutes] = useState(5);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [gratitudeDraft, setGratitudeDraft] = useState('');
+
+  useEffect(() => {
+    if (
+      initialView === 'plan' ||
+      initialView === 'mind' ||
+      initialView === 'library' ||
+      initialView === 'roadmap'
+    ) {
+      setView(initialView);
+    }
+  }, [initialView]);
+
+  const currentLog = useMemo(
+    () => dailyLogs.find((l) => l.date === selectedDate),
+    [dailyLogs, selectedDate]
+  );
+
+  useEffect(() => {
+    setGratitudeDraft(currentLog?.gratitudeLine ?? '');
+  }, [currentLog?.gratitudeLine, selectedDate]);
+
+  const weeklyMinimumStats = useMemo(() => {
+    const weekCutoff = addDays(selectedDate, -6);
+    const weekLogs = dailyLogs.filter(
+      (l) => l.date >= weekCutoff && l.date <= selectedDate
+    );
+    const daysMet = weekLogs.filter((l) => Boolean(l.minimumsDone)).length;
+    const gratitudeCount = weekLogs.filter(
+      (l) => (l.gratitudeLine ?? '').trim().length > 0
+    ).length;
+    return { daysMet, gratitudeCount };
+  }, [dailyLogs, selectedDate]);
+
+  const handleToggleMinimums = async () => {
+    const log = await getOrCreateDailyLog(selectedDate);
+    const next = !log.minimumsDone;
+    await db.dailyLogs.update(selectedDate, {
+      minimumsDone: next,
+      updatedAt: Date.now(),
+    });
+    showToast(next ? 'Daily minimums checked off' : 'Daily minimums unchecked');
+  };
+
+  const handleSaveGratitude = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await getOrCreateDailyLog(selectedDate);
+    await db.dailyLogs.update(selectedDate, {
+      gratitudeLine: gratitudeDraft.trim(),
+      updatedAt: Date.now(),
+    });
+    showToast('Gratitude line saved');
+  };
+
+  const handleSetLightChew = async (minutes: number) => {
+    const capped = Math.max(0, Math.min(15, Math.round(minutes)));
+    await getOrCreateDailyLog(selectedDate);
+    await db.dailyLogs.update(selectedDate, {
+      chewingMinutes: capped,
+      updatedAt: Date.now(),
+    });
+  };
 
   const completedIds = useMemo(
     () => new Set(completions.filter((c) => c.date === selectedDate).map((c) => c.taskId)),
@@ -144,7 +245,8 @@ export const RoutineScreen: React.FC<RoutineScreenProps> = ({
       <div className="flex gap-1.5 p-1 rounded-2xl bg-slate-200/70 dark:bg-white/5 w-fit max-w-full overflow-x-auto">
         {([
           { id: 'plan', label: 'Daily Blocks' },
-          { id: 'library', label: '30 Curated Protocols' },
+          { id: 'mind', label: 'Mind & Habits' },
+          { id: 'library', label: `Starter Library (${CURATED_PROTOCOLS.length})` },
           { id: 'roadmap', label: '12-Week Roadmap' },
         ] as const).map((t) => (
           <button
@@ -204,6 +306,7 @@ export const RoutineScreen: React.FC<RoutineScreenProps> = ({
               <option value="hair">Hair</option>
               <option value="posture">Posture</option>
               <option value="training">Training</option>
+              <option value="mind">Mind</option>
               <option value="presence">Presence</option>
             </select>
             <input
@@ -335,10 +438,140 @@ export const RoutineScreen: React.FC<RoutineScreenProps> = ({
         </div>
       )}
 
+      {view === 'mind' && (
+        <div className="space-y-4">
+          {/* 3 Short Glow-Up Mentality Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {MENTALITY_CARDS.map((card) => (
+              <div key={card.title} className="ascend-card p-4 space-y-1.5">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-[var(--accent)] flex items-center gap-1.5">
+                  <Brain className="w-3.5 h-3.5" /> Mentality
+                </p>
+                <h2 className="font-display text-sm font-bold">{card.title}</h2>
+                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                  {card.body}
+                </p>
+              </div>
+            ))}
+          </div>
+
+          {/* Daily Minimums One-Tap Check + Gratitude + Weekly Review */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="ascend-card p-4 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="font-display text-base font-bold">Did I do my minimums today?</h2>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    One tap per day feeds your honest weekly review line.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleToggleMinimums}
+                  className={`px-4 py-2 rounded-xl text-xs font-bold min-h-[40px] shrink-0 transition ${
+                    currentLog?.minimumsDone
+                      ? 'bg-[var(--accent)] text-[var(--accent-contrast)]'
+                      : 'bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10'
+                  }`}
+                >
+                  {currentLog?.minimumsDone ? '✓ Yes, done' : 'Mark today'}
+                </button>
+              </div>
+
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 text-xs">
+                <span className="font-semibold text-[var(--accent)]">Weekly review:</span>{' '}
+                {weeklyMinimumStats.daysMet}/7 days hit daily minimums this week ·{' '}
+                {weeklyMinimumStats.gratitudeCount}/7 gratitude lines logged.
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveGratitude} className="ascend-card p-4 space-y-2.5">
+              <h2 className="font-display text-base font-bold">Gratitude line (1 sentence)</h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Write one grounded thing you appreciated today.
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  maxLength={140}
+                  value={gratitudeDraft}
+                  onChange={(e) => setGratitudeDraft(e.target.value)}
+                  placeholder="One steady moment, skill win, or person today..."
+                  className="flex-1 px-3 py-2 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs min-h-[40px]"
+                />
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-bold min-h-[40px] shrink-0"
+                >
+                  Save
+                </button>
+              </div>
+            </form>
+          </div>
+
+          {/* Light Tongue Posture + Light Chew (15m Hard Cap) */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="ascend-card p-4 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="font-display text-sm font-bold flex items-center gap-1.5">
+                  <Wind className="w-4 h-4 text-[var(--accent)]" /> Tongue posture check
+                </h2>
+                <span className="px-2 py-0.5 rounded-md bg-slate-100 dark:bg-white/10 text-[10px] font-semibold text-amber-500">
+                  Not proven · harmless if gentle
+                </span>
+              </div>
+              <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                Lips closed, tongue resting lightly on the palate, teeth lightly apart, no clenching,
+                nasal breathing. No force, no pressure on the teeth.
+              </p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                Not proven to remodel adult bone. Optional reminder times:{' '}
+                <span className="font-mono-num">
+                  {(settings?.tongueReminderTimes ?? ['10:00', '14:30', '19:00'])
+                    .filter(Boolean)
+                    .join(' · ') || 'Off (set in Settings)'}
+                </span>
+              </p>
+            </div>
+
+            <div className="ascend-card p-4 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="font-display text-sm font-bold">Light chew (optional)</h2>
+                <span className="px-2 py-0.5 rounded-md bg-slate-100 dark:bg-white/10 text-[10px] font-semibold text-amber-500">
+                  Not proven · Max 15 min/day
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <input
+                  type="range"
+                  min={0}
+                  max={15}
+                  step={1}
+                  disabled={Boolean(currentLog?.jawDiscomfort)}
+                  value={Math.min(15, currentLog?.chewingMinutes ?? 0)}
+                  onChange={(e) => handleSetLightChew(Number(e.target.value))}
+                  aria-label="Light chew minutes capped at 15"
+                  className="flex-1 accent-[var(--accent)] cursor-pointer h-2 rounded-lg"
+                />
+                <span className="font-mono-num text-sm font-bold text-[var(--accent)] w-12 text-right">
+                  {Math.min(15, currentLog?.chewingMinutes ?? 0)}m
+                </span>
+              </div>
+              <p className="text-[11px] text-amber-600 dark:text-amber-300 flex items-start gap-1.5">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <span>
+                  Hard daily cap of 15 minutes. Stop immediately if you feel any jaw pain, aching, or clicking.
+                </span>
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {view === 'library' && (
         <div className="space-y-4">
           <div className="flex gap-1.5 overflow-x-auto pb-1">
-            {(['all', 'sleep', 'hydration', 'skin', 'hair', 'posture', 'training', 'presence'] as const).map((cat) => (
+            {(['all', 'skin', 'mind', 'posture', 'training', 'hydration', 'sleep', 'hair', 'presence'] as const).map((cat) => (
               <button
                 key={cat}
                 type="button"

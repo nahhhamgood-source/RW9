@@ -100,6 +100,39 @@ export function getInAppDueReminders(settings: AppSettings, lastScanDate: string
     due.push({ id: 'sleep', title: 'Sleep Wind-Down', body: 'Dim lights and prepare for your fixed sleep anchor.', time: settings.reminders.sleep });
   }
 
+  if (settings.prayerTrackingEnabled && settings.prayerTimes) {
+    const labels = [
+      { key: 'fajr' as const, title: 'Fajr Prayer Check-In' },
+      { key: 'dhuhr' as const, title: 'Dhuhr Prayer Check-In' },
+      { key: 'asr' as const, title: 'Asr Prayer Check-In' },
+      { key: 'maghrib' as const, title: 'Maghrib Prayer Check-In' },
+      { key: 'isha' as const, title: 'Isha Prayer Check-In' },
+    ];
+    for (const p of labels) {
+      const t = settings.prayerTimes[p.key];
+      if (t && hhmm >= t) {
+        due.push({
+          id: `prayer-${p.key}`,
+          title: p.title,
+          body: 'Optional quiet moment — tap on Dashboard if completed.',
+          time: t,
+        });
+      }
+    }
+  }
+
+  const tongueTimes = (settings.tongueReminderTimes ?? []).filter(Boolean);
+  tongueTimes.forEach((t, idx) => {
+    if (hhmm >= t) {
+      due.push({
+        id: `tongue-${idx}`,
+        title: 'Gentle Tongue Posture Check',
+        body: 'Lips closed, tongue lightly on palate, teeth apart, zero clenching.',
+        time: t,
+      });
+    }
+  });
+
   if (lastScanDate) {
     const diffMs = new Date(todayKey).getTime() - new Date(lastScanDate).getTime();
     const diffDays = Math.round(diffMs / 86400000);

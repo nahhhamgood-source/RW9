@@ -1,5 +1,6 @@
 import { HAIRCUT_BY_FACE_SHAPE } from '../data/care';
 import { addDays, toLocalDateKey } from './date';
+import { getPslTierMeta, PSL_HONEST_DISCLAIMER } from './faceMetricsConstants';
 import type {
   ActiveProtocolTask,
   DailyLog,
@@ -137,13 +138,14 @@ export function answerCoachQuery(query: string, ctx: CoachContext): CoachRespons
     }
 
     const topFocus = latestScan.focusAreas[0];
+    const tier = getPslTierMeta(latestScan.pslEstimate, true);
     return {
-      title: `Scan Summary (${latestScan.pslEstimate}/8 · ${latestScan.tier})`,
+      title: `Scan Summary (${latestScan.pslEstimate}/8 · ${tier.bracketLabel})`,
       bullets: [
         `Strongest areas: ${latestScan.strengths.map((s) => s.area).join(', ')}.`,
         `Top focus area: ${topFocus?.area ?? 'General consistency'} — ${topFocus?.actions[0]?.label ?? 'stay consistent'}.`,
         `Lighting quality scored ${latestScan.lightingScore}/100 (${latestScan.faceShape} face shape detected).`,
-        'Remember: PSL is a rough photo estimate, not science and not your worth.',
+        PSL_HONEST_DISCLAIMER,
       ],
       moreDetail: `Sub-scores — Symmetry: ${latestScan.subScores.symmetry}, Proportions: ${latestScan.subScores.proportions}, Jaw/Neck: ${latestScan.subScores.jawNeck}, Eye Area: ${latestScan.subScores.eyeArea}, Skin: ${latestScan.subScores.skin}, Leanness: ${latestScan.subScores.leanness}.`,
       suggestedActions: topFocus?.actions

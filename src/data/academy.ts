@@ -21,7 +21,7 @@ export interface GlossaryTerm {
 export interface MythClaim {
   id: string;
   claim: string;
-  verdict: 'True' | 'Partly true' | 'False';
+  verdict: 'True' | 'Partly true' | 'False' | 'False and risky';
   evidence: EvidenceTag;
   explanation: string;
 }
@@ -31,7 +31,10 @@ export interface MedicalTopicCard {
   name: string;
   whatItIs: string;
   evidence: EvidenceTag;
+  evidenceDetail?: string;
   risks: string;
+  legal?: string;
+  naturalSupport?: string;
   guidance: string;
 }
 
@@ -473,10 +476,37 @@ export const GLOSSARY_TERMS: GlossaryTerm[] = [
     meaning: 'Distance between the centers of left and right pupils, used to scale facial ratios.',
     honestTake: 'A reliable internal ruler on front photos so measurements stay independent of pixel resolution.',
   },
+  {
+    term: 'Maxilla',
+    meaning: 'The paired upper jawbone forming the midface, under-eye floor, and upper dental arch.',
+    honestTake: 'Determines skeletal midface projection. Adult maxilla bone does not move from exercises or chewing devices; real skeletal shifts require orthodontics or surgery.',
+  },
+  {
+    term: 'Facial Sexual Dimorphism',
+    meaning: 'Statistical differences in jaw width, brow prominence, and facial ratios between average male and female anatomy.',
+    honestTake: 'Purely descriptive anatomy with wide natural overlap across individuals—never a ranking of attractiveness.',
+  },
+  {
+    term: 'Facial Symmetry',
+    meaning: 'How closely the left and right halves of the face mirror each other across the central vertical axis.',
+    honestTake: 'Every human face has natural asymmetry. Camera roll, focal length, and side lighting often exaggerate minor differences on phone photos.',
+  },
+  {
+    term: 'Internet Tier Labels (Chad, Chadlite, HTN, LTN, Normie)',
+    meaning: 'Online looksmaxing slang used in forums for rough subjective appearance tiers.',
+    honestTake: 'Forum shorthand for rough opinions, not medical or scientific categories. ASCEND uses neutral measurement tiers (Developing, Mid, High, Top, Elite) and never applies degrading labels.',
+  },
 ];
 
 export const MYTHS_WALL: MythClaim[] = [
-  { id: 'm1', claim: 'Bonesmashing (hitting cheekbones/jaw) builds stronger facial bone.', verdict: 'False', evidence: 'Not proven', explanation: 'Micro-fractures and blunt trauma cause bruising, nerve damage, swelling, and asymmetry—not aesthetic bone sculpting.' },
+  {
+    id: 'm1',
+    claim: 'Bonesmashing (hitting cheekbones/jaw) builds stronger facial bone.',
+    verdict: 'False and risky',
+    evidence: 'Not proven',
+    explanation:
+      'Hitting the face can fracture bone and damage nerves, teeth, and eyes, and there is no evidence that it improves structure. Do this instead: focus on leanness, skin clarity, grooming, upright posture, and safe neck/trap training.',
+  },
   { id: 'm2', claim: 'Mewing reshapes adult skull and maxilla bones in months.', verdict: 'False', evidence: 'Not proven', explanation: 'Adult cranial sutures are fused. Tongue posture only supports comfortable nasal breathing and momentary submental lift.' },
   { id: 'm3', claim: 'Hard silicone jaw exercisers give everyone a sculpted model jaw.', verdict: 'False', evidence: 'Not proven', explanation: 'Overworking masseters risks TMJ joint pain, headaches, and bloated lower-cheek width without sharpening bone.' },
   { id: 'm4', claim: 'Chewing gum burns cheek fat locally.', verdict: 'False', evidence: 'Not proven', explanation: 'Spot reduction of fat is physiologically impossible; fat drops systemically from calorie balance.' },
@@ -575,6 +605,27 @@ export const MEDICAL_INFO_CARDS: MedicalTopicCard[] = [
     whatItIs: 'Permanent structural procedures (e.g., rhinoplasty, genioplasty, orthognathic jaw surgery) for functional or aesthetic correction.',
     evidence: 'Proven',
     risks: 'Anesthesia complications, nerve numbness, scarring, infection, dissatisfaction, and long recovery.',
-    guidance: 'Always consult board-certified surgeons and get second opinions; never rush permanent surgery.',
+    guidance: 'Talk to a board-certified surgeon and get second opinions; never rush permanent surgery.',
+  },
+  {
+    id: 'med-hgh',
+    name: 'Growth hormone (HGH)',
+    whatItIs: 'A hormone prescribed by doctors for diagnosed deficiency.',
+    evidence: 'Not proven',
+    evidenceDetail: 'No proven benefit for looks in healthy people; effects on jaw/face in adults are not supported.',
+    risks: 'Joint and nerve pain, insulin resistance, swelling, abnormal tissue growth, and fake products are common.',
+    legal: 'Prescription only in most countries.',
+    naturalSupport: 'Deep sleep and resistance training (small, short-term effects).',
+    guidance: 'If you are still growing or worried about height, talk to a doctor.',
+  },
+  {
+    id: 'med-hormones-sarms',
+    name: 'Testosterone / Steroids / SARMs',
+    whatItIs: 'Prescription androgen hormones or unapproved research compounds (not taught here).',
+    evidence: 'Not proven',
+    evidenceDetail: 'Dosing, protocols, and sourcing are not taught here; cosmetic facial use is unsupported and high-risk.',
+    risks: 'Hormone shutdown, fertility loss, heart and liver strain, mood shifts, acne flares, accelerated hair shedding, and contaminated products.',
+    legal: 'Controlled prescription or unapproved substances in most countries.',
+    guidance: 'Never self-experiment; if you suspect low hormones, talk to a doctor or endocrinologist for proper blood work.',
   },
 ];

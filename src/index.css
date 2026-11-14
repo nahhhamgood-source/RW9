@@ -74,11 +74,13 @@
 
   html, body {
     font-family: 'Manrope', system-ui, -apple-system, sans-serif;
-    overflow-x: hidden;
-    max-width: 100vw;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    overscroll-behavior-y: contain;
+    min-height: 100dvh;
+  }
+
+  body.ascend-scroll-lock {
+    overflow: hidden !important;
   }
 
   button, a, label, [role="button"] {

@@ -151,27 +151,27 @@ export const InteractiveDailyCheckin: React.FC<InteractiveDailyCheckinProps> = (
           </p>
         </div>
 
-        {/* Balanced Whole-Food Chewing Awareness */}
+        {/* Light Chew (Hard 15-min daily cap) */}
         <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 space-y-2.5">
           <div className="flex items-center justify-between gap-2">
-            <span className="text-xs font-semibold">Balanced Meal Chewing</span>
+            <span className="text-xs font-semibold">Light Chew · Max 15m (Not proven)</span>
             <span className="font-mono-num text-sm font-bold text-[var(--accent)]">
-              {chewingMinutes}m
+              {Math.min(15, chewingMinutes)}m
             </span>
           </div>
           <input
             type="range"
             min={0}
-            max={45}
-            step={5}
+            max={15}
+            step={1}
             disabled={jawDiscomfort}
-            value={chewingMinutes}
-            aria-label="Balanced chewing duration minutes"
-            onChange={(e) => updateLogField({ chewingMinutes: Number(e.target.value) })}
+            value={Math.min(15, chewingMinutes)}
+            aria-label="Light chew duration minutes capped at 15"
+            onChange={(e) => updateLogField({ chewingMinutes: Math.min(15, Number(e.target.value)) })}
             className="w-full accent-[var(--accent)] cursor-pointer h-2 rounded-lg disabled:opacity-40"
           />
           <p className="text-[11px] text-slate-500 dark:text-slate-400">
-            Even left/right whole-food chewing · Avoid hard silicone blocks or strain
+            Hard daily cap 15 min · Stop immediately if your jaw hurts, aches, or clicks.
           </p>
         </div>
 

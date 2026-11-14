@@ -1,5 +1,9 @@
 export type EvidenceTag = 'Proven' | 'Likely works' | 'Not proven';
 
+export type FocusAreaId = 'face' | 'body' | 'mind';
+export type MindSubGoalId = 'study' | 'programming' | 'calm';
+export type PrayerKey = 'fajr' | 'dhuhr' | 'asr' | 'maghrib' | 'isha';
+
 export type ProtocolCategory =
   | 'sleep'
   | 'hydration'
@@ -7,7 +11,8 @@ export type ProtocolCategory =
   | 'hair'
   | 'posture'
   | 'training'
-  | 'presence';
+  | 'presence'
+  | 'mind';
 
 export type TimeBlock = 'morning' | 'afternoon' | 'evening';
 
@@ -44,6 +49,8 @@ export interface UserProfile {
   targetSleepHours: number;
   sunExposure: 'low' | 'moderate' | 'high';
   goals: string[];
+  focusAreas?: FocusAreaId[];
+  mindSubGoals?: MindSubGoalId[];
   dailyTimeBudgetMin: 15 | 30 | 60 | 90;
   activityLevel: 'sedentary' | 'light' | 'moderate' | 'active';
   calorieGoal: number;
@@ -64,6 +71,11 @@ export interface AppSettings {
   units: UnitSystem;
   saveThumbnails: boolean;
   autoPedometer?: boolean;
+  slangTierNames?: boolean;
+  prayerTrackingEnabled?: boolean;
+  dhikrTaskEnabled?: boolean;
+  prayerTimes?: Record<PrayerKey, string>;
+  tongueReminderTimes?: string[];
   pinHash: string | null;
   reminders: {
     enabled: boolean;
@@ -139,6 +151,9 @@ export interface DailyLog {
   postureScore?: number;
   morningPuffiness?: 'none' | 'mild' | 'noticeable' | null;
   jawDiscomfort?: boolean;
+  prayersCompleted?: Partial<Record<PrayerKey, boolean>>;
+  minimumsDone?: boolean;
+  gratitudeLine?: string;
   notes: string;
   updatedAt: number;
 }
@@ -230,13 +245,38 @@ export interface WorkoutSession {
   createdAt: number;
 }
 
+export type QualityLevel = 'PASS' | 'WARN' | 'BLOCK';
+
+export type WarnDomain = 'pose' | 'yaw' | 'lighting' | 'blur' | 'mouth' | 'occlusion';
+
+export interface SavedAngleSnapshot {
+  landmarks: Array<{ x: number; y: number; z: number }>;
+  brightness: number;
+  sideLightDiff: number;
+  sharpness: number;
+  faceWidthFrac: number;
+  faceScale: number;
+  rollDeg: number;
+  yawDeg: number;
+  pitchDeg: number;
+  qualityLevel: QualityLevel;
+  warnDomains: WarnDomain[];
+  skinStats?: { evennessScore: number; rednessIndex: number; underEyeContrast: number };
+}
+
 export interface ScanMeasurement {
   key: string;
   label: string;
-  value: number;
+  value: number | null;
+  displayValue?: string;
   unit: string;
   typicalRange: string;
   status: 'balanced' | 'watch' | 'focus';
+  measurementStatus?: 'in range' | 'below' | 'above' | 'not measurable';
+  confidence?: 'high' | 'medium' | 'low';
+  explanation?: string;
+  notMeasurableReason?: string;
+  angleSource?: 'front' | 'sides_45' | 'profile_90' | 'combined';
   approximate?: boolean;
 }
 
@@ -253,26 +293,56 @@ export interface ScanFocusArea {
   medicalNote: string;
 }
 
+export interface ExtendedReportPillar {
+  key: string;
+  title: string;
+  score: number | null;
+  displayScore: string;
+  descriptor: string;
+  confidence: 'high' | 'medium' | 'low';
+  approximate?: boolean;
+  evidence: EvidenceTag;
+  why: string;
+  angleNote?: string;
+  notMeasurableReason?: string;
+}
+
+export interface LandmarksOverlayGuides {
+  faceTopY: number;
+  upperThirdY: number;
+  midThirdY: number;
+  lowerThirdY: number;
+  midlineX: number;
+  leftFaceX?: number;
+  rightFaceX?: number;
+  upperPct: number;
+  midPct: number;
+  lowerPct: number;
+  customHairlineY?: number;
+  hairlineAdjustedByUser?: boolean;
+}
+
 export interface FaceScanResult {
   id?: number;
   date: string;
   timestamp: number;
-  anglesCaptured: ('front' | 'left' | 'right' | 'smile')[];
+  anglesCaptured: ('front' | 'left' | 'right' | 'profile90' | 'smile')[];
   qualityScore: number;
   lightingScore: number;
   pslEstimate: number;
   tier:
-    | 'Very Low'
-    | 'LTN'
-    | 'True Normie'
-    | 'HTN'
-    | 'Chadlite'
-    | 'Chad / Elite'
     | 'Developing'
     | 'Mid'
     | 'High'
     | 'Top'
-    | 'Elite';
+    | 'Elite'
+    | 'LTN'
+    | 'True Normie'
+    | 'HTN'
+    | 'Chadlite'
+    | 'Chad'
+    | 'Chad / Elite';
+  plainLabel?: string;
   faceShape: FaceShape;
   subScores: {
     symmetry: number;
@@ -283,15 +353,24 @@ export interface FaceScanResult {
     cheekbones?: number;
     skin: number;
     leanness: number;
+    harmony?: number;
   };
   measurements: ScanMeasurement[];
   asymmetries: Array<{ label: string; diffPct: number }>;
   strengths: Array<{ area: string; detail: string }>;
   focusAreas: ScanFocusArea[];
   oneLineFixes?: Array<{ area: string; fix: string; protocolId?: string }>;
+  extendedPillars?: ExtendedReportPillar[];
+  featureChips?: string[];
+  verdictText?: string;
+  landmarksOverlay?: LandmarksOverlayGuides;
+  savedFrontSnapshot?: SavedAngleSnapshot;
+  savedLeftSnapshot?: SavedAngleSnapshot;
+  savedRightSnapshot?: SavedAngleSnapshot;
   frontThumbnail?: string;
   leftThumbnail?: string;
   rightThumbnail?: string;
+  profile90Thumbnail?: string;
 }
 
 export interface UnlockedBadge {

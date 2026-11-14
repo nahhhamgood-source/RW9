@@ -2,7 +2,14 @@ import React, { useState } from 'react';
 import { X, ArrowRight, Check } from 'lucide-react';
 import { db, regenerateProtocolFromProfile } from '../../db/database';
 import { calculateMifflinStJeor } from '../../lib/fitness';
-import type { GymLevel, HairType, SkinType, UserProfile } from '../../types';
+import type {
+  FocusAreaId,
+  GymLevel,
+  HairType,
+  MindSubGoalId,
+  SkinType,
+  UserProfile,
+} from '../../types';
 import { useToast } from '../ui/ToastProvider';
 
 interface OnboardingModalProps {
@@ -12,6 +19,16 @@ interface OnboardingModalProps {
 
 const SKIN_CONCERNS = ['acne', 'oiliness', 'dryness', 'redness', 'dark_spots', 'texture'];
 const HAIR_CONCERNS = ['thinning', 'dandruff', 'frizz', 'flatness', 'dryness'];
+const FOCUS_OPTIONS: Array<{ id: FocusAreaId; label: string }> = [
+  { id: 'face', label: 'Face' },
+  { id: 'body', label: 'Body' },
+  { id: 'mind', label: 'Mind' },
+];
+const MIND_SUBGOALS: Array<{ id: MindSubGoalId; label: string }> = [
+  { id: 'study', label: 'Study' },
+  { id: 'programming', label: 'Learn programming' },
+  { id: 'calm', label: 'Calm/focus' },
+];
 const GOAL_OPTIONS = [
   { id: 'skin', label: 'Clearer Skin' },
   { id: 'body_fat', label: 'Lower Body Fat / Definition' },
@@ -24,7 +41,32 @@ const GOAL_OPTIONS = [
 export const OnboardingModal: React.FC<OnboardingModalProps> = ({ profile, onClose }) => {
   const { showToast } = useToast();
   const [step, setStep] = useState(0);
-  const [form, setForm] = useState<UserProfile>({ ...profile });
+  const [form, setForm] = useState<UserProfile>({
+    ...profile,
+    focusAreas: profile.focusAreas?.length ? profile.focusAreas : ['face', 'body'],
+    mindSubGoals: profile.mindSubGoals ?? [],
+  });
+
+  const toggleFocus = (id: FocusAreaId) => {
+    setForm((prev) => {
+      const current = prev.focusAreas ?? ['face', 'body'];
+      const exists = current.includes(id);
+      if (exists && current.length <= 1) return prev;
+      const next = exists ? current.filter((x) => x !== id) : [...current, id];
+      return { ...prev, focusAreas: next };
+    });
+  };
+
+  const toggleMindSub = (id: MindSubGoalId) => {
+    setForm((prev) => {
+      const current = prev.mindSubGoals ?? [];
+      const next = current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
+      const nextFocus = (prev.focusAreas ?? []).includes('mind')
+        ? prev.focusAreas
+        : [...(prev.focusAreas ?? ['face', 'body']), 'mind' as FocusAreaId];
+      return { ...prev, focusAreas: nextFocus, mindSubGoals: next };
+    });
+  };
 
   const toggleArr = (field: 'skinConcerns' | 'hairConcerns' | 'goals', val: string) => {
     setForm((prev) => {
@@ -355,6 +397,58 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ profile, onClo
                   <option value="high">High Outdoors</option>
                 </select>
               </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5">
+                My focus (builds Today&apos;s Stack, max 8–10 tiny tasks)
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                {FOCUS_OPTIONS.map((f) => {
+                  const active = (form.focusAreas ?? []).includes(f.id);
+                  return (
+                    <button
+                      key={f.id}
+                      type="button"
+                      onClick={() => toggleFocus(f.id)}
+                      className={`py-2.5 rounded-xl text-xs font-bold min-h-[40px] ${
+                        active
+                          ? 'bg-[var(--accent)] text-[var(--accent-contrast)]'
+                          : 'bg-slate-100 dark:bg-white/5'
+                      }`}
+                    >
+                      {f.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {(form.focusAreas ?? []).includes('mind') && (
+                <div className="mt-2.5">
+                  <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
+                    Mind sub-goals
+                  </label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {MIND_SUBGOALS.map((sg) => {
+                      const active = (form.mindSubGoals ?? []).includes(sg.id);
+                      return (
+                        <button
+                          key={sg.id}
+                          type="button"
+                          onClick={() => toggleMindSub(sg.id)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-semibold min-h-[36px] ${
+                            active
+                              ? 'bg-[var(--accent-soft)] text-[var(--accent)] ring-1 ring-[var(--accent)]'
+                              : 'bg-slate-100 dark:bg-white/5'
+                          }`}
+                        >
+                          {sg.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
 
             <div>
