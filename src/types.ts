@@ -248,7 +248,15 @@ export interface WorkoutSession {
 
 export type QualityLevel = 'PASS' | 'WARN' | 'BLOCK';
 
-export type WarnDomain = 'pose' | 'yaw' | 'lighting' | 'blur' | 'mouth' | 'occlusion';
+export type WarnDomain =
+  | 'pose'
+  | 'yaw'
+  | 'lighting'
+  | 'blur'
+  | 'mouth'
+  | 'eyes'
+  | 'expression'
+  | 'occlusion';
 
 export interface SavedAngleSnapshot {
   landmarks: Array<{ x: number; y: number; z: number }>;
@@ -262,6 +270,8 @@ export interface SavedAngleSnapshot {
   pitchDeg: number;
   qualityLevel: QualityLevel;
   warnDomains: WarnDomain[];
+  expressionScore?: number;
+  expressionCue?: string | null;
   skinStats?: { evennessScore: number; rednessIndex: number; underEyeContrast: number };
 }
 
@@ -330,6 +340,11 @@ export interface FaceScanResult {
   anglesCaptured: ('front' | 'left' | 'right' | 'profile90' | 'smile')[];
   qualityScore: number;
   lightingScore: number;
+  scanConfidence?: number;
+  expressionScore?: number;
+  isImplausible?: boolean;
+  plausibilityWarning?: string;
+  implausibleMetrics?: string[];
   pslEstimate: number;
   tier:
     | 'Developing'

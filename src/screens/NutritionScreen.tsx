@@ -223,7 +223,7 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
     setAnalyzing(true);
 
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 25000);
+    const timeoutId = window.setTimeout(() => controller.abort(), 45000);
 
     try {
       const { apiBase64, mimeType, previewDataUrl, thumbnailDataUrl } =
@@ -233,6 +233,7 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
       const res = await fetch('/api/analyze-food', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
         body: JSON.stringify({
           imageBase64: apiBase64,
           mimeType,
@@ -243,32 +244,44 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
 
       const contentType = res.headers.get('content-type') || '';
       if (!contentType.toLowerCase().includes('application/json')) {
-        setScanError('Food scan is unavailable right now. Please retry or use Manual Quick-Add.');
+        const rawPreview = (await res.text().catch(() => '')).trim().slice(0, 120);
+        if (contentType.toLowerCase().includes('text/html')) {
+          setScanError(
+            `Food scan endpoint returned HTML instead of API JSON (HTTP ${res.status}). Redeploy or hard-refresh once if an older build/service worker is cached.`
+          );
+        } else {
+          setScanError(
+            `Server returned HTTP ${res.status} (${contentType || 'non-JSON'})${rawPreview ? `: ${rawPreview}` : ''}`
+          );
+        }
         return;
       }
 
-      let body: { ok?: boolean; data?: Record<string, unknown>; error?: string; code?: string } | null =
-        null;
+      let body: {
+        ok?: boolean;
+        data?: Record<string, unknown>;
+        error?: string;
+        detail?: string;
+        code?: string;
+      } | null = null;
       try {
         body = (await res.json()) as {
           ok?: boolean;
           data?: Record<string, unknown>;
           error?: string;
+          detail?: string;
           code?: string;
         };
-      } catch {
-        setScanError('Food scan is unavailable right now. Please retry or use Manual Quick-Add.');
+      } catch (parseErr) {
+        const msg = parseErr instanceof Error ? parseErr.message : 'Invalid JSON';
+        setScanError(`Failed to parse server response (HTTP ${res.status}): ${msg}`);
         return;
       }
 
       if (!res.ok || !body?.ok || !body?.data) {
-        if (body?.code === 'MISSING_API_KEY' || res.status === 503) {
-          setScanError(
-            'Food scan is unavailable right now — the vision service key (GEMINI_API_KEY) is not configured on the server. Manual Quick-Add works offline below.'
-          );
-        } else {
-          setScanError(body?.error || 'Food scan is unavailable right now.');
-        }
+        const errTitle = body?.error || `Food scan failed (HTTP ${res.status}).`;
+        const errDetail = body?.detail && body.detail !== errTitle ? ` — ${body.detail}` : '';
+        setScanError(`${errTitle}${errDetail}`);
         return;
       }
 
@@ -309,9 +322,10 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
       showToast('AI estimate ready — review & edit before saving', 'info');
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
-        setScanError('Food scan timed out after 25s. Please retry or use Manual Quick-Add.');
+        setScanError('Food scan request timed out after 45s. Please retry or use Manual Quick-Add.');
       } else {
-        setScanError('Food scan is unavailable right now. Please retry or use Manual Quick-Add.');
+        const msg = err instanceof Error ? err.message : 'Network error';
+        setScanError(`Food scan request failed: ${msg}`);
       }
     } finally {
       window.clearTimeout(timeoutId);

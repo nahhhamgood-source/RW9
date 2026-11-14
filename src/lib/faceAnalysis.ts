@@ -75,7 +75,7 @@ export async function initFaceLandmarker(forceRetry = false): Promise<FaceLandma
         minFaceDetectionConfidence: 0.35,
         minFacePresenceConfidence: 0.35,
         minTrackingConfidence: 0.35,
-        outputFaceBlendshapes: false,
+        outputFaceBlendshapes: true,
         outputFacialTransformationMatrixes: true,
       });
     };
@@ -137,12 +137,27 @@ function getDownscaledCanvas(source: HTMLCanvasElement | HTMLVideoElement, maxWi
   return downscaleCanvas;
 }
 
-/** Downscaled live-preview landmark + transformation matrix detection (480px max width) */
+function extractBlendshapeMap(
+  categories?: Array<{ categoryName: string; score: number }> | null
+): Record<string, number> | null {
+  if (!categories || categories.length === 0) return null;
+  const map: Record<string, number> = {};
+  for (let i = 0; i < categories.length; i++) {
+    const c = categories[i];
+    if (c && c.categoryName) {
+      map[c.categoryName] = Number.isFinite(c.score) ? c.score : 0;
+    }
+  }
+  return map;
+}
+
+/** Downscaled live-preview landmark + transformation matrix + blendshapes detection (480px max width) */
 export function detectLandmarksFromVideo(
   video: HTMLVideoElement
 ): {
   landmarks: NormalizedLandmark[] | null;
   matrixData: number[] | null;
+  blendshapes: Record<string, number> | null;
   sampleCanvas: HTMLCanvasElement;
 } | null {
   if (engineState.status !== 'ready' || !engineState.landmarker) return null;
@@ -152,9 +167,11 @@ export function detectLandmarksFromVideo(
     const sampleCanvas = getDownscaledCanvas(video, 480);
     const result = engineState.landmarker.detect(sampleCanvas);
     const rawMatrix = result?.facialTransformationMatrixes?.[0]?.data;
+    const blendshapes = extractBlendshapeMap(result?.faceBlendshapes?.[0]?.categories);
     return {
       landmarks: result?.faceLandmarks?.[0] ?? null,
       matrixData: rawMatrix ? Array.from(rawMatrix) : null,
+      blendshapes,
       sampleCanvas,
     };
   } catch {
@@ -162,31 +179,39 @@ export function detectLandmarksFromVideo(
   }
 }
 
-/** Run landmark + transformation matrix detection on a captured still canvas with a strict 5s timeout */
+/** Run landmark + transformation matrix + blendshapes detection on a captured still canvas with a strict 5s timeout */
 export async function detectLandmarksOnStill(
   canvas: HTMLCanvasElement,
   timeoutMs = 5000
-): Promise<{ landmarks: NormalizedLandmark[] | null; matrixData: number[] | null }> {
+): Promise<{
+  landmarks: NormalizedLandmark[] | null;
+  matrixData: number[] | null;
+  blendshapes: Record<string, number> | null;
+}> {
   const lm = await initFaceLandmarker();
   if (canvas.width <= 0 || canvas.height <= 0) {
-    return { landmarks: null, matrixData: null };
+    return { landmarks: null, matrixData: null, blendshapes: null };
   }
 
-  const detectTask = new Promise<{ landmarks: NormalizedLandmark[] | null; matrixData: number[] | null }>(
-    (resolve, reject) => {
-      try {
-        const target = canvas.width > 960 ? getDownscaledCanvas(canvas, 960) : canvas;
-        const result = lm.detect(target);
-        const rawMatrix = result?.facialTransformationMatrixes?.[0]?.data;
-        resolve({
-          landmarks: result?.faceLandmarks?.[0] ?? null,
-          matrixData: rawMatrix ? Array.from(rawMatrix) : null,
-        });
-      } catch (err) {
-        reject(err instanceof Error ? err : new Error('Still landmark detection failed.'));
-      }
+  const detectTask = new Promise<{
+    landmarks: NormalizedLandmark[] | null;
+    matrixData: number[] | null;
+    blendshapes: Record<string, number> | null;
+  }>((resolve, reject) => {
+    try {
+      const target = canvas.width > 960 ? getDownscaledCanvas(canvas, 960) : canvas;
+      const result = lm.detect(target);
+      const rawMatrix = result?.facialTransformationMatrixes?.[0]?.data;
+      const blendshapes = extractBlendshapeMap(result?.faceBlendshapes?.[0]?.categories);
+      resolve({
+        landmarks: result?.faceLandmarks?.[0] ?? null,
+        matrixData: rawMatrix ? Array.from(rawMatrix) : null,
+        blendshapes,
+      });
+    } catch (err) {
+      reject(err instanceof Error ? err : new Error('Still landmark detection failed.'));
     }
-  );
+  });
 
   const timeoutTask = new Promise<never>((_, reject) =>
     setTimeout(() => reject(new Error('Face detection timed out after 5 seconds. Tap Retry.')), timeoutMs)
@@ -199,8 +224,8 @@ export async function analyzeFrameWithLandmarker(
   canvas: HTMLCanvasElement,
   expectedAngle: ScanAngleStep
 ): Promise<QualityCheckResult> {
-  const { landmarks, matrixData } = await detectLandmarksOnStill(canvas, 5000);
-  return evaluateLandmarksQuality(canvas, landmarks, expectedAngle, matrixData);
+  const { landmarks, matrixData, blendshapes } = await detectLandmarksOnStill(canvas, 5000);
+  return evaluateLandmarksQuality(canvas, landmarks, expectedAngle, matrixData, blendshapes);
 }
 
 /**
@@ -236,7 +261,11 @@ export async function captureBurstAndEvaluate(
     throw new Error('Camera frame unavailable. Hold steady and try again.');
   }
 
-  const detections: Array<{ landmarks: NormalizedLandmark[] | null; matrixData: number[] | null }> = [];
+  const detections: Array<{
+    landmarks: NormalizedLandmark[] | null;
+    matrixData: number[] | null;
+    blendshapes: Record<string, number> | null;
+  }> = [];
   for (const frame of frames) {
     const det = await detectLandmarksOnStill(frame, 4000);
     if (det.landmarks && det.landmarks.length >= 468) {
@@ -250,12 +279,13 @@ export async function captureBurstAndEvaluate(
     .filter((l): l is NormalizedLandmark[] => Boolean(l));
 
   const medianLandmarks = computeMedianLandmarks(validLandmarkSets);
-  const middleMatrix = detections[Math.floor(detections.length / 2)]?.matrixData ?? null;
+  const middleDet = detections[Math.floor(detections.length / 2)];
   const quality = evaluateLandmarksQuality(
     representativeCanvas,
     medianLandmarks,
     expectedAngle,
-    middleMatrix
+    middleDet?.matrixData ?? null,
+    middleDet?.blendshapes ?? null
   );
 
   return { representativeCanvas, quality };

@@ -1,5 +1,12 @@
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+
+// Change this model ID (or set GEMINI_FOOD_MODEL in Vercel Environment Variables) to switch models.
+export const GEMINI_FOOD_MODEL = process.env.GEMINI_FOOD_MODEL?.trim() || 'gemini-3.1-flash-lite';
+
+export const config = {
+  maxDuration: 60,
+};
 
 interface VercelRequest extends IncomingMessage {
   body?: unknown;
@@ -108,40 +115,155 @@ async function readJsonBody(req: VercelRequest): Promise<AnalyzeFoodBody> {
   return JSON.parse(raw) as AnalyzeFoodBody;
 }
 
+function extractUpstreamError(err: unknown, apiKey?: string): {
+  status: number;
+  error: string;
+  detail: string;
+} {
+  const errObj = (err && typeof err === 'object' ? err : {}) as {
+    status?: unknown;
+    statusCode?: unknown;
+    code?: unknown;
+    message?: unknown;
+    name?: unknown;
+  };
+
+  let rawDetail =
+    err instanceof Error ? err.message : typeof errObj.message === 'string' ? errObj.message : String(err || 'Unknown upstream error');
+  if (apiKey) {
+    rawDetail = rawDetail.split(apiKey).join('[redacted]');
+  }
+
+  const numericStatus = Number(errObj.status ?? errObj.statusCode);
+  let status = Number.isInteger(numericStatus) && numericStatus >= 400 && numericStatus <= 599 ? numericStatus : 500;
+
+  // Fallback status detection from error message / code when SDK wraps HTTP error
+  if (status === 500) {
+    if (/\b401\b|UNAUTHENTICATED/i.test(rawDetail)) status = 401;
+    else if (/\b403\b|PERMISSION_DENIED/i.test(rawDetail)) status = 403;
+    else if (/\b404\b|NOT_FOUND/i.test(rawDetail)) status = 404;
+    else if (/\b429\b|RESOURCE_EXHAUSTED|quota/i.test(rawDetail)) status = 429;
+    else if (/\b400\b|API_KEY_INVALID|INVALID_ARGUMENT/i.test(rawDetail)) status = 400;
+  }
+
+  if (errObj.name === 'AbortError' || /aborted/i.test(rawDetail)) {
+    return {
+      status: 504,
+      error: 'Gemini vision request timed out after 20s.',
+      detail: rawDetail || 'Upstream Gemini call aborted at 20000ms.',
+    };
+  }
+
+  if (/API_KEY_INVALID|invalid api key|API key not valid/i.test(rawDetail) || status === 401) {
+    return {
+      status: status === 401 ? 401 : 400,
+      error: 'Invalid Gemini API key.',
+      detail: rawDetail,
+    };
+  }
+
+  if (status === 403 || /PERMISSION_DENIED/i.test(rawDetail)) {
+    return {
+      status: 403,
+      error: 'Gemini API permission denied (403).',
+      detail: rawDetail,
+    };
+  }
+
+  if (status === 404 || /NOT_FOUND|is not found for API version/i.test(rawDetail)) {
+    return {
+      status: 404,
+      error: `Gemini model "${GEMINI_FOOD_MODEL}" was not found (404).`,
+      detail: rawDetail,
+    };
+  }
+
+  if (status === 429 || /RESOURCE_EXHAUSTED|quota/i.test(rawDetail)) {
+    return {
+      status: 429,
+      error: 'Gemini API quota or rate limit exceeded (429).',
+      detail: rawDetail,
+    };
+  }
+
+  if (status === 400 || /INVALID_ARGUMENT|Unable to process input image/i.test(rawDetail)) {
+    return {
+      status: 400,
+      error: 'Invalid request or unreadable food image (400).',
+      detail: rawDetail,
+    };
+  }
+
+  return {
+    status,
+    error: `Gemini food scan failed (${status}).`,
+    detail: rawDetail,
+  };
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') {
-    sendJson(res, 405, { ok: false, error: 'Method not allowed. Use POST.' });
+  const reqId = `food-${Date.now().toString(36)}`;
+  const tStart = Date.now();
+  console.log(`[${reqId}] step=start method=${req.method}`);
+
+  if (req.method === 'GET') {
+    console.log(`[${reqId}] step=health_check ms=${Date.now() - tStart}`);
+    sendJson(res, 200, { ok: true, status: 'alive' });
     return;
   }
 
+  if (req.method !== 'POST') {
+    sendJson(res, 405, {
+      ok: false,
+      error: 'Method not allowed. Use GET or POST.',
+      detail: `Received HTTP ${req.method || 'UNKNOWN'}`,
+    });
+    return;
+  }
+
+  let apiKey = '';
   try {
+    const tParseStart = Date.now();
     let body: AnalyzeFoodBody;
     try {
       body = await readJsonBody(req);
-    } catch {
-      sendJson(res, 400, { ok: false, error: 'Invalid JSON request body.' });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : 'Malformed JSON payload';
+      console.log(`[${reqId}] step=parse_body_error ms=${Date.now() - tParseStart} detail=${detail}`);
+      sendJson(res, 400, { ok: false, error: 'Invalid JSON request body.', detail });
       return;
     }
+    console.log(`[${reqId}] step=parse_body ms=${Date.now() - tParseStart}`);
 
     const rawBase64 = typeof body.imageBase64 === 'string' ? body.imageBase64.trim() : '';
     if (!rawBase64) {
-      sendJson(res, 400, { ok: false, error: 'No food image received.' });
+      sendJson(res, 400, {
+        ok: false,
+        error: 'No food image received.',
+        detail: 'Request JSON must include a non-empty imageBase64 field.',
+      });
       return;
     }
 
     const cleanedBase64 = rawBase64.includes(',') ? rawBase64.split(',')[1] : rawBase64;
+    const approxBytes = Math.round((cleanedBase64.length * 3) / 4);
     const mimeType =
       typeof body.mimeType === 'string' && body.mimeType.startsWith('image/')
         ? body.mimeType
         : 'image/jpeg';
     const contextText = (typeof body.context === 'string' ? body.context : body.mealNote || '').trim();
+    console.log(
+      `[${reqId}] step=validate_image ms=${Date.now() - tStart} approxKB=${Math.round(approxBytes / 1024)} mimeType=${mimeType}`
+    );
 
-    const apiKey = process.env.GEMINI_API_KEY?.trim();
+    apiKey = process.env.GEMINI_API_KEY?.trim() || '';
     if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
+      console.log(`[${reqId}] step=missing_api_key ms=${Date.now() - tStart}`);
       sendJson(res, 503, {
         ok: false,
         code: 'MISSING_API_KEY',
-        error: 'Food scan is unavailable because GEMINI_API_KEY is not configured on the server.',
+        error: 'GEMINI_API_KEY is not configured on the server.',
+        detail: 'Set GEMINI_API_KEY in Vercel Project Settings → Environment Variables and redeploy.',
       });
       return;
     }
@@ -159,26 +281,49 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ? `Estimate nutrition for this meal photo. User context: "${contextText}". Return structured JSON.`
       : 'Estimate portion weight in grams, calories, protein, carbs, fats, sodium, sugar, and confidence (0-1) for this food photo. Return structured JSON.';
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-4-hydrogen',
-      contents: {
-        parts: [
-          { inlineData: { mimeType, data: cleanedBase64 } },
-          { text: prompt },
-        ],
-      },
-      config: {
-        systemInstruction: FOOD_SYSTEM_PROMPT,
-        responseMimeType: 'application/json',
-        responseSchema: FOOD_RESPONSE_SCHEMA,
-      },
-    });
+    const tGeminiStart = Date.now();
+    const geminiController = new AbortController();
+    const geminiTimeout = setTimeout(() => {
+      console.log(`[${reqId}] step=gemini_abort_trigger afterMs=${Date.now() - tGeminiStart}`);
+      geminiController.abort();
+    }, 20_000);
 
+    console.log(`[${reqId}] step=gemini_call_start model=${GEMINI_FOOD_MODEL}`);
+    let response;
+    try {
+      response = await ai.models.generateContent({
+        model: GEMINI_FOOD_MODEL,
+        contents: {
+          parts: [
+            { inlineData: { mimeType, data: cleanedBase64 } },
+            { text: prompt },
+          ],
+        },
+        config: {
+          abortSignal: geminiController.signal,
+          thinkingConfig: {
+            thinkingLevel: GEMINI_FOOD_MODEL.includes('flash-lite')
+              ? ThinkingLevel.MINIMAL
+              : ThinkingLevel.LOW,
+          },
+          systemInstruction: FOOD_SYSTEM_PROMPT,
+          responseMimeType: 'application/json',
+          responseSchema: FOOD_RESPONSE_SCHEMA,
+        },
+      });
+    } finally {
+      clearTimeout(geminiTimeout);
+    }
+    console.log(`[${reqId}] step=gemini_call_done ms=${Date.now() - tGeminiStart}`);
+
+    const tFormatStart = Date.now();
     const rawText = (response.text ?? '').trim();
     if (!rawText) {
+      console.log(`[${reqId}] step=empty_response ms=${Date.now() - tStart}`);
       sendJson(res, 502, {
         ok: false,
-        error: 'Vision model returned an empty response. Please retry or use manual entry.',
+        error: 'Vision model returned an empty response.',
+        detail: `Model ${GEMINI_FOOD_MODEL} returned empty response.text.`,
       });
       return;
     }
@@ -186,10 +331,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(rawText) as Record<string, unknown>;
-    } catch {
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : 'Invalid JSON from Gemini';
+      console.log(`[${reqId}] step=parse_gemini_json_error ms=${Date.now() - tStart} detail=${detail}`);
       sendJson(res, 502, {
         ok: false,
-        error: 'Could not read structured nutrition estimate. Please retry.',
+        error: 'Model returned malformed JSON.',
+        detail,
       });
       return;
     }
@@ -234,34 +382,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       items,
     };
 
+    console.log(
+      `[${reqId}] step=complete formatMs=${Date.now() - tFormatStart} totalMs=${Date.now() - tStart} model=${GEMINI_FOOD_MODEL}`
+    );
     sendJson(res, 200, { ok: true, data });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : 'Food analysis failed.';
-    if (msg.includes('PERMISSION_DENIED') || msg.includes('API_KEY_INVALID') || msg.includes('403')) {
-      sendJson(res, 403, {
-        ok: false,
-        code: 'INVALID_API_KEY',
-        error: 'Gemini API key was rejected. Check GEMINI_API_KEY in environment settings.',
-      });
-      return;
-    }
-    if (msg.includes('INVALID_ARGUMENT') || msg.includes('Unable to process input image') || msg.includes('400')) {
-      sendJson(res, 400, {
-        ok: false,
-        error: 'The uploaded photo could not be processed. Please retake a clear food photo.',
-      });
-      return;
-    }
-    if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429')) {
-      sendJson(res, 429, {
-        ok: false,
-        error: 'Vision service rate limit reached. Wait a moment and retry.',
-      });
-      return;
-    }
-    sendJson(res, 500, {
+    const mapped = extractUpstreamError(err, apiKey);
+    console.log(
+      `[${reqId}] step=upstream_error ms=${Date.now() - tStart} status=${mapped.status} error=${mapped.error} detail=${mapped.detail}`
+    );
+    sendJson(res, mapped.status, {
       ok: false,
-      error: 'Food scan is unavailable right now. Please retry or use manual entry.',
+      error: mapped.error,
+      detail: mapped.detail,
     });
   }
 }

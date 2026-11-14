@@ -13,10 +13,15 @@ import type {
 import { toLocalDateKey } from './date';
 import {
   CANTHAL_TILT_THRESHOLDS,
+  CONFIDENCE_SHRINKAGE_CONSTANTS,
   CONFIDENCE_WEIGHTS,
+  EXPRESSION_BLENDSHAPE_GROUPS,
+  EXPRESSION_THRESHOLDS,
   getPslTierMeta,
   HAIRLINE_EXTRAPOLATION_IPD,
+  HUMAN_METRIC_PLAUSIBLE_RANGES,
   METRIC_RANGES,
+  PLAUSIBILITY_OUTLIER_THRESHOLD,
   PSL_SUBSCORE_WEIGHTS,
   QUALITY_THRESHOLDS,
 } from './faceMetricsConstants';
@@ -46,6 +51,96 @@ export function calculateCalibratedPslScore(weightedAvg: number): number {
 
 export type ScanAngleStep = 'front' | 'left' | 'right' | 'profile90' | 'smile';
 
+export interface ExpressionEvaluation {
+  expressionScore: number;
+  expressionGate: QualityLevel;
+  expressionCue: string | null;
+  expressionDomain: 'mouth' | 'eyes' | null;
+  activeGroupScores: Record<string, number>;
+}
+
+/**
+ * Compute expressionScore (0 = neutral, 1 = very expressive) from MediaPipe blendshapes.
+ * Combines the strongest expressive group with the top active groups so pulling any
+ * clear goofy face (smile, jaw open, cheek puff, wide eyes, brow raise, etc.) reliably gates.
+ */
+export function computeExpressionScore(
+  blendshapes?: Record<string, number> | null,
+  landmarkFallback?: { mouthOpen?: number; avgEar?: number }
+): ExpressionEvaluation {
+  if (!blendshapes || Object.keys(blendshapes).length === 0) {
+    // Fallback heuristic if blendshapes were unavailable (e.g., restored draft snapshot)
+    const mOpen = landmarkFallback?.mouthOpen ?? 0;
+    const ear = landmarkFallback?.avgEar ?? 0.28;
+    const mouthComp = clamp((mOpen - 0.14) / 0.28, 0, 1);
+    const wideEyeComp = clamp((ear - 0.39) / 0.14, 0, 1);
+    const score = Number(clamp(Math.max(mouthComp, wideEyeComp), 0, 1).toFixed(3));
+    const cue = mouthComp >= wideEyeComp && mouthComp > 0.12
+      ? 'Mouth open'
+      : wideEyeComp > 0.12
+      ? 'Eyes wide open'
+      : null;
+    const gate: QualityLevel =
+      score > EXPRESSION_THRESHOLDS.WARN_MAX
+        ? 'BLOCK'
+        : score >= EXPRESSION_THRESHOLDS.PASS_MAX
+        ? 'WARN'
+        : 'PASS';
+    return {
+      expressionScore: score,
+      expressionGate: gate,
+      expressionCue: cue,
+      expressionDomain: cue === 'Eyes wide open' ? 'eyes' : cue ? 'mouth' : null,
+      activeGroupScores: {},
+    };
+  }
+
+  const activeGroupScores: Record<string, number> = {};
+  let topWeighted = 0;
+  let topCue: string | null = null;
+  let topDomain: 'mouth' | 'eyes' | null = null;
+  const weightedVals: number[] = [];
+
+  for (const group of EXPRESSION_BLENDSHAPE_GROUPS) {
+    let rawMax = 0;
+    for (const key of group.keys) {
+      const v = blendshapes[key];
+      if (typeof v === 'number' && Number.isFinite(v) && v > rawMax) {
+        rawMax = v;
+      }
+    }
+    const net = Math.max(0, rawMax - EXPRESSION_THRESHOLDS.RESTING_NOISE_FLOOR);
+    const weighted = clamp(net * group.weight, 0, 1);
+    activeGroupScores[group.id] = Number(rawMax.toFixed(3));
+    weightedVals.push(weighted);
+    if (weighted > topWeighted) {
+      topWeighted = weighted;
+      topCue = group.cue;
+      topDomain = group.domain;
+    }
+  }
+
+  weightedVals.sort((a, b) => b - a);
+  const top3Mean =
+    weightedVals.slice(0, 3).reduce((s, v) => s + v, 0) / Math.max(1, Math.min(3, weightedVals.length));
+  const expressionScore = Number(clamp(topWeighted * 0.72 + top3Mean * 0.28, 0, 1).toFixed(3));
+
+  const expressionGate: QualityLevel =
+    expressionScore > EXPRESSION_THRESHOLDS.WARN_MAX
+      ? 'BLOCK'
+      : expressionScore >= EXPRESSION_THRESHOLDS.PASS_MAX
+      ? 'WARN'
+      : 'PASS';
+
+  return {
+    expressionScore,
+    expressionGate,
+    expressionCue: expressionScore >= EXPRESSION_THRESHOLDS.PASS_MAX * 0.8 ? topCue : null,
+    expressionDomain: expressionScore >= EXPRESSION_THRESHOLDS.PASS_MAX * 0.8 ? topDomain : null,
+    activeGroupScores,
+  };
+}
+
 export interface QualityCheckResult {
   level: QualityLevel;
   /** True for PASS and WARN (shutter unlocked); false only for BLOCK */
@@ -66,6 +161,10 @@ export interface QualityCheckResult {
   rollDeg: number;
   yawDeg: number;
   pitchDeg: number;
+  expressionScore: number;
+  expressionGate: QualityLevel;
+  expressionCue: string | null;
+  blendshapes?: Record<string, number> | null;
   landmarks: NormalizedLandmark[] | null;
   matrixData?: number[] | null;
 }
@@ -348,7 +447,8 @@ export function evaluateLandmarksQuality(
   canvas: HTMLCanvasElement,
   landmarks: NormalizedLandmark[] | null,
   expectedAngle: ScanAngleStep,
-  matrixData?: ArrayLike<number> | null
+  matrixData?: ArrayLike<number> | null,
+  blendshapes?: Record<string, number> | null
 ): QualityCheckResult {
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   const w = Math.max(1, canvas.width);
@@ -403,6 +503,10 @@ export function evaluateLandmarksQuality(
       rollDeg: 0,
       yawDeg: 0,
       pitchDeg: 0,
+      expressionScore: 0,
+      expressionGate: 'PASS',
+      expressionCue: null,
+      blendshapes: blendshapes ?? null,
       landmarks: null,
       matrixData: matrixData ? Array.from(matrixData) : null,
     };
@@ -616,6 +720,24 @@ export function evaluateLandmarksQuality(
     poseProgress = clamp(Math.abs(yawDeg) / 70, 0.15, 1);
   }
 
+  // Neutral-expression gate from MediaPipe blendshapes (checked on live preview & still capture)
+  const expr = computeExpressionScore(blendshapes, { mouthOpen, avgEar });
+  if (expectedAngle !== 'smile') {
+    if (expr.expressionGate === 'BLOCK') {
+      const cueSuffix = expr.expressionCue ? ` (${expr.expressionCue})` : '';
+      blockReasons.unshift(`Neutral face please: mouth closed, relax your forehead${cueSuffix}`);
+      warnDomains.add('expression');
+      warnDomains.add('mouth');
+      warnDomains.add('eyes');
+    } else if (expr.expressionGate === 'WARN') {
+      const cueSuffix = expr.expressionCue ? ` — ${expr.expressionCue}` : '';
+      warnReasons.unshift(`Relax your face a little${cueSuffix}`);
+      warnDomains.add('expression');
+      warnDomains.add('mouth');
+      warnDomains.add('eyes');
+    }
+  }
+
   const level: QualityLevel =
     blockReasons.length > 0 ? 'BLOCK' : warnReasons.length > 0 ? 'WARN' : 'PASS';
   const passed = level !== 'BLOCK';
@@ -643,6 +765,10 @@ export function evaluateLandmarksQuality(
     rollDeg,
     yawDeg,
     pitchDeg,
+    expressionScore: expr.expressionScore,
+    expressionGate: expectedAngle === 'smile' ? 'PASS' : expr.expressionGate,
+    expressionCue: expr.expressionCue,
+    blendshapes: blendshapes ?? null,
     landmarks,
     matrixData: matrixData ? Array.from(matrixData) : null,
   };
@@ -865,8 +991,52 @@ function toSnapshot(
     pitchDeg: q.pitchDeg,
     qualityLevel: q.level,
     warnDomains: q.warnDomains,
+    expressionScore: q.expressionScore,
+    expressionCue: q.expressionCue,
     skinStats,
   };
+}
+
+export function computeScanConfidenceFactor(params: {
+  frontQuality: QualityCheckResult;
+  anglesCount: number;
+}): number {
+  const { frontQuality, anglesCount } = params;
+  const fw = CONFIDENCE_SHRINKAGE_CONSTANTS.FACTOR_WEIGHTS;
+
+  const poseAccuracy = clamp(
+    1 -
+      (Math.abs(frontQuality.yawDeg) / 22) * 0.45 -
+      (Math.abs(frontQuality.rollDeg) / 15) * 0.3 -
+      (Math.abs(frontQuality.pitchDeg) / 20) * 0.25,
+    0.2,
+    1
+  );
+
+  const exprScore = clamp(frontQuality.expressionScore ?? 0, 0, 1);
+  const expressionConfidence = clamp(1 - exprScore * 1.9, 0.15, 1);
+
+  const lightScore = clamp(
+    1 - Math.abs(frontQuality.brightness - 130) / 140 - frontQuality.sideLightDiff / 95,
+    0.25,
+    1
+  );
+
+  const sharpScore = clamp(frontQuality.sharpness / 8, 0.3, 1);
+  const anglesScore = anglesCount >= 3 ? 1.0 : anglesCount === 2 ? 0.8 : 0.62;
+
+  const raw =
+    poseAccuracy * fw.pose +
+    expressionConfidence * fw.expression +
+    lightScore * fw.lighting +
+    sharpScore * fw.sharpness +
+    anglesScore * fw.angles;
+
+  // Penalize missing landmarks heavily
+  const landmarkFactor =
+    frontQuality.landmarks && frontQuality.landmarks.length >= 468 ? 1 : 0.35;
+
+  return Number(clamp(raw * landmarkFactor, 0.2, 0.98).toFixed(2));
 }
 
 export function computeFullScanResult(params: {
@@ -1127,16 +1297,25 @@ export function computeFullScanResult(params: {
     leftMetrics && rightMetrics ? Number(Math.abs(leftMetrics.gonialAngle - rightMetrics.gonialAngle).toFixed(1)) : null;
 
   // Targeted confidence assignment: WARN lowers confidence ONLY on the affected metrics
+  // A WARN-level expression specifically lowers confidence of mouth, lip, jaw, and eye metrics.
+  const hasExprWarn =
+    (frontQuality.expressionScore ?? 0) >= EXPRESSION_THRESHOLDS.PASS_MAX ||
+    frontWarns.includes('expression');
   const symConf = downgradeConfidence('high', frontWarns, ['yaw', 'pose']);
   const propConf = downgradeConfidence('low', frontWarns, ['pose', 'occlusion']);
   const fwhrConf = downgradeConfidence('high', frontWarns, ['yaw', 'mouth']);
   const taperConf = downgradeConfidence('medium', frontWarns, ['yaw', 'pose']);
-  const eyeConf = downgradeConfidence('high', frontWarns, ['blur', 'occlusion', 'pose']);
-  const browConf = downgradeConfidence('medium', frontWarns, ['occlusion', 'lighting']);
-  const mouthConf = downgradeConfidence('high', frontWarns, ['mouth', 'blur']);
+  const eyeConf = downgradeConfidence('high', frontWarns, ['blur', 'occlusion', 'pose', 'eyes', 'expression']);
+  const browConf = downgradeConfidence('medium', frontWarns, ['occlusion', 'lighting', 'eyes', 'expression']);
+  const mouthConf = downgradeConfidence('high', frontWarns, ['mouth', 'blur', 'expression']);
   const skinConf = downgradeConfidence('medium', frontWarns, ['lighting', 'blur']);
   const sideBaseConf: 'medium' | 'low' = has90Profile ? 'medium' : 'low';
-  const gonialConf = downgradeConfidence(sideBaseConf, sideWarns, ['yaw', 'pose', 'mouth']);
+  const gonialConf = downgradeConfidence(sideBaseConf, [...sideWarns, ...(hasExprWarn ? ['expression' as WarnDomain] : [])], [
+    'yaw',
+    'pose',
+    'mouth',
+    'expression',
+  ]);
 
   const measurements: ScanMeasurement[] = [
     {
@@ -1435,7 +1614,7 @@ export function computeFullScanResult(params: {
   const totalMeasurable = Math.max(1, measurements.filter((m) => m.value !== null).length);
   const harmonyScore = clamp(Math.round(52 + (inRangeCount / totalMeasurable) * 38), 44, 92);
 
-  const subScores = {
+  const rawSubScores = {
     symmetry: symmetryScore,
     proportions: proportionsScore,
     jawNeck: jawNeckScore,
@@ -1447,32 +1626,97 @@ export function computeFullScanResult(params: {
     harmony: harmonyScore,
   };
 
-  // Confidence-weighted overall PSL estimate (affected WARN metrics dynamically carry lower weight)
-  const wSym = PSL_SUBSCORE_WEIGHTS.symmetry * CONFIDENCE_WEIGHTS[symConf];
-  const wProp = PSL_SUBSCORE_WEIGHTS.proportions * CONFIDENCE_WEIGHTS[propConf];
-  const wEye = PSL_SUBSCORE_WEIGHTS.eyeArea * CONFIDENCE_WEIGHTS[eyeConf];
-  const wJaw = PSL_SUBSCORE_WEIGHTS.jawNeck * (has45Sides || has90Profile ? CONFIDENCE_WEIGHTS[gonialConf] : 0.35);
-  const wCheek = PSL_SUBSCORE_WEIGHTS.cheekbones * CONFIDENCE_WEIGHTS[taperConf];
+  // Compute overall 0..1 scanConfidence from pose, expressionScore, lighting, sharpness, and angles captured
+  const capturedCount = 1 + (leftQuality ? 1 : 0) + (rightQuality ? 1 : 0) + (profile90Quality ? 1 : 0);
+  const scanConfidence = computeScanConfidenceFactor({
+    frontQuality,
+    anglesCount: capturedCount,
+  });
+
+  // Shrinkage toward calibrated population mean: final = mean + conf * (raw - mean)
+  // Expression-sensitive pillars (mouth/jaw/eye) receive an additional shrinkage multiplier on WARN expressions.
+  const subMean = CONFIDENCE_SHRINKAGE_CONSTANTS.POPULATION_SUBSCORE_MEAN;
+  const warnMetricMult = hasExprWarn ? CONFIDENCE_SHRINKAGE_CONSTANTS.WARN_EXPRESSION_METRIC_MULTIPLIER : 1;
+  const shrinkSub = (rawVal: number, exprSensitive = false) => {
+    const c = clamp(scanConfidence * (exprSensitive ? warnMetricMult : 1), 0.15, 1);
+    return Math.round(clamp(subMean + c * (rawVal - subMean), 35, 95));
+  };
+
+  const subScores = {
+    symmetry: shrinkSub(rawSubScores.symmetry, false),
+    proportions: shrinkSub(rawSubScores.proportions, false),
+    jawNeck: shrinkSub(rawSubScores.jawNeck, true),
+    eyeArea: shrinkSub(rawSubScores.eyeArea, true),
+    browRidge: shrinkSub(rawSubScores.browRidge, true),
+    cheekbones: shrinkSub(rawSubScores.cheekbones, false),
+    skin: shrinkSub(rawSubScores.skin, false),
+    leanness: shrinkSub(rawSubScores.leanness, true),
+    harmony: shrinkSub(rawSubScores.harmony, hasExprWarn),
+  };
+
+  // Confidence-weighted overall PSL estimate with shrinkage toward calibrated population mean.
+  // Note: expression/eyes/mouth WARN downgrades are excluded from weight allocation so an expression
+  // cannot boost rawWeightedAvg by downweighting a lower-scoring pillar; shrinkage handles overall uncertainty.
+  const frontNonExprWarns = frontWarns.filter(
+    (d) => d !== 'expression' && d !== 'eyes' && d !== 'mouth'
+  );
+  const sideNonExprWarns = sideWarns.filter(
+    (d) => d !== 'expression' && d !== 'eyes' && d !== 'mouth'
+  );
+  const wSym = PSL_SUBSCORE_WEIGHTS.symmetry * CONFIDENCE_WEIGHTS[downgradeConfidence('high', frontNonExprWarns, ['yaw', 'pose'])];
+  const wProp = PSL_SUBSCORE_WEIGHTS.proportions * CONFIDENCE_WEIGHTS[downgradeConfidence('low', frontNonExprWarns, ['pose', 'occlusion'])];
+  const wEye = PSL_SUBSCORE_WEIGHTS.eyeArea * CONFIDENCE_WEIGHTS[downgradeConfidence('high', frontNonExprWarns, ['blur', 'occlusion', 'pose'])];
+  const wJaw = PSL_SUBSCORE_WEIGHTS.jawNeck * (has45Sides || has90Profile ? CONFIDENCE_WEIGHTS[downgradeConfidence(sideBaseConf, sideNonExprWarns, ['yaw', 'pose'])] : 0.35);
+  const wCheek = PSL_SUBSCORE_WEIGHTS.cheekbones * CONFIDENCE_WEIGHTS[downgradeConfidence('medium', frontNonExprWarns, ['yaw', 'pose'])];
   const wSkin = PSL_SUBSCORE_WEIGHTS.skin * CONFIDENCE_WEIGHTS[skinConf];
-  const wLean = PSL_SUBSCORE_WEIGHTS.leanness * CONFIDENCE_WEIGHTS[has45Sides ? gonialConf : taperConf];
+  const wLean = PSL_SUBSCORE_WEIGHTS.leanness * CONFIDENCE_WEIGHTS[has45Sides ? downgradeConfidence(sideBaseConf, sideNonExprWarns, ['yaw', 'pose']) : taperConf];
 
   const totalW = Math.max(0.01, wSym + wProp + wEye + wJaw + wCheek + wSkin + wLean);
-  const weightedAvg =
-    (subScores.symmetry * wSym +
-      subScores.proportions * wProp +
-      subScores.eyeArea * wEye +
-      subScores.jawNeck * wJaw +
-      subScores.cheekbones * wCheek +
-      subScores.skin * wSkin +
-      subScores.leanness * wLean) /
+  const rawWeightedAvg =
+    (rawSubScores.symmetry * wSym +
+      rawSubScores.proportions * wProp +
+      rawSubScores.eyeArea * wEye +
+      rawSubScores.jawNeck * wJaw +
+      rawSubScores.cheekbones * wCheek +
+      rawSubScores.skin * wSkin +
+      rawSubScores.leanness * wLean) /
     totalW;
 
-  const pslEstimate = calculateCalibratedPslScore(weightedAvg);
+  const rawPslEstimate = calculateCalibratedPslScore(rawWeightedAvg);
+  const popPslMean = CONFIDENCE_SHRINKAGE_CONSTANTS.POPULATION_PSL_MEAN;
+  const shrunkPsl = popPslMean + scanConfidence * (rawPslEstimate - popPslMean);
+  const guardedPsl = hasExprWarn ? Math.min(shrunkPsl, rawPslEstimate) : shrunkPsl;
+  const pslEstimate = Number(clamp(guardedPsl, 1.5, 8.0).toFixed(1));
+
+  // Plausibility check against documented human physiological ranges
+  const implausibleMetrics: string[] = [];
+  const checkPlausible = (val: number | null, r: { label: string; min: number; max: number }) => {
+    if (val === null || !Number.isFinite(val)) return;
+    if (val < r.min || val > r.max) implausibleMetrics.push(r.label);
+  };
+  checkPlausible(thirdUpperPct, HUMAN_METRIC_PLAUSIBLE_RANGES.thirdUpperPct);
+  checkPlausible(thirdMidPct, HUMAN_METRIC_PLAUSIBLE_RANGES.thirdMidPct);
+  checkPlausible(thirdLowerPct, HUMAN_METRIC_PLAUSIBLE_RANGES.thirdLowerPct);
+  checkPlausible(fwhr, HUMAN_METRIC_PLAUSIBLE_RANGES.fwhr);
+  checkPlausible(jawToCheek, HUMAN_METRIC_PLAUSIBLE_RANGES.jawToCheek);
+  checkPlausible(chinToPhiltrum, HUMAN_METRIC_PLAUSIBLE_RANGES.chinToPhiltrum);
+  checkPlausible(eyeAspectRatio, HUMAN_METRIC_PLAUSIBLE_RANGES.eyeAspect);
+  checkPlausible(eyeSpacingRatio, HUMAN_METRIC_PLAUSIBLE_RANGES.eyeSpacing);
+  checkPlausible(mouthToNose, HUMAN_METRIC_PLAUSIBLE_RANGES.mouthToNose);
+  checkPlausible(lipRatio, HUMAN_METRIC_PLAUSIBLE_RANGES.lipRatio);
+  checkPlausible(midfaceRatio, HUMAN_METRIC_PLAUSIBLE_RANGES.midfaceRatio);
+  checkPlausible(gonialVal, HUMAN_METRIC_PLAUSIBLE_RANGES.gonialAngle);
+
+  const isImplausible = implausibleMetrics.length >= PLAUSIBILITY_OUTLIER_THRESHOLD;
+  const plausibilityWarning = isImplausible
+    ? 'This scan looks unusual — retake with a neutral face, camera at eye level'
+    : undefined;
+
   const neutralTier = getPslTierMeta(pslEstimate, true);
   const faceShape = classifyFaceShape(cheekWidth, jawWidth, foreheadWidth, totalThirds);
 
   const jawConf: 'high' | 'medium' | 'low' = has45Sides || has90Profile ? gonialConf : 'low';
-  const harmonyConf: 'high' | 'medium' | 'low' = downgradeConfidence('medium', frontWarns, ['yaw', 'pose']);
+  const harmonyConf: 'high' | 'medium' | 'low' = downgradeConfidence('medium', frontWarns, ['yaw', 'pose', 'expression']);
 
   const extendedPillars: ExtendedReportPillar[] = [
     {
@@ -1517,8 +1761,8 @@ export function computeFullScanResult(params: {
     {
       key: 'midface',
       title: 'Midface Ratio',
-      score: Math.round(clamp(88 - Math.abs(midfaceRatio - 1.0) * 65, 42, 92)),
-      displayScore: `${Math.round(clamp(88 - Math.abs(midfaceRatio - 1.0) * 65, 42, 92))}/100`,
+      score: shrinkSub(Math.round(clamp(88 - Math.abs(midfaceRatio - 1.0) * 65, 42, 92)), false),
+      displayScore: `${shrinkSub(Math.round(clamp(88 - Math.abs(midfaceRatio - 1.0) * 65, 42, 92)), false)}/100`,
       descriptor: `${midfaceRatio.toFixed(2)}x IPD-to-upper-lip height (typical 0.92–1.08x)`,
       confidence: fwhrConf,
       approximate: fwhrConf === 'low',
@@ -1561,8 +1805,8 @@ export function computeFullScanResult(params: {
     {
       key: 'noseLips',
       title: 'Nose & Lip Proportions',
-      score: Math.round(clamp(85 - Math.abs(mouthToNose - 1.5) * 35 - Math.abs(lipRatio - 1.5) * 18, 45, 92)),
-      displayScore: `${Math.round(clamp(85 - Math.abs(mouthToNose - 1.5) * 35 - Math.abs(lipRatio - 1.5) * 18, 45, 92))}/100`,
+      score: shrinkSub(Math.round(clamp(85 - Math.abs(mouthToNose - 1.5) * 35 - Math.abs(lipRatio - 1.5) * 18, 45, 92)), true),
+      displayScore: `${shrinkSub(Math.round(clamp(85 - Math.abs(mouthToNose - 1.5) * 35 - Math.abs(lipRatio - 1.5) * 18, 45, 92)), true)}/100`,
       descriptor: `Mouth/nose ${mouthToNose.toFixed(2)}x · Lip ratio ${lipRatio.toFixed(2)}x`,
       confidence: mouthConf,
       approximate: mouthConf === 'low',
@@ -1739,6 +1983,11 @@ export function computeFullScanResult(params: {
     anglesCaptured,
     qualityScore,
     lightingScore,
+    scanConfidence,
+    expressionScore: frontQuality.expressionScore ?? 0,
+    isImplausible,
+    plausibilityWarning,
+    implausibleMetrics,
     pslEstimate,
     tier: neutralTier.id,
     plainLabel: neutralTier.plainLabel,
@@ -1782,6 +2031,9 @@ export function snapshotToQualityResult(snap: SavedAngleSnapshot): QualityCheckR
     rollDeg: snap.rollDeg,
     yawDeg: snap.yawDeg,
     pitchDeg: snap.pitchDeg,
+    expressionScore: snap.expressionScore ?? 0,
+    expressionGate: (snap.expressionScore ?? 0) >= EXPRESSION_THRESHOLDS.PASS_MAX ? 'WARN' : 'PASS',
+    expressionCue: snap.expressionCue ?? null,
     landmarks: snap.landmarks.map((p) => ({ ...p, visibility: 1 })),
   };
 }

@@ -20,10 +20,12 @@ import { db, recalculateXpAndBadges } from '../../db/database';
 import {
   analyzeFrameWithLandmarker,
   computeFullScanResult,
+  computeScanConfidenceFactor,
   detectLandmarksFromVideo,
   disposeFaceLandmarker,
   drawBiometricMeshOverlay,
   evaluateLandmarksQuality,
+  EXPRESSION_BLENDSHAPE_GROUPS,
   getScannerState,
   initFaceLandmarker,
   snapshotToQualityResult,
@@ -235,6 +237,68 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [showHelpSheet, setShowHelpSheet] = useState(false);
+  const [rejectedStill, setRejectedStill] = useState<{
+    previewUrl: string;
+    reason: string;
+    expressionScore: number;
+    cue: string | null;
+    isMirrored: boolean;
+  } | null>(null);
+
+  // Hidden developer test panel (toggled by tapping Scan ID 5 times; off by default)
+  const sessionScanId = useMemo(
+    () => `SCN-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+    []
+  );
+  const [devPanelOpen, setDevPanelOpen] = useState(false);
+  const devPanelOpenRef = useRef(false);
+  const scanIdTapCountRef = useRef(0);
+  const scanIdTapTimerRef = useRef<number | null>(null);
+  const devLastSyncMsRef = useRef(0);
+  const [devTelemetry, setDevTelemetry] = useState<{
+    expressionScore: number;
+    expressionGate: string;
+    expressionCue: string | null;
+    scanConfidence: number;
+    yawDeg: number;
+    rollDeg: number;
+    pitchDeg: number;
+    brightness: number;
+    sharpness: number;
+    faceWidthFrac: number;
+    blendshapes: Record<string, number> | null;
+    rawMetrics: {
+      thirds: string;
+      fwhr: string;
+      jawToCheek: string;
+      canthalDeg: string;
+      eyeSpacing: string;
+      mouthToNose: string;
+    } | null;
+  } | null>(null);
+
+  useEffect(() => {
+    devPanelOpenRef.current = devPanelOpen;
+  }, [devPanelOpen]);
+
+  const handleScanIdTap = () => {
+    scanIdTapCountRef.current += 1;
+    if (scanIdTapTimerRef.current !== null) {
+      window.clearTimeout(scanIdTapTimerRef.current);
+    }
+    if (scanIdTapCountRef.current >= 5) {
+      scanIdTapCountRef.current = 0;
+      setDevPanelOpen((prev) => {
+        const next = !prev;
+        showToast(next ? 'Developer test panel enabled' : 'Developer test panel hidden');
+        return next;
+      });
+      return;
+    }
+    scanIdTapTimerRef.current = window.setTimeout(() => {
+      scanIdTapCountRef.current = 0;
+    }, 2000);
+  };
 
   const showDebugStrip = useMemo(() => {
     if (!import.meta.env.DEV || typeof window === 'undefined') return false;
@@ -249,11 +313,12 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
   const mountedRef = useRef(true);
   const busyRef = useRef(false);
 
-  // Latest live-stream landmarks ref (captured frames reuse these immediately without risky 45° re-detection)
+  // Latest live-stream landmarks ref
   const latestLiveRef = useRef<{
     stepKey: GuidedStepKey;
     landmarks: NormalizedLandmark[];
     matrixData: number[] | null;
+    blendshapes: Record<string, number> | null;
     quality: QualityCheckResult;
     ts: number;
   } | null>(null);
@@ -350,6 +415,7 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
     blockStartMsRef.current = null;
     helpAutoShownForStepRef.current = false;
     lastGateLevelRef.current = 'BLOCK';
+    setRejectedStill(null);
   }, [state.stepIndex, isReviewing, state.finalReady]);
 
   // Engine lifecycle + unmount camera cleanup
@@ -475,7 +541,13 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
         const offset = RING_CIRCUMFERENCE * (1 - Math.max(0.04, Math.min(1, q.poseProgress)));
         poseRingRef.current.style.strokeDashoffset = `${offset}`;
         poseRingRef.current.style.stroke =
-          q.level === 'PASS' ? '#10B981' : q.level === 'WARN' ? '#F59E0B' : '#38BDF8';
+          q.level === 'PASS'
+            ? '#10B981'
+            : q.level === 'WARN'
+            ? '#F59E0B'
+            : q.expressionGate === 'BLOCK'
+            ? '#F43F5E'
+            : '#38BDF8';
       }
 
       if (lastGateLevelRef.current !== 'PASS' && q.level === 'PASS') {
@@ -513,11 +585,13 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
         } else if (q.level === 'WARN') {
           shutterBtnRef.current.className =
             'flex-1 py-3.5 px-4 rounded-2xl bg-amber-400 hover:bg-amber-300 active:scale-[0.98] text-black font-bold text-sm min-h-[48px] flex items-center justify-center gap-2 transition shadow-lg shadow-amber-500/15';
-          shutterLabelRef.current.textContent = 'Capture (lower accuracy)';
+          shutterLabelRef.current.textContent =
+            q.expressionGate === 'WARN' ? 'Capture (relax face)' : 'Capture (lower accuracy)';
         } else {
           shutterBtnRef.current.className =
             'flex-1 py-3.5 px-4 rounded-2xl bg-white/10 text-slate-300 font-semibold text-sm min-h-[48px] flex items-center justify-center gap-2 transition opacity-55 cursor-not-allowed';
-          shutterLabelRef.current.textContent = 'Capture Angle';
+          shutterLabelRef.current.textContent =
+            q.expressionGate === 'BLOCK' ? 'Neutral face required' : 'Capture Angle';
         }
       }
 
@@ -528,7 +602,66 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
             ? 'text-sm sm:text-base font-bold text-emerald-400 text-center min-h-[24px]'
             : q.level === 'WARN'
             ? 'text-sm sm:text-base font-semibold text-amber-300 text-center min-h-[24px]'
+            : q.expressionGate === 'BLOCK'
+            ? 'text-sm sm:text-base font-semibold text-rose-300 text-center min-h-[24px]'
             : 'text-sm sm:text-base font-semibold text-sky-200 text-center min-h-[24px]';
+      }
+
+      // Only update React devTelemetry state when hidden dev panel is toggled ON (throttled ~4 Hz)
+      if (devPanelOpenRef.current && nowMs - devLastSyncMsRef.current >= 240) {
+        devLastSyncMsRef.current = nowMs;
+        const anglesAccepted =
+          (state.captures.front.status === 'accepted' ? 1 : 0) +
+          (state.captures.left.status === 'accepted' ? 1 : 0) +
+          (state.captures.right.status === 'accepted' ? 1 : 0);
+
+        let rawMetrics: NonNullable<typeof devTelemetry>['rawMetrics'] = null;
+        if (q.landmarks && q.landmarks.length >= 468) {
+          const lm = q.landmarks;
+          const dist = (aIdx: number, bIdx: number) =>
+            Math.hypot((lm[aIdx].x - lm[bIdx].x) * 480, (lm[aIdx].y - lm[bIdx].y) * 360);
+          const cheekW = Math.max(1, dist(234, 454));
+          const jawW = Math.max(1, dist(172, 397));
+          const upperH = Math.max(1, dist(9, 0));
+          const noseW = Math.max(1, dist(129, 358));
+          const mouthW = dist(61, 291);
+          const avgEyeW = Math.max(1, (dist(33, 133) + dist(362, 263)) / 2);
+          const eyeSpace = dist(133, 362) / avgEyeW;
+          const ipd = Math.max(1, dist(33, 263) * 0.65);
+          const hairY = Math.max(0.02, lm[10].y - (ipd * 0.54) / 360);
+          const u3 = Math.max(0.01, lm[9].y - hairY);
+          const m3 = Math.max(0.01, lm[2].y - lm[9].y);
+          const l3 = Math.max(0.01, lm[152].y - lm[2].y);
+          const tot3 = u3 + m3 + l3;
+          const lTilt = (Math.atan2(lm[133].y - lm[33].y, Math.max(1e-4, lm[133].x - lm[33].x)) * 180) / Math.PI;
+          const rTilt = (Math.atan2(lm[362].y - lm[263].y, Math.max(1e-4, lm[263].x - lm[362].x)) * 180) / Math.PI;
+          rawMetrics = {
+            thirds: `${Math.round((u3 / tot3) * 100)}/${Math.round((m3 / tot3) * 100)}/${Math.round((l3 / tot3) * 100)}`,
+            fwhr: (cheekW / upperH).toFixed(2),
+            jawToCheek: (jawW / cheekW).toFixed(2),
+            canthalDeg: ((lTilt + rTilt) / 2).toFixed(1),
+            eyeSpacing: eyeSpace.toFixed(2),
+            mouthToNose: (mouthW / noseW).toFixed(2),
+          };
+        }
+
+        setDevTelemetry({
+          expressionScore: q.expressionScore,
+          expressionGate: q.expressionGate,
+          expressionCue: q.expressionCue,
+          scanConfidence: computeScanConfidenceFactor({
+            frontQuality: q,
+            anglesCount: Math.max(1, anglesAccepted),
+          }),
+          yawDeg: q.yawDeg,
+          rollDeg: q.rollDeg,
+          pitchDeg: q.pitchDeg,
+          brightness: q.brightness,
+          sharpness: q.sharpness,
+          faceWidthFrac: q.faceWidthFrac,
+          blendshapes: q.blendshapes ?? null,
+          rawMetrics,
+        });
       }
     };
 
@@ -555,7 +688,8 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
         detected.sampleCanvas,
         detected.landmarks,
         currentStep.key as ScanAngleStep,
-        detected.matrixData
+        detected.matrixData,
+        detected.blendshapes
       );
 
       if (detected.landmarks && detected.landmarks.length >= 468) {
@@ -563,6 +697,7 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
           stepKey: currentStep.key,
           landmarks: detected.landmarks,
           matrixData: detected.matrixData,
+          blendshapes: detected.blendshapes,
           quality,
           ts: Date.now(),
         };
@@ -598,10 +733,9 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
   ]);
 
   /**
-   * Capture handler: grabs the video frame unmirrored AND reuses the freshest live
-   * landmarks for the current step so 45° turns never stall on a second detection.
-   * Falls back to a 4s still detection ONLY if live landmarks are absent; if that
-   * fails or times out, saves the photo anyway as "captured, landmarks missing".
+   * Capture handler: grabs the video frame unmirrored and runs still landmark + blendshape
+   * evaluation directly on the captured still so non-neutral expressions cannot sneak past.
+   * Rejects the still with an explicit reason + Retake button if expressionGate === 'BLOCK'.
    */
   const handleManualCapture = async () => {
     if (busyRef.current || state.busy) return;
@@ -613,6 +747,7 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
       return;
     }
 
+    setRejectedStill(null);
     busyRef.current = true;
     dispatch({ type: 'CAPTURE_START' });
 
@@ -638,47 +773,71 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
       let captureStatus: 'captured' | 'captured, landmarks missing' = 'captured';
       let note: string | undefined;
 
-      if (hasFreshLiveLandmarks && liveSnapshot) {
-        // Reuse live-stream landmarks directly without requiring a risky 2nd detection
-        quality = evaluateLandmarksQuality(
-          stillCanvas,
-          liveSnapshot.landmarks,
-          currentStep.key as ScanAngleStep,
-          liveSnapshot.matrixData
+      // Always verify blendshapes + expression on the captured still first
+      try {
+        const detectedQuality = await withTimeout(
+          analyzeFrameWithLandmarker(stillCanvas, currentStep.key as ScanAngleStep),
+          CAPTURE_TIMEOUT_MS,
+          'Face detection timed out after 4s.'
         );
-        // Never block after the user manually captured a frame with live landmarks
-        if (quality.level === 'BLOCK') {
-          quality = {
-            ...quality,
-            level: 'WARN',
-            passed: true,
-            warnDomains: Array.from(new Set([...quality.warnDomains, 'pose'])),
-            primaryInstruction: quality.primaryInstruction || 'Captured with pose warning',
-          };
-        }
-      } else {
-        // Live landmarks missing -> attempt ONE still detection with a strict 4s timeout
-        try {
-          const detectedQuality = await withTimeout(
-            analyzeFrameWithLandmarker(stillCanvas, currentStep.key as ScanAngleStep),
-            CAPTURE_TIMEOUT_MS,
-            'Face detection timed out after 4s.'
+        if (detectedQuality.landmarks && detectedQuality.landmarks.length >= 468) {
+          quality = detectedQuality;
+        } else if (hasFreshLiveLandmarks && liveSnapshot) {
+          quality = evaluateLandmarksQuality(
+            stillCanvas,
+            liveSnapshot.landmarks,
+            currentStep.key as ScanAngleStep,
+            liveSnapshot.matrixData,
+            liveSnapshot.blendshapes
           );
-          if (detectedQuality.landmarks && detectedQuality.landmarks.length >= 468) {
-            quality =
-              detectedQuality.level === 'BLOCK'
-                ? { ...detectedQuality, level: 'WARN', passed: true }
-                : detectedQuality;
-          } else {
-            captureStatus = 'captured, landmarks missing';
-            note = 'Face not detected on this photo, retake or continue with lower accuracy';
-            quality = buildFallbackQuality(stillCanvas, currentStep.key as ScanAngleStep);
-          }
-        } catch {
+        } else {
           captureStatus = 'captured, landmarks missing';
           note = 'Face not detected on this photo, retake or continue with lower accuracy';
           quality = buildFallbackQuality(stillCanvas, currentStep.key as ScanAngleStep);
         }
+      } catch {
+        if (hasFreshLiveLandmarks && liveSnapshot) {
+          quality = evaluateLandmarksQuality(
+            stillCanvas,
+            liveSnapshot.landmarks,
+            currentStep.key as ScanAngleStep,
+            liveSnapshot.matrixData,
+            liveSnapshot.blendshapes
+          );
+        } else {
+          captureStatus = 'captured, landmarks missing';
+          note = 'Face not detected on this photo, retake or continue with lower accuracy';
+          quality = buildFallbackQuality(stillCanvas, currentStep.key as ScanAngleStep);
+        }
+      }
+
+      // Hard reject if the captured still failed neutral-expression gate
+      if (quality.expressionGate === 'BLOCK') {
+        const cueLabel = quality.expressionCue ? ` (${quality.expressionCue})` : '';
+        const rejectReason = `Neutral face please: mouth closed, relax your forehead${cueLabel}`;
+        const previewUrl = buildMeshPreviewUrl(stillCanvas, quality);
+        if (!mountedRef.current) return;
+        setRejectedStill({
+          previewUrl,
+          reason: rejectReason,
+          expressionScore: quality.expressionScore,
+          cue: quality.expressionCue,
+          isMirrored: true,
+        });
+        dispatch({ type: 'CAPTURE_FAILED', reason: rejectReason });
+        showToast(rejectReason, 'warning');
+        return;
+      }
+
+      // Allow manual pose warnings (45° side wobble) to pass as WARN without overriding expression check
+      if (quality.level === 'BLOCK') {
+        quality = {
+          ...quality,
+          level: 'WARN',
+          passed: true,
+          warnDomains: Array.from(new Set([...quality.warnDomains, 'pose'])),
+          primaryInstruction: quality.primaryInstruction || 'Captured with pose warning',
+        };
       }
 
       const previewUrl = buildMeshPreviewUrl(stillCanvas, quality);
@@ -700,7 +859,11 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
         previewUrl,
         captureStatus,
         isMirrored: true,
-        note,
+        note:
+          note ??
+          (quality.expressionGate === 'WARN'
+            ? `Relax your face a little${quality.expressionCue ? ` — ${quality.expressionCue}` : ''}`
+            : undefined),
       });
     } catch (err) {
       if (!mountedRef.current) return;
@@ -717,6 +880,7 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
     e.target.value = '';
     if (!file || busyRef.current || state.busy) return;
 
+    setRejectedStill(null);
     setCameraError(null);
     setShowHelpSheet(false);
     busyRef.current = true;
@@ -759,10 +923,7 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
               'Photo detection timed out after 4s.'
             );
             if (detectedQuality.landmarks && detectedQuality.landmarks.length >= 468) {
-              quality =
-                detectedQuality.level === 'BLOCK'
-                  ? { ...detectedQuality, level: 'WARN', passed: true }
-                  : detectedQuality;
+              quality = detectedQuality;
             } else {
               captureStatus = 'captured, landmarks missing';
               note = 'Face not detected on this photo, retake or continue with lower accuracy';
@@ -772,6 +933,33 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
             captureStatus = 'captured, landmarks missing';
             note = 'Face not detected on this photo, retake or continue with lower accuracy';
             quality = buildFallbackQuality(canvas, currentStep.key as ScanAngleStep);
+          }
+
+          if (quality.expressionGate === 'BLOCK') {
+            const cueLabel = quality.expressionCue ? ` (${quality.expressionCue})` : '';
+            const rejectReason = `Neutral face please: mouth closed, relax your forehead${cueLabel}`;
+            const previewUrl = buildMeshPreviewUrl(canvas, quality);
+            if (!mountedRef.current) return;
+            setRejectedStill({
+              previewUrl,
+              reason: rejectReason,
+              expressionScore: quality.expressionScore,
+              cue: quality.expressionCue,
+              isMirrored: false,
+            });
+            dispatch({ type: 'CAPTURE_FAILED', reason: rejectReason });
+            showToast(rejectReason, 'warning');
+            return;
+          }
+
+          if (quality.level === 'BLOCK') {
+            quality = {
+              ...quality,
+              level: 'WARN',
+              passed: true,
+              warnDomains: Array.from(new Set([...quality.warnDomains, 'pose'])),
+              primaryInstruction: quality.primaryInstruction || 'Captured with pose warning',
+            };
           }
 
           const previewUrl = buildMeshPreviewUrl(canvas, quality);
@@ -792,7 +980,11 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
             previewUrl,
             captureStatus,
             isMirrored: false,
-            note,
+            note:
+              note ??
+              (quality.expressionGate === 'WARN'
+                ? `Relax your face a little${quality.expressionCue ? ` — ${quality.expressionCue}` : ''}`
+                : undefined),
           });
         } catch (err) {
           if (!mountedRef.current) return;
@@ -922,6 +1114,7 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
 
   const handleRetake = () => {
     if (busyRef.current || state.busy) return;
+    setRejectedStill(null);
     dispatch({ type: 'RETAKE' });
   };
 
@@ -1000,10 +1193,21 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
                 ? `Add Side Photos · ${currentStep.title}`
                 : `Face Scanner · ${currentStep.title}`}
             </h1>
-            <p className="text-[11px] text-slate-400 truncate">
-              {draftRestored
-                ? 'Draft restored · 100% on-device'
-                : '100% on-device · Only Front is required'}
+            <p className="text-[11px] text-slate-400 truncate flex items-center justify-center gap-1.5">
+              <span>
+                {draftRestored
+                  ? 'Draft restored · 100% on-device'
+                  : '100% on-device · Only Front is required'}
+              </span>
+              <span aria-hidden="true">·</span>
+              <button
+                type="button"
+                onClick={handleScanIdTap}
+                className="font-mono-num text-slate-400 hover:text-slate-200 focus:outline-none select-none"
+                title="Scan ID"
+              >
+                Scan ID: {sessionScanId}
+              </button>
             </p>
           </div>
 
@@ -1316,6 +1520,23 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
                   })}
                 </div>
               </div>
+            ) : rejectedStill ? (
+              <div className="relative z-10 w-full h-full bg-black">
+                <img
+                  src={rejectedStill.previewUrl}
+                  alt={`Rejected ${currentStep.title} still`}
+                  className={`w-full h-full object-cover pointer-events-none opacity-80 ${
+                    rejectedStill.isMirrored ? 'scale-x-[-1]' : ''
+                  }`}
+                />
+                <div className="absolute inset-x-3 bottom-3 p-3 rounded-2xl bg-rose-950/90 border border-rose-400/50 backdrop-blur-md text-xs space-y-1">
+                  <p className="font-bold text-rose-200 flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                    Capture Rejected — Non-Neutral Expression
+                  </p>
+                  <p className="text-rose-100 leading-snug">{rejectedStill.reason}</p>
+                </div>
+              </div>
             ) : isReviewing && state.pendingReview?.previewUrl ? (
               <div className="relative z-10 w-full h-full bg-black">
                 <img
@@ -1407,6 +1628,27 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
                   </button>
                 </div>
               </div>
+            ) : rejectedStill ? (
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between text-xs gap-2 flex-wrap">
+                  <span className="font-semibold text-rose-300">
+                    {rejectedStill.reason}
+                  </span>
+                  <span className="text-slate-400 font-mono-num text-[11px]">
+                    Expr {rejectedStill.expressionScore.toFixed(2)}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRejectedStill(null);
+                    dispatch({ type: 'CLEAR_ERROR' });
+                  }}
+                  className="w-full py-3.5 rounded-xl bg-rose-500 hover:bg-rose-400 active:scale-[0.98] text-white text-xs font-bold min-h-[48px] flex items-center justify-center gap-1.5 transition"
+                >
+                  <RotateCcw className="w-4 h-4" /> Retake with Neutral Face
+                </button>
+              </div>
             ) : isReviewing && state.pendingReview ? (
               <div className="space-y-2.5">
                 <div className="flex items-center justify-between text-xs gap-2 flex-wrap">
@@ -1420,13 +1662,20 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
                   >
                     {state.pendingReview.captureStatus === 'captured, landmarks missing'
                       ? 'Captured (lower accuracy — landmarks missing)'
+                      : state.pendingReview.quality?.expressionGate === 'WARN'
+                      ? `Relax your face a little${
+                          state.pendingReview.quality.expressionCue
+                            ? ` — ${state.pendingReview.quality.expressionCue}`
+                            : ''
+                        } (lower confidence)`
                       : state.pendingReview.quality?.level === 'WARN'
                       ? 'Captured with lower-accuracy note'
                       : 'Photo ready'}
                   </span>
                   {state.pendingReview.quality && (
                     <span className="text-slate-400 font-mono-num text-[11px]">
-                      Yaw {Math.round(state.pendingReview.quality.yawDeg)}° · Light{' '}
+                      Yaw {Math.round(state.pendingReview.quality.yawDeg)}° · Expr{' '}
+                      {(state.pendingReview.quality.expressionScore ?? 0).toFixed(2)} · Light{' '}
                       {Math.round(state.pendingReview.quality.brightness)}
                     </span>
                   )}
@@ -1526,6 +1775,114 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
                   </div>
                 </div>
               </>
+            )}
+
+            {/* Hidden Developer Test Panel (toggled by tapping Scan ID 5 times) */}
+            {devPanelOpen && (
+              <div className="pt-2.5 border-t border-emerald-500/25 space-y-2 text-[10.5px] font-mono-num">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-bold text-emerald-400 uppercase tracking-wider">
+                    Dev Panel · {sessionScanId}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setDevPanelOpen(false)}
+                    className="px-2 py-0.5 rounded bg-white/10 text-slate-300 hover:bg-white/20"
+                  >
+                    Close
+                  </button>
+                </div>
+
+                {devTelemetry ? (
+                  <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                      <div className="px-2 py-1 rounded bg-black/50 border border-white/10">
+                        <span className="text-slate-400">expr: </span>
+                        <span
+                          className={
+                            devTelemetry.expressionGate === 'BLOCK'
+                              ? 'text-rose-400 font-bold'
+                              : devTelemetry.expressionGate === 'WARN'
+                              ? 'text-amber-300 font-bold'
+                              : 'text-emerald-400 font-bold'
+                          }
+                        >
+                          {devTelemetry.expressionScore.toFixed(3)} ({devTelemetry.expressionGate})
+                        </span>
+                      </div>
+                      <div className="px-2 py-1 rounded bg-black/50 border border-white/10">
+                        <span className="text-slate-400">conf: </span>
+                        <span className="text-sky-300 font-bold">
+                          {Math.round(devTelemetry.scanConfidence * 100)}%
+                        </span>
+                      </div>
+                      <div className="px-2 py-1 rounded bg-black/50 border border-white/10">
+                        <span className="text-slate-400">pose: </span>
+                        <span className="text-white">
+                          Y{Math.round(devTelemetry.yawDeg)}° R{Math.round(devTelemetry.rollDeg)}° P
+                          {Math.round(devTelemetry.pitchDeg)}°
+                        </span>
+                      </div>
+                      <div className="px-2 py-1 rounded bg-black/50 border border-white/10">
+                        <span className="text-slate-400">sharp/lum: </span>
+                        <span className="text-white">
+                          {devTelemetry.sharpness.toFixed(1)} / {Math.round(devTelemetry.brightness)}
+                        </span>
+                      </div>
+                    </div>
+
+                    {devTelemetry.expressionCue && (
+                      <div className="px-2 py-1 rounded bg-amber-500/15 border border-amber-400/30 text-amber-200">
+                        Active cue: {devTelemetry.expressionCue}
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-1">
+                      {EXPRESSION_BLENDSHAPE_GROUPS.map((g) => {
+                        const val = g.keys.reduce(
+                          (mx, k) => Math.max(mx, devTelemetry.blendshapes?.[k] ?? 0),
+                          0
+                        );
+                        return (
+                          <div
+                            key={g.id}
+                            className="px-1.5 py-0.5 rounded bg-black/40 border border-white/5 flex justify-between gap-1"
+                          >
+                            <span className="text-slate-400 truncate">{g.id}</span>
+                            <span className={val > 0.2 ? 'text-amber-300 font-bold' : 'text-slate-200'}>
+                              {val.toFixed(2)}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="px-2 py-1 rounded bg-black/40 border border-white/5 text-slate-300 flex flex-wrap gap-x-3 gap-y-0.5">
+                      <span>faceW:{devTelemetry.faceWidthFrac.toFixed(2)}</span>
+                      <span>
+                        shots:F={state.captures.front.status},L={state.captures.left.status},R=
+                        {state.captures.right.status}
+                      </span>
+                      <span>
+                        liveLandmarks:{latestLiveRef.current?.landmarks.length ?? 0}
+                      </span>
+                    </div>
+
+                    {devTelemetry.rawMetrics && (
+                      <div className="px-2 py-1 rounded bg-black/50 border border-white/10 text-emerald-200 flex flex-wrap gap-x-3 gap-y-0.5">
+                        <span>thirds:{devTelemetry.rawMetrics.thirds}%</span>
+                        <span>fWHR:{devTelemetry.rawMetrics.fwhr}x</span>
+                        <span>jaw/cheek:{devTelemetry.rawMetrics.jawToCheek}x</span>
+                        <span>canthal:{devTelemetry.rawMetrics.canthalDeg}°</span>
+                        <span>eyeSpace:{devTelemetry.rawMetrics.eyeSpacing}x</span>
+                        <span>mouth/nose:{devTelemetry.rawMetrics.mouthToNose}x</span>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-slate-400">Waiting for live face frame telemetry...</p>
+                )}
+              </div>
             )}
 
             {/* Temporary dev debug strip (?debug=1) */}

@@ -4,7 +4,7 @@ import type { Request, Response } from 'express';
 import path from 'node:path';
 import fs from 'node:fs';
 import { GoogleGenAI, Type } from '@google/genai';
-import analyzeFoodHandler from './api/analyze-food';
+import analyzeFoodHandler from './api/analyze-food.ts';
 
 const PORT = Number(process.env.PORT || 3000);
 const isProduction = process.env.NODE_ENV === 'production';
@@ -230,6 +230,10 @@ async function startServer() {
     }
   });
 
+  app.use('/api', (_req: Request, res: Response) => {
+    res.status(404).json({ ok: false, error: 'API route not found.' });
+  });
+
   if (!isProduction) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
@@ -240,7 +244,7 @@ async function startServer() {
   } else {
     const distDir = path.resolve(import.meta.dirname, 'dist');
     app.use(express.static(distDir));
-    app.get('/{*splat}', (_req: Request, res: Response) => {
+    app.use((_req: Request, res: Response) => {
       const indexFile = path.join(distDir, 'index.html');
       if (fs.existsSync(indexFile)) {
         res.sendFile(indexFile);

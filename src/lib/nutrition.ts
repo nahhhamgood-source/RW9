@@ -157,9 +157,22 @@ export async function prepareMealImageAssets(
     return canvas.toDataURL('image/jpeg', quality);
   };
 
-  const previewDataUrl = resize(1024, 0.7);
-  const thumbnailDataUrl = resize(420, 0.7);
-  const apiBase64 = previewDataUrl.split(',')[1] || '';
+  let apiDataUrl = resize(768, 0.6);
+  let apiBase64 = apiDataUrl.split(',')[1] || '';
+
+  // Ensure uploaded image stays under ~300 KB
+  const approxBytes = (b64: string) => Math.round((b64.length * 3) / 4);
+  if (approxBytes(apiBase64) > 295 * 1024) {
+    apiDataUrl = resize(768, 0.48);
+    apiBase64 = apiDataUrl.split(',')[1] || '';
+  }
+  if (approxBytes(apiBase64) > 295 * 1024) {
+    apiDataUrl = resize(640, 0.45);
+    apiBase64 = apiDataUrl.split(',')[1] || '';
+  }
+
+  const previewDataUrl = apiDataUrl;
+  const thumbnailDataUrl = resize(420, 0.6);
 
   return {
     apiBase64,

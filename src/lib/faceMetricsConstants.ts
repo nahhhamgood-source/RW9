@@ -49,12 +49,163 @@ export const QUALITY_THRESHOLDS = {
   MAX_MOUTH_OPEN_WARN: 0.16,
 } as const;
 
+/**
+ * Neutral-expression gate thresholds (MediaPipe blendshapes, 0 = neutral, 1 = expressive).
+ * - < 0.15: PASS (neutral face)
+ * - 0.15–0.30: WARN (amber shutter enabled, "Relax your face a little")
+ * - > 0.30: BLOCK ("Neutral face please: mouth closed, relax your forehead")
+ */
+export const EXPRESSION_THRESHOLDS = {
+  PASS_MAX: 0.15,
+  WARN_MAX: 0.30,
+  /** Resting sensor noise floor subtracted before normalizing blendshape cues */
+  RESTING_NOISE_FLOOR: 0.04,
+} as const;
+
+/**
+ * Blendshape weights and user-facing cues for neutral-expression scoring.
+ * Higher weight amplifies strong non-neutral expressions (smiling, open jaw, puffed cheeks, etc.).
+ */
+export const EXPRESSION_BLENDSHAPE_GROUPS: Array<{
+  id: string;
+  keys: string[];
+  weight: number;
+  cue: string;
+  domain: 'mouth' | 'eyes';
+}> = [
+  {
+    id: 'smile',
+    keys: ['mouthSmileLeft', 'mouthSmileRight'],
+    weight: 1.0,
+    cue: 'Smile detected',
+    domain: 'mouth',
+  },
+  {
+    id: 'jawOpen',
+    keys: ['jawOpen'],
+    weight: 1.15,
+    cue: 'Mouth open',
+    domain: 'mouth',
+  },
+  {
+    id: 'mouthFunnel',
+    keys: ['mouthFunnel'],
+    weight: 1.0,
+    cue: 'Mouth open',
+    domain: 'mouth',
+  },
+  {
+    id: 'mouthPucker',
+    keys: ['mouthPucker'],
+    weight: 1.0,
+    cue: 'Lips puckered',
+    domain: 'mouth',
+  },
+  {
+    id: 'cheekPuff',
+    keys: ['cheekPuff'],
+    weight: 1.1,
+    cue: 'Cheeks puffed',
+    domain: 'mouth',
+  },
+  {
+    id: 'browInnerUp',
+    keys: ['browInnerUp'],
+    weight: 1.0,
+    cue: 'Eyebrows raised',
+    domain: 'eyes',
+  },
+  {
+    id: 'browDown',
+    keys: ['browDownLeft', 'browDownRight'],
+    weight: 0.9,
+    cue: 'Brows furrowed',
+    domain: 'eyes',
+  },
+  {
+    id: 'eyeSquint',
+    keys: ['eyeSquintLeft', 'eyeSquintRight'],
+    weight: 0.95,
+    cue: 'Eyes squinted',
+    domain: 'eyes',
+  },
+  {
+    id: 'eyeWide',
+    keys: ['eyeWideLeft', 'eyeWideRight'],
+    weight: 1.05,
+    cue: 'Eyes wide open',
+    domain: 'eyes',
+  },
+  {
+    id: 'mouthStretch',
+    keys: ['mouthStretchLeft', 'mouthStretchRight', 'mouthStretch'],
+    weight: 0.9,
+    cue: 'Mouth stretched',
+    domain: 'mouth',
+  },
+  {
+    id: 'mouthPress',
+    keys: ['mouthPressLeft', 'mouthPressRight'],
+    weight: 0.85,
+    cue: 'Lips pressed',
+    domain: 'mouth',
+  },
+  {
+    id: 'noseSneer',
+    keys: ['noseSneerLeft', 'noseSneerRight'],
+    weight: 0.9,
+    cue: 'Nose wrinkled',
+    domain: 'mouth',
+  },
+];
+
 /** Confidence weight multipliers used in overall confidence-weighted averaging */
 export const CONFIDENCE_WEIGHTS: Record<'high' | 'medium' | 'low', number> = {
   high: 1.0,
   medium: 0.72,
   low: 0.42,
 };
+
+/**
+ * Calibrated population means & shrinkage factor weights.
+ * final = mean + scanConfidence * (raw - mean)
+ * At raw sub-score mean 67, calculateCalibratedPslScore(67) = 4.8 (True Normie average).
+ */
+export const CONFIDENCE_SHRINKAGE_CONSTANTS = {
+  POPULATION_SUBSCORE_MEAN: 67,
+  POPULATION_PSL_MEAN: 4.8,
+  FACTOR_WEIGHTS: {
+    pose: 0.24,
+    expression: 0.28,
+    lighting: 0.18,
+    sharpness: 0.15,
+    angles: 0.15,
+  },
+  /** Extra shrinkage multiplier on mouth, lip, jaw, and eye metrics when expression is WARN */
+  WARN_EXPRESSION_METRIC_MULTIPLIER: 0.55,
+} as const;
+
+/**
+ * Documented physiological human bounds for key landmark ratios & angles.
+ * If PLAUSIBILITY_OUTLIER_THRESHOLD or more metrics fall outside these bounds,
+ * the scan is flagged as unusual instead of showing a misleading report.
+ */
+export const PLAUSIBILITY_OUTLIER_THRESHOLD = 3;
+
+export const HUMAN_METRIC_PLAUSIBLE_RANGES = {
+  thirdUpperPct: { label: 'Upper third %', min: 18, max: 48 },
+  thirdMidPct: { label: 'Middle third %', min: 20, max: 48 },
+  thirdLowerPct: { label: 'Lower third %', min: 20, max: 48 },
+  fwhr: { label: 'Facial width-to-height (fWHR)', min: 1.25, max: 2.65 },
+  jawToCheek: { label: 'Jaw-to-cheek ratio', min: 0.52, max: 1.15 },
+  chinToPhiltrum: { label: 'Chin-to-philtrum ratio', min: 1.0, max: 4.2 },
+  eyeAspect: { label: 'Eye aspect ratio', min: 0.12, max: 0.55 },
+  eyeSpacing: { label: 'Eye spacing ratio', min: 0.65, max: 1.45 },
+  mouthToNose: { label: 'Mouth-to-nose width', min: 0.95, max: 2.35 },
+  lipRatio: { label: 'Lower-to-upper lip ratio', min: 0.6, max: 3.2 },
+  midfaceRatio: { label: 'Midface ratio', min: 0.68, max: 1.45 },
+  gonialAngle: { label: 'Gonial angle', min: 95, max: 152 },
+} as const;
 
 /** Documented canthal tilt classification cutoffs (degrees, pose-corrected) */
 export const CANTHAL_TILT_THRESHOLDS = {

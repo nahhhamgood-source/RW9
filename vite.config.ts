@@ -54,6 +54,12 @@ export default defineConfig(() => {
           maximumFileSizeToCacheInBytes: 25 * 1024 * 1024,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2,wasm,task}'],
           navigateFallbackDenylist: [/^\/mediapipe\//, /^\/api\//],
+          runtimeCaching: [
+            {
+              urlPattern: /^\/api\//,
+              handler: 'NetworkOnly',
+            },
+          ],
         },
         devOptions: {
           enabled: true,

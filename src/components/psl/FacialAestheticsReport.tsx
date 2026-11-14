@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   Camera,
   CheckCircle2,
   ChevronDown,
@@ -8,6 +9,7 @@ import {
   Download,
   Info,
   Plus,
+  RotateCcw,
   ScanFace,
   ShieldCheck,
   Sparkles,
@@ -56,6 +58,11 @@ export const FacialAestheticsReport: React.FC<FacialAestheticsReportProps> = ({
   const hasRight = activeScan.anglesCaptured.includes('right');
   const missingSides = !hasLeft || !hasRight;
   const angleCount = activeScan.anglesCaptured.filter((a) => a !== 'smile').length;
+  const confidencePct = Math.round(
+    (activeScan.scanConfidence ??
+      Math.min(0.95, Math.max(0.35, activeScan.qualityScore / 100))) * 100
+  );
+  const hasExprNotice = (activeScan.expressionScore ?? 0) >= 0.15;
   const confidenceNote =
     angleCount >= 4
       ? 'Based on 4 angles (incl. 90°)'
@@ -263,7 +270,7 @@ export const FacialAestheticsReport: React.FC<FacialAestheticsReportProps> = ({
     ctx.fillText(tierMeta.bracketLabel, 450, 260);
     ctx.fillStyle = '#9CA3AF';
     ctx.font = '18px sans-serif';
-    ctx.fillText(`${confidenceNote} · Face shape: ${activeScan.faceShape}`, 450, 298);
+    ctx.fillText(`${confidenceNote} · Confidence ${confidencePct}% · Face shape: ${activeScan.faceShape}`, 450, 298);
 
     // Sub-scores grid
     const list = pillars.slice(0, 8);
@@ -352,13 +359,15 @@ export const FacialAestheticsReport: React.FC<FacialAestheticsReportProps> = ({
               ))}
             </select>
           )}
-          <button
-            type="button"
-            onClick={handleSaveReportAsImage}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-semibold min-h-[40px] hover:border-[var(--accent)]/40 transition"
-          >
-            <Download className="w-3.5 h-3.5 text-[var(--accent)]" /> Save report as image
-          </button>
+          {!activeScan.isImplausible && (
+            <button
+              type="button"
+              onClick={handleSaveReportAsImage}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-semibold min-h-[40px] hover:border-[var(--accent)]/40 transition"
+            >
+              <Download className="w-3.5 h-3.5 text-[var(--accent)]" /> Save report as image
+            </button>
+          )}
           <button
             type="button"
             onClick={onStartNewScan}
@@ -368,6 +377,37 @@ export const FacialAestheticsReport: React.FC<FacialAestheticsReportProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Plausibility guard: replace report when multiple metrics fall outside human bounds */}
+      {activeScan.isImplausible ? (
+        <div className="ascend-card p-6 sm:p-8 border-amber-500/40 bg-amber-500/10 text-center space-y-4">
+          <div className="w-14 h-14 rounded-full bg-amber-500/20 border border-amber-400/40 flex items-center justify-center mx-auto">
+            <AlertTriangle className="w-7 h-7 text-amber-400" />
+          </div>
+          <div className="space-y-1.5 max-w-md mx-auto">
+            <h3 className="font-display text-lg font-bold text-amber-300">
+              {activeScan.plausibilityWarning ||
+                'This scan looks unusual — retake with a neutral face, camera at eye level'}
+            </h3>
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+              Several facial measurements fell outside typical human proportions, which usually happens from extreme tilt, lens proximity, or a strong facial expression.
+            </p>
+            {activeScan.implausibleMetrics && activeScan.implausibleMetrics.length > 0 && (
+              <p className="text-[11px] font-mono-num text-amber-400/90 pt-1">
+                Flagged ratios: {activeScan.implausibleMetrics.join(' · ')}
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={onStartNewScan}
+            className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-bold min-h-[44px]"
+          >
+            <RotateCcw className="w-4 h-4" /> Retake Scan
+          </button>
+        </div>
+      ) : (
+        <>
 
       {/* Prompt to add missing side photos and recompute report */}
       {missingSides && (
@@ -470,17 +510,33 @@ export const FacialAestheticsReport: React.FC<FacialAestheticsReportProps> = ({
                 <p className="text-[11px] font-bold uppercase tracking-widest text-[var(--accent)]">
                   Overall Estimate
                 </p>
-                <div className="flex items-baseline gap-2 mt-1">
+                <div className="flex flex-wrap items-baseline gap-2.5 mt-1">
                   <span className="font-mono-num text-5xl font-bold tracking-tight">
                     {activeScan.pslEstimate}
                   </span>
                   <span className="text-sm font-mono-num text-slate-500 dark:text-slate-400">
                     / 8.0
                   </span>
+                  <span
+                    className={`px-2.5 py-1 rounded-full text-[11px] font-mono-num font-bold border ${
+                      confidencePct >= 75
+                        ? 'bg-emerald-500/15 border-emerald-500/35 text-emerald-400'
+                        : confidencePct >= 50
+                        ? 'bg-amber-500/15 border-amber-500/35 text-amber-400'
+                        : 'bg-rose-500/15 border-rose-500/35 text-rose-400'
+                    }`}
+                  >
+                    Confidence {confidencePct}%
+                  </span>
                 </div>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
                   {confidenceNote} · Quality {activeScan.qualityScore}/100 · Light {activeScan.lightingScore}/100
                 </p>
+                {hasExprNotice && (
+                  <p className="text-[11px] text-amber-400 font-medium mt-0.5">
+                    Non-neutral expression detected — confidence lowered on mouth, jaw, and eye metrics.
+                  </p>
+                )}
               </div>
 
               <div className="px-3.5 py-2.5 rounded-2xl bg-[var(--accent-soft)] border border-[var(--accent)]/30 text-right">
@@ -797,6 +853,8 @@ export const FacialAestheticsReport: React.FC<FacialAestheticsReportProps> = ({
           </p>
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 };

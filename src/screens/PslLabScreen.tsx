@@ -335,9 +335,16 @@ export const PslLabScreen: React.FC<PslLabScreenProps> = ({ scans, settings, onB
                         <div className="min-w-0">
                           <p className="text-sm font-semibold">
                             {s.date} · <span className="font-mono-num">{s.pslEstimate}/8</span> ({meta.bracketLabel})
+                            {s.scanConfidence !== undefined && (
+                              <span className="ml-1.5 text-xs font-mono-num text-slate-500 dark:text-slate-400">
+                                · Conf {Math.round(s.scanConfidence * 100)}%
+                              </span>
+                            )}
                           </p>
                           <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                            Quality {s.qualityScore}/100 · Light {s.lightingScore}/100 · Angles: {s.anglesCaptured.join(', ')}
+                            {s.isImplausible
+                              ? 'Unusual scan — retake with neutral face'
+                              : `Quality ${s.qualityScore}/100 · Light ${s.lightingScore}/100 · Angles: ${s.anglesCaptured.join(', ')}`}
                           </p>
                         </div>
                       </div>
