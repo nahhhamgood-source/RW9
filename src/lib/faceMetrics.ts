@@ -596,11 +596,11 @@ export function evaluateLandmarksQuality(
       }
       const fMean = fSum / (foreData.length / 4);
       const cMean = cSum / (cheekData.length / 4);
-      if (cMean - fMean > 48) {
+      if (cMean - fMean > 68) {
         warnReasons.push('Hair may be covering your forehead');
         warnDomains.add('occlusion');
       }
-      if (fMean > 225) {
+      if (fMean > 242) {
         warnReasons.push('Glare near glasses or brow bridge');
         warnDomains.add('occlusion');
       }
@@ -640,12 +640,12 @@ export function evaluateLandmarksQuality(
     }
 
     const yawScore = 1 - clamp(Math.abs(yawDeg) / QUALITY_THRESHOLDS.FRONT_BLOCK_YAW_DEG, 0, 1);
-    const rollScore = 1 - clamp(Math.abs(rollDeg) / 18, 0, 1);
-    const pitchScore = 1 - clamp(Math.abs(pitchDeg) / 22, 0, 1);
-    poseProgress = clamp(yawScore * 0.5 + rollScore * 0.25 + pitchScore * 0.25, 0.1, 1);
+    const rollScore = 1 - clamp(Math.abs(rollDeg) / 22, 0, 1);
+    const pitchScore = 1 - clamp(Math.abs(pitchDeg) / 26, 0, 1);
+    poseProgress = clamp(yawScore * 0.5 + rollScore * 0.25 + pitchScore * 0.25, 0.15, 1);
   } else if (expectedAngle === 'left') {
     // Camera sees LEFT jaw when user turns head RIGHT (negative yawDeg)
-    if (yawDeg > 10) {
+    if (yawDeg > 12) {
       blockReasons.push('Turn your head to the RIGHT so your LEFT jaw faces camera');
     } else if (yawDeg > -QUALITY_THRESHOLDS.SIDE_BLOCK_MIN_YAW_DEG) {
       blockReasons.push('Turn slightly more to the right');
@@ -673,12 +673,14 @@ export function evaluateLandmarksQuality(
     }
 
     const absYaw = Math.max(0, -yawDeg);
+    const minPass = QUALITY_THRESHOLDS.SIDE_PASS_MIN_YAW_DEG;
+    const maxPass = QUALITY_THRESHOLDS.SIDE_PASS_MAX_YAW_DEG;
     const distFromTarget =
-      absYaw < 30 ? (30 - absYaw) / 30 : absYaw > 55 ? (absYaw - 55) / 20 : 0;
-    poseProgress = clamp(1 - distFromTarget, 0.12, 1);
+      absYaw < minPass ? (minPass - absYaw) / minPass : absYaw > maxPass ? (absYaw - maxPass) / 20 : 0;
+    poseProgress = clamp(1 - distFromTarget, 0.15, 1);
   } else if (expectedAngle === 'right') {
     // Camera sees RIGHT jaw when user turns head LEFT (positive yawDeg)
-    if (yawDeg < -10) {
+    if (yawDeg < -12) {
       blockReasons.push('Turn your head to the LEFT so your RIGHT jaw faces camera');
     } else if (yawDeg < QUALITY_THRESHOLDS.SIDE_BLOCK_MIN_YAW_DEG) {
       blockReasons.push('Turn slightly more to the left');
@@ -706,9 +708,11 @@ export function evaluateLandmarksQuality(
     }
 
     const absYaw = Math.max(0, yawDeg);
+    const minPass = QUALITY_THRESHOLDS.SIDE_PASS_MIN_YAW_DEG;
+    const maxPass = QUALITY_THRESHOLDS.SIDE_PASS_MAX_YAW_DEG;
     const distFromTarget =
-      absYaw < 30 ? (30 - absYaw) / 30 : absYaw > 55 ? (absYaw - 55) / 20 : 0;
-    poseProgress = clamp(1 - distFromTarget, 0.12, 1);
+      absYaw < minPass ? (minPass - absYaw) / minPass : absYaw > maxPass ? (absYaw - maxPass) / 20 : 0;
+    poseProgress = clamp(1 - distFromTarget, 0.15, 1);
   } else if (expectedAngle === 'profile90') {
     if (Math.abs(yawDeg) < QUALITY_THRESHOLDS.PROFILE90_MIN_YAW_DEG) {
       blockReasons.push('Turn further sideways toward 90° profile');
@@ -720,16 +724,23 @@ export function evaluateLandmarksQuality(
     poseProgress = clamp(Math.abs(yawDeg) / 70, 0.15, 1);
   }
 
-  // Neutral-expression gate from MediaPipe blendshapes (checked on live preview & still capture)
+  // Neutral-expression gate from MediaPipe blendshapes (checked on live preview & still capture).
+  // Side angles foreshorten half the face and skew blendshapes, so side turns warn instead of red-blocking.
   const expr = computeExpressionScore(blendshapes, { mouthOpen, avgEar });
+  const isSideAngle = expectedAngle === 'left' || expectedAngle === 'right' || expectedAngle === 'profile90';
+  let effectiveExpressionGate: QualityLevel = expectedAngle === 'smile' ? 'PASS' : expr.expressionGate;
+  if (isSideAngle && effectiveExpressionGate === 'BLOCK') {
+    effectiveExpressionGate = 'WARN';
+  }
+
   if (expectedAngle !== 'smile') {
-    if (expr.expressionGate === 'BLOCK') {
+    if (effectiveExpressionGate === 'BLOCK') {
       const cueSuffix = expr.expressionCue ? ` (${expr.expressionCue})` : '';
       blockReasons.unshift(`Neutral face please: mouth closed, relax your forehead${cueSuffix}`);
       warnDomains.add('expression');
       warnDomains.add('mouth');
       warnDomains.add('eyes');
-    } else if (expr.expressionGate === 'WARN') {
+    } else if (effectiveExpressionGate === 'WARN' && !isSideAngle) {
       const cueSuffix = expr.expressionCue ? ` — ${expr.expressionCue}` : '';
       warnReasons.unshift(`Relax your face a little${cueSuffix}`);
       warnDomains.add('expression');
@@ -766,7 +777,7 @@ export function evaluateLandmarksQuality(
     yawDeg,
     pitchDeg,
     expressionScore: expr.expressionScore,
-    expressionGate: expectedAngle === 'smile' ? 'PASS' : expr.expressionGate,
+    expressionGate: effectiveExpressionGate,
     expressionCue: expr.expressionCue,
     blendshapes: blendshapes ?? null,
     landmarks,

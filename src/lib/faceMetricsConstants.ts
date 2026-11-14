@@ -7,64 +7,64 @@
  */
 
 export const QUALITY_THRESHOLDS = {
-  /** BLOCK below 25% of frame width so users at arm's length unlock easily */
-  MIN_FACE_WIDTH_BLOCK: 0.25,
-  /** Ideal comfort band >= 32% of frame width */
-  MIN_FACE_WIDTH_PASS: 0.32,
-  /** BLOCK above 92% of frame height (lens pressed right to face) */
-  MAX_FACE_HEIGHT_BLOCK: 0.92,
+  /** BLOCK only if face is very tiny (< 15% of frame width) */
+  MIN_FACE_WIDTH_BLOCK: 0.15,
+  /** Ideal comfort band >= 21% of frame width */
+  MIN_FACE_WIDTH_PASS: 0.21,
+  /** BLOCK above 97% of frame height (lens pressed directly against face) */
+  MAX_FACE_HEIGHT_BLOCK: 0.97,
 
-  /** BLOCK luminance extremes (< 35 dark room, > 230 blown-out highlights) */
-  BRIGHTNESS_BLOCK_MIN: 35,
-  BRIGHTNESS_BLOCK_MAX: 230,
-  /** Comfortable lighting PASS band */
-  BRIGHTNESS_PASS_MIN: 55,
-  BRIGHTNESS_PASS_MAX: 205,
+  /** BLOCK only in near-pitch-dark (< 16) or clipped whiteout (> 246) */
+  BRIGHTNESS_BLOCK_MIN: 16,
+  BRIGHTNESS_BLOCK_MAX: 246,
+  /** Comfortable indoor lighting PASS band */
+  BRIGHTNESS_PASS_MIN: 36,
+  BRIGHTNESS_PASS_MAX: 222,
 
-  /** WARN if left-vs-right face-half mean luminance delta exceeds 38 */
-  SIDE_LIGHT_DIFF_WARN: 38,
-  /** WARN if 4-neighbor Laplacian edge magnitude indicates mild blur */
-  SHARPNESS_WARN_THRESHOLD: 3.5,
+  /** WARN if left-vs-right face-half mean luminance delta exceeds 56 */
+  SIDE_LIGHT_DIFF_WARN: 56,
+  /** WARN if 4-neighbor Laplacian edge magnitude indicates heavy blur */
+  SHARPNESS_WARN_THRESHOLD: 1.8,
 
   /** Front pose PASS limits (degrees) */
-  FRONT_PASS_YAW_DEG: 8,
-  FRONT_PASS_ROLL_DEG: 5,
-  FRONT_PASS_PITCH_DEG: 10,
-  /** Front pose BLOCK limits (wildly turned away, |yaw| > 20°; small tilt/pitch is WARN) */
-  FRONT_BLOCK_YAW_DEG: 20,
+  FRONT_PASS_YAW_DEG: 14,
+  FRONT_PASS_ROLL_DEG: 10,
+  FRONT_PASS_PITCH_DEG: 16,
+  /** Front pose BLOCK limits (only when turned strongly sideways, |yaw| > 28°) */
+  FRONT_BLOCK_YAW_DEG: 28,
 
-  /** 45° side capture PASS band (30–55°) and allowable WARN band (15–30° or 55–70°) */
-  SIDE_PASS_MIN_YAW_DEG: 30,
-  SIDE_PASS_MAX_YAW_DEG: 55,
-  SIDE_BLOCK_MIN_YAW_DEG: 15,
-  SIDE_BLOCK_MAX_YAW_DEG: 70,
-  SIDE_PASS_MAX_ROLL_DEG: 8,
+  /** 45° side capture PASS band (18–64°) and allowable WARN band (8–18° or 64–78°) */
+  SIDE_PASS_MIN_YAW_DEG: 18,
+  SIDE_PASS_MAX_YAW_DEG: 64,
+  SIDE_BLOCK_MIN_YAW_DEG: 8,
+  SIDE_BLOCK_MAX_YAW_DEG: 78,
+  SIDE_PASS_MAX_ROLL_DEG: 14,
 
   /** Optional 90-degree true side profile bounds */
-  PROFILE90_MIN_YAW_DEG: 52,
-  PROFILE90_MAX_ROLL_DEG: 14,
+  PROFILE90_MIN_YAW_DEG: 45,
+  PROFILE90_MAX_ROLL_DEG: 18,
 
-  /** Front shot BLOCK if eyes clearly closed; WARN if mouth slightly open */
-  MIN_EYE_ASPECT_BLOCK: 0.11,
-  MAX_MOUTH_OPEN_WARN: 0.16,
+  /** Front shot BLOCK only if eyes tightly shut; WARN if mouth clearly open */
+  MIN_EYE_ASPECT_BLOCK: 0.06,
+  MAX_MOUTH_OPEN_WARN: 0.26,
 } as const;
 
 /**
  * Neutral-expression gate thresholds (MediaPipe blendshapes, 0 = neutral, 1 = expressive).
- * - < 0.15: PASS (neutral face)
- * - 0.15–0.30: WARN (amber shutter enabled, "Relax your face a little")
- * - > 0.30: BLOCK ("Neutral face please: mouth closed, relax your forehead")
+ * - < 0.28: PASS (neutral face with natural resting tolerance)
+ * - 0.28–0.52: WARN (amber shutter enabled, "Relax your face a little")
+ * - > 0.52: BLOCK ("Neutral face please: mouth closed, relax your forehead")
  */
 export const EXPRESSION_THRESHOLDS = {
-  PASS_MAX: 0.15,
-  WARN_MAX: 0.30,
+  PASS_MAX: 0.28,
+  WARN_MAX: 0.52,
   /** Resting sensor noise floor subtracted before normalizing blendshape cues */
-  RESTING_NOISE_FLOOR: 0.04,
+  RESTING_NOISE_FLOOR: 0.12,
 } as const;
 
 /**
  * Blendshape weights and user-facing cues for neutral-expression scoring.
- * Higher weight amplifies strong non-neutral expressions (smiling, open jaw, puffed cheeks, etc.).
+ * Higher weight catches clear non-neutral expressions while staying tolerant of resting faces.
  */
 export const EXPRESSION_BLENDSHAPE_GROUPS: Array<{
   id: string;
@@ -76,84 +76,84 @@ export const EXPRESSION_BLENDSHAPE_GROUPS: Array<{
   {
     id: 'smile',
     keys: ['mouthSmileLeft', 'mouthSmileRight'],
-    weight: 1.0,
+    weight: 0.95,
     cue: 'Smile detected',
     domain: 'mouth',
   },
   {
     id: 'jawOpen',
     keys: ['jawOpen'],
-    weight: 1.15,
+    weight: 1.05,
     cue: 'Mouth open',
     domain: 'mouth',
   },
   {
     id: 'mouthFunnel',
     keys: ['mouthFunnel'],
-    weight: 1.0,
+    weight: 0.95,
     cue: 'Mouth open',
     domain: 'mouth',
   },
   {
     id: 'mouthPucker',
     keys: ['mouthPucker'],
-    weight: 1.0,
+    weight: 0.9,
     cue: 'Lips puckered',
     domain: 'mouth',
   },
   {
     id: 'cheekPuff',
     keys: ['cheekPuff'],
-    weight: 1.1,
+    weight: 1.0,
     cue: 'Cheeks puffed',
     domain: 'mouth',
   },
   {
     id: 'browInnerUp',
     keys: ['browInnerUp'],
-    weight: 1.0,
+    weight: 0.7,
     cue: 'Eyebrows raised',
     domain: 'eyes',
   },
   {
     id: 'browDown',
     keys: ['browDownLeft', 'browDownRight'],
-    weight: 0.9,
+    weight: 0.6,
     cue: 'Brows furrowed',
     domain: 'eyes',
   },
   {
     id: 'eyeSquint',
     keys: ['eyeSquintLeft', 'eyeSquintRight'],
-    weight: 0.95,
+    weight: 0.55,
     cue: 'Eyes squinted',
     domain: 'eyes',
   },
   {
     id: 'eyeWide',
     keys: ['eyeWideLeft', 'eyeWideRight'],
-    weight: 1.05,
+    weight: 0.75,
     cue: 'Eyes wide open',
     domain: 'eyes',
   },
   {
     id: 'mouthStretch',
     keys: ['mouthStretchLeft', 'mouthStretchRight', 'mouthStretch'],
-    weight: 0.9,
+    weight: 0.65,
     cue: 'Mouth stretched',
     domain: 'mouth',
   },
   {
     id: 'mouthPress',
     keys: ['mouthPressLeft', 'mouthPressRight'],
-    weight: 0.85,
+    weight: 0.55,
     cue: 'Lips pressed',
     domain: 'mouth',
   },
   {
     id: 'noseSneer',
     keys: ['noseSneerLeft', 'noseSneerRight'],
-    weight: 0.9,
+    weight: 0.65,
     cue: 'Nose wrinkled',
     domain: 'mouth',
   },

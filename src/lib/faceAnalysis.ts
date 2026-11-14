@@ -72,9 +72,9 @@ export async function initFaceLandmarker(forceRetry = false): Promise<FaceLandma
         },
         runningMode: 'IMAGE',
         numFaces: 1,
-        minFaceDetectionConfidence: 0.35,
-        minFacePresenceConfidence: 0.35,
-        minTrackingConfidence: 0.35,
+        minFaceDetectionConfidence: 0.25,
+        minFacePresenceConfidence: 0.25,
+        minTrackingConfidence: 0.25,
         outputFaceBlendshapes: true,
         outputFacialTransformationMatrixes: true,
       });

@@ -335,6 +335,7 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
   const autoCaptureRef = useRef(true);
   const handleManualCaptureRef = useRef<() => void>(() => {});
   const passHoldStartMsRef = useRef<number | null>(null);
+  const passGraceUntilMsRef = useRef<number | null>(null);
   const stepEnteredMsRef = useRef<number>(typeof performance !== 'undefined' ? performance.now() : 0);
   const lastGateLevelRef = useRef<'PASS' | 'WARN' | 'BLOCK'>('BLOCK');
   const blockStartMsRef = useRef<number | null>(null);
@@ -344,6 +345,7 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
     autoCaptureRef.current = autoCapture;
     if (!autoCapture) {
       passHoldStartMsRef.current = null;
+      passGraceUntilMsRef.current = null;
     }
   }, [autoCapture]);
 
@@ -424,6 +426,7 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
     latestLiveRef.current = null;
     blockStartMsRef.current = null;
     passHoldStartMsRef.current = null;
+    passGraceUntilMsRef.current = null;
     stepEnteredMsRef.current = typeof performance !== 'undefined' ? performance.now() : 0;
     helpAutoShownForStepRef.current = false;
     lastGateLevelRef.current = 'BLOCK';
@@ -539,14 +542,15 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
     let lastTick = 0;
     const MIN_INTERVAL_MS = 72;
 
-    const AUTO_HOLD_MS = 900;
-    const STEP_SETTLE_MS = 650;
+    const AUTO_HOLD_MS = 650;
+    const STEP_SETTLE_MS = 450;
+    const PASS_FLICKER_GRACE_MS = 280;
 
     const updateDomTelemetry = (q: QualityCheckResult, nowMs: number) => {
       if (yawBadgeRef.current) yawBadgeRef.current.textContent = `${Math.round(q.yawDeg)}°`;
       if (lightBadgeRef.current) {
         lightBadgeRef.current.textContent =
-          q.brightness < 55 ? 'Dim' : q.brightness > 205 ? 'Bright' : 'Good';
+          q.brightness < 36 ? 'Dim' : q.brightness > 222 ? 'Bright' : 'Good';
       }
 
       if (yawMarkerRef.current) {
@@ -554,15 +558,17 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
         yawMarkerRef.current.style.left = `${pct}%`;
       }
 
-      // Smooth auto-hold countdown when Auto mode is ON and quality is PASS
+      // Smooth auto-hold countdown when Auto mode is ON and quality is PASS (with brief flicker grace)
       let autoHoldFraction = 0;
+      const settled = nowMs - stepEnteredMsRef.current >= STEP_SETTLE_MS;
       const canAutoTrigger =
         autoCaptureRef.current &&
         q.level === 'PASS' &&
         !busyRef.current &&
-        nowMs - stepEnteredMsRef.current >= STEP_SETTLE_MS;
+        settled;
 
       if (canAutoTrigger) {
+        passGraceUntilMsRef.current = null;
         if (passHoldStartMsRef.current === null) {
           passHoldStartMsRef.current = nowMs;
         }
@@ -570,6 +576,7 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
         autoHoldFraction = Math.min(1, elapsed / AUTO_HOLD_MS);
         if (elapsed >= AUTO_HOLD_MS) {
           passHoldStartMsRef.current = null;
+          passGraceUntilMsRef.current = null;
           try {
             navigator.vibrate?.(45);
           } catch {
@@ -578,8 +585,25 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
           handleManualCaptureRef.current();
           return;
         }
+      } else if (
+        autoCaptureRef.current &&
+        q.level === 'WARN' &&
+        !busyRef.current &&
+        settled &&
+        passHoldStartMsRef.current !== null
+      ) {
+        if (passGraceUntilMsRef.current === null) {
+          passGraceUntilMsRef.current = nowMs + PASS_FLICKER_GRACE_MS;
+        }
+        if (nowMs <= passGraceUntilMsRef.current) {
+          autoHoldFraction = Math.min(0.95, (nowMs - passHoldStartMsRef.current) / AUTO_HOLD_MS);
+        } else {
+          passHoldStartMsRef.current = null;
+          passGraceUntilMsRef.current = null;
+        }
       } else {
         passHoldStartMsRef.current = null;
+        passGraceUntilMsRef.current = null;
       }
 
       if (poseRingRef.current) {
@@ -1176,7 +1200,7 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
       if (mountedRef.current && !busyRef.current) {
         dispatch({ type: 'ACCEPT', expectedStepIndex: expectedStep });
       }
-    }, 750);
+    }, 550);
     return () => window.clearTimeout(timer);
   }, [isCleanPassPending, state.busy, state.stepIndex]);
 
