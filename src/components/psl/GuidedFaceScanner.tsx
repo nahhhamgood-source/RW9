@@ -4,7 +4,6 @@ import type { NormalizedLandmark } from '@mediapipe/tasks-vision';
 import {
   AlertTriangle,
   ArrowLeft,
-  ArrowRight,
   Camera,
   CheckCircle2,
   FileCheck2,
@@ -233,6 +232,7 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
   const isReviewing = Boolean(state.pendingReview);
 
   const [draftRestored, setDraftRestored] = useState(false);
+  const [autoCapture, setAutoCapture] = useState(true);
   const [engineStatus, setEngineStatus] = useState(getScannerState());
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -329,13 +329,23 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
   const gateReasonRef = useRef<HTMLParagraphElement | null>(null);
   const poseRingRef = useRef<SVGCircleElement | null>(null);
   const yawBadgeRef = useRef<HTMLSpanElement | null>(null);
-  const rollBadgeRef = useRef<HTMLSpanElement | null>(null);
   const lightBadgeRef = useRef<HTMLSpanElement | null>(null);
   const yawMarkerRef = useRef<HTMLDivElement | null>(null);
 
+  const autoCaptureRef = useRef(true);
+  const handleManualCaptureRef = useRef<() => void>(() => {});
+  const passHoldStartMsRef = useRef<number | null>(null);
+  const stepEnteredMsRef = useRef<number>(typeof performance !== 'undefined' ? performance.now() : 0);
   const lastGateLevelRef = useRef<'PASS' | 'WARN' | 'BLOCK'>('BLOCK');
   const blockStartMsRef = useRef<number | null>(null);
   const helpAutoShownForStepRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    autoCaptureRef.current = autoCapture;
+    if (!autoCapture) {
+      passHoldStartMsRef.current = null;
+    }
+  }, [autoCapture]);
 
   // Keep synchronous busy ref aligned with reducer state
   useEffect(() => {
@@ -413,6 +423,8 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
   useEffect(() => {
     latestLiveRef.current = null;
     blockStartMsRef.current = null;
+    passHoldStartMsRef.current = null;
+    stepEnteredMsRef.current = typeof performance !== 'undefined' ? performance.now() : 0;
     helpAutoShownForStepRef.current = false;
     lastGateLevelRef.current = 'BLOCK';
     setRejectedStill(null);
@@ -527,18 +539,55 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
     let lastTick = 0;
     const MIN_INTERVAL_MS = 72;
 
+    const AUTO_HOLD_MS = 900;
+    const STEP_SETTLE_MS = 650;
+
     const updateDomTelemetry = (q: QualityCheckResult, nowMs: number) => {
       if (yawBadgeRef.current) yawBadgeRef.current.textContent = `${Math.round(q.yawDeg)}°`;
-      if (rollBadgeRef.current) rollBadgeRef.current.textContent = `${Math.round(q.rollDeg)}°`;
-      if (lightBadgeRef.current) lightBadgeRef.current.textContent = `${Math.round(q.brightness)}`;
+      if (lightBadgeRef.current) {
+        lightBadgeRef.current.textContent =
+          q.brightness < 55 ? 'Dim' : q.brightness > 205 ? 'Bright' : 'Good';
+      }
 
       if (yawMarkerRef.current) {
         const pct = Math.max(4, Math.min(96, 50 + (q.yawDeg / 75) * 46));
         yawMarkerRef.current.style.left = `${pct}%`;
       }
 
+      // Smooth auto-hold countdown when Auto mode is ON and quality is PASS
+      let autoHoldFraction = 0;
+      const canAutoTrigger =
+        autoCaptureRef.current &&
+        q.level === 'PASS' &&
+        !busyRef.current &&
+        nowMs - stepEnteredMsRef.current >= STEP_SETTLE_MS;
+
+      if (canAutoTrigger) {
+        if (passHoldStartMsRef.current === null) {
+          passHoldStartMsRef.current = nowMs;
+        }
+        const elapsed = nowMs - passHoldStartMsRef.current;
+        autoHoldFraction = Math.min(1, elapsed / AUTO_HOLD_MS);
+        if (elapsed >= AUTO_HOLD_MS) {
+          passHoldStartMsRef.current = null;
+          try {
+            navigator.vibrate?.(45);
+          } catch {
+            // Ignore unsupported vibrate
+          }
+          handleManualCaptureRef.current();
+          return;
+        }
+      } else {
+        passHoldStartMsRef.current = null;
+      }
+
       if (poseRingRef.current) {
-        const offset = RING_CIRCUMFERENCE * (1 - Math.max(0.04, Math.min(1, q.poseProgress)));
+        const ringFill =
+          q.level === 'PASS' && autoHoldFraction > 0
+            ? Math.max(q.poseProgress, autoHoldFraction)
+            : q.poseProgress;
+        const offset = RING_CIRCUMFERENCE * (1 - Math.max(0.05, Math.min(1, ringFill)));
         poseRingRef.current.style.strokeDashoffset = `${offset}`;
         poseRingRef.current.style.stroke =
           q.level === 'PASS'
@@ -552,7 +601,7 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
 
       if (lastGateLevelRef.current !== 'PASS' && q.level === 'PASS') {
         try {
-          navigator.vibrate?.(35);
+          navigator.vibrate?.(30);
         } catch {
           // Ignore unsupported vibrate
         }
@@ -580,31 +629,35 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
 
         if (q.level === 'PASS') {
           shutterBtnRef.current.className =
-            'flex-1 py-3.5 px-4 rounded-2xl bg-emerald-500 hover:bg-emerald-400 active:scale-[0.98] text-[#03150E] font-bold text-sm min-h-[48px] flex items-center justify-center gap-2 transition shadow-lg shadow-emerald-500/20';
-          shutterLabelRef.current.textContent = 'Capture Angle';
+            'w-full py-3.5 px-5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 active:scale-[0.98] text-[#03150E] font-bold text-sm min-h-[48px] flex items-center justify-center gap-2 transition shadow-lg shadow-emerald-500/20 whitespace-nowrap';
+          shutterLabelRef.current.textContent =
+            autoHoldFraction > 0.08 ? 'Hold steady — snapping...' : 'Capture Now';
         } else if (q.level === 'WARN') {
           shutterBtnRef.current.className =
-            'flex-1 py-3.5 px-4 rounded-2xl bg-amber-400 hover:bg-amber-300 active:scale-[0.98] text-black font-bold text-sm min-h-[48px] flex items-center justify-center gap-2 transition shadow-lg shadow-amber-500/15';
+            'w-full py-3.5 px-5 rounded-2xl bg-amber-400 hover:bg-amber-300 active:scale-[0.98] text-black font-bold text-sm min-h-[48px] flex items-center justify-center gap-2 transition shadow-lg shadow-amber-500/15 whitespace-nowrap';
           shutterLabelRef.current.textContent =
-            q.expressionGate === 'WARN' ? 'Capture (relax face)' : 'Capture (lower accuracy)';
+            q.expressionGate === 'WARN' ? 'Capture (relax face)' : 'Capture Anyway';
         } else {
           shutterBtnRef.current.className =
-            'flex-1 py-3.5 px-4 rounded-2xl bg-white/10 text-slate-300 font-semibold text-sm min-h-[48px] flex items-center justify-center gap-2 transition opacity-55 cursor-not-allowed';
+            'w-full py-3.5 px-5 rounded-2xl bg-white/10 text-slate-300 font-semibold text-sm min-h-[48px] flex items-center justify-center gap-2 transition opacity-60 cursor-not-allowed whitespace-nowrap';
           shutterLabelRef.current.textContent =
-            q.expressionGate === 'BLOCK' ? 'Neutral face required' : 'Capture Angle';
+            q.expressionGate === 'BLOCK' ? 'Neutral face required' : 'Align face in ring';
         }
       }
 
       if (gateReasonRef.current) {
-        gateReasonRef.current.textContent = q.primaryInstruction;
+        gateReasonRef.current.textContent =
+          q.level === 'PASS' && autoHoldFraction > 0.08
+            ? 'Aligned — hold steady...'
+            : q.primaryInstruction;
         gateReasonRef.current.className =
           q.level === 'PASS'
-            ? 'text-sm sm:text-base font-bold text-emerald-400 text-center min-h-[24px]'
+            ? 'text-sm font-bold text-emerald-400 text-center min-h-[22px]'
             : q.level === 'WARN'
-            ? 'text-sm sm:text-base font-semibold text-amber-300 text-center min-h-[24px]'
+            ? 'text-sm font-semibold text-amber-300 text-center min-h-[22px]'
             : q.expressionGate === 'BLOCK'
-            ? 'text-sm sm:text-base font-semibold text-rose-300 text-center min-h-[24px]'
-            : 'text-sm sm:text-base font-semibold text-sky-200 text-center min-h-[24px]';
+            ? 'text-sm font-semibold text-rose-300 text-center min-h-[22px]'
+            : 'text-sm font-semibold text-sky-200 text-center min-h-[22px]';
       }
 
       // Only update React devTelemetry state when hidden dev panel is toggled ON (throttled ~4 Hz)
@@ -1107,6 +1160,26 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
     }
   }, [isAugmentMode, state.captures, state.phase, state.stepIndex]);
 
+  handleManualCaptureRef.current = handleManualCapture;
+
+  const isCleanPassPending =
+    autoCapture &&
+    Boolean(state.pendingReview) &&
+    state.pendingReview?.quality?.level === 'PASS' &&
+    state.pendingReview?.captureStatus === 'captured';
+
+  // Auto-advance smoothly after a brief confirmation flash on clean PASS captures
+  useEffect(() => {
+    if (!isCleanPassPending || state.busy) return;
+    const expectedStep = state.stepIndex;
+    const timer = window.setTimeout(() => {
+      if (mountedRef.current && !busyRef.current) {
+        dispatch({ type: 'ACCEPT', expectedStepIndex: expectedStep });
+      }
+    }, 750);
+    return () => window.clearTimeout(timer);
+  }, [isCleanPassPending, state.busy, state.stepIndex]);
+
   const handleAccept = () => {
     if (busyRef.current || state.busy || !state.pendingReview) return;
     dispatch({ type: 'ACCEPT', expectedStepIndex: state.stepIndex });
@@ -1171,14 +1244,14 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
         className="hidden"
       />
 
-      {/* Top Bar + 3-Dot Progress Indicator (Front · Left · Right) */}
-      <header className="relative z-20 shrink-0 bg-[#0B110E]/95 backdrop-blur-xl border-b border-emerald-500/15 px-3 py-2.5 space-y-2">
+      {/* Compact Header + Clean Step Switcher */}
+      <header className="relative z-20 shrink-0 bg-[#0B110E]/95 backdrop-blur-xl border-b border-emerald-500/15 px-3 py-2 space-y-2">
         <div className="max-w-2xl mx-auto flex items-center justify-between gap-2">
           <button
             type="button"
             onClick={handleExit}
             aria-label="Exit scanner"
-            className="w-12 h-12 rounded-full bg-white/5 hover:bg-white/10 active:scale-[0.96] flex items-center justify-center shrink-0 transition"
+            className="w-11 h-11 rounded-full bg-white/5 hover:bg-white/10 active:scale-[0.96] flex items-center justify-center shrink-0 transition"
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
@@ -1190,20 +1263,20 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
                 : state.finalReady
                 ? 'Ready for Your Report'
                 : isAugmentMode
-                ? `Add Side Photos · ${currentStep.title}`
-                : `Face Scanner · ${currentStep.title}`}
+                ? `Add Side · ${currentStep.title}`
+                : `${currentStep.title}`}
             </h1>
             <p className="text-[11px] text-slate-400 truncate flex items-center justify-center gap-1.5">
               <span>
-                {draftRestored
-                  ? 'Draft restored · 100% on-device'
-                  : '100% on-device · Only Front is required'}
+                {state.finalReady
+                  ? 'Review or generate report'
+                  : `Step ${state.stepIndex + 1} of 3${draftRestored ? ' · Resumed' : ' · On-device'}`}
               </span>
               <span aria-hidden="true">·</span>
               <button
                 type="button"
                 onClick={handleScanIdTap}
-                className="font-mono-num text-slate-400 hover:text-slate-200 focus:outline-none select-none"
+                className="font-mono-num text-slate-400 hover:text-slate-200 focus:outline-none select-none whitespace-nowrap"
                 title="Scan ID"
               >
                 Scan ID: {sessionScanId}
@@ -1215,14 +1288,14 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
             type="button"
             onClick={() => setShowHelpSheet(true)}
             aria-label="Camera tips and upload help"
-            className="w-12 h-12 rounded-full bg-white/5 hover:bg-white/10 active:scale-[0.96] flex items-center justify-center shrink-0 transition"
+            className="w-11 h-11 rounded-full bg-white/5 hover:bg-white/10 active:scale-[0.96] flex items-center justify-center shrink-0 transition"
           >
             <HelpCircle className="w-5 h-5 text-slate-300" />
           </button>
         </div>
 
-        {/* Tappable Progress Dots: Front · Left · Right */}
-        <div className="max-w-md mx-auto flex items-center justify-center gap-2">
+        {/* Sleek Segmented Step Bar: 1. Front · 2. Left · 3. Right */}
+        <div className="max-w-md mx-auto grid grid-cols-3 gap-1 p-1 rounded-xl bg-white/[0.04] border border-white/10">
           {STEP_META.map((s, idx) => {
             const entry = state.captures[s.key];
             const done = entry.status === 'accepted';
@@ -1230,40 +1303,29 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
             const active = state.phase === 'capture' && !state.finalReady && idx === state.stepIndex;
             const clickable = canJumpToStep(idx);
             return (
-              <React.Fragment key={s.key}>
-                <button
-                  type="button"
-                  disabled={!clickable}
-                  onClick={() => dispatch({ type: 'GO_TO', step: idx })}
-                  title={done ? `Go to ${s.shortTitle} (retake or view)` : s.shortTitle}
-                  className={`min-h-[36px] flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border transition active:scale-[0.97] ${
-                    active
-                      ? 'bg-emerald-500/20 border-emerald-400/70 text-emerald-300'
-                      : done
-                      ? 'bg-emerald-500/15 border-emerald-500/35 text-emerald-400 hover:bg-emerald-500/25'
-                      : skipped
-                      ? 'bg-white/10 border-white/20 text-slate-300 hover:bg-white/15'
-                      : 'bg-white/[0.04] border-white/10 text-slate-400 disabled:opacity-50'
-                  }`}
-                >
-                  <span
-                    className={`w-2 h-2 rounded-full ${
-                      active
-                        ? 'bg-emerald-400 animate-pulse'
-                        : done
-                        ? 'bg-emerald-400'
-                        : skipped
-                        ? 'bg-amber-400'
-                        : 'bg-slate-600'
-                    }`}
-                  />
-                  {done && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
-                  <span>{s.shortTitle}</span>
-                </button>
-                {idx < STEP_META.length - 1 && (
-                  <span className="w-4 h-px bg-white/15 shrink-0" aria-hidden="true" />
+              <button
+                key={s.key}
+                type="button"
+                disabled={!clickable}
+                onClick={() => dispatch({ type: 'GO_TO', step: idx })}
+                title={done ? `Go to ${s.shortTitle} (retake or view)` : s.shortTitle}
+                className={`min-h-[36px] flex items-center justify-center gap-1.5 px-2 py-1 rounded-lg text-xs font-semibold transition whitespace-nowrap shrink-0 active:scale-[0.98] ${
+                  active
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/50'
+                    : done
+                    ? 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/15'
+                    : skipped
+                    ? 'text-slate-300 hover:bg-white/5'
+                    : 'text-slate-400 disabled:opacity-45'
+                }`}
+              >
+                {done ? (
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                ) : (
+                  <span className="font-mono-num text-[11px] opacity-75">{idx + 1}.</span>
                 )}
-              </React.Fragment>
+                <span>{s.shortTitle}</span>
+              </button>
             );
           })}
         </div>
@@ -1325,67 +1387,6 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
         </div>
       ) : (
         <div className="flex-1 min-h-0 flex flex-col max-w-2xl w-full mx-auto p-2.5 sm:p-4 gap-2.5 overflow-y-auto overscroll-y-contain">
-          {/* Guidance & Live Metrics Strip (hidden on Final Summary card) */}
-          {!state.finalReady && (
-            <div className="shrink-0 rounded-2xl bg-[#0B120F] border border-emerald-500/20 px-3.5 py-2 space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-xs font-medium text-slate-200 leading-snug">
-                  {currentStep.instruction}
-                </p>
-                {currentStep.key === 'left' && (
-                  <span className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-sky-500/15 border border-sky-400/35 text-[11px] font-bold text-sky-300">
-                    Turn RIGHT <ArrowRight className="w-3.5 h-3.5" />
-                  </span>
-                )}
-                {currentStep.key === 'right' && (
-                  <span className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-sky-500/15 border border-sky-400/35 text-[11px] font-bold text-sky-300">
-                    <ArrowLeft className="w-3.5 h-3.5" /> Turn LEFT
-                  </span>
-                )}
-              </div>
-
-              {(currentStep.key === 'left' || currentStep.key === 'right') && (
-                <div className="space-y-1">
-                  <div className="relative h-2 rounded-full bg-white/10 overflow-hidden">
-                    <div
-                      className="absolute top-0 bottom-0 bg-emerald-400/35 border-x border-emerald-400"
-                      style={
-                        currentStep.key === 'left'
-                          ? { left: '16%', width: '16%' }
-                          : { left: '68%', width: '16%' }
-                      }
-                    />
-                    <div
-                      ref={yawMarkerRef}
-                      className="absolute top-0 bottom-0 w-1.5 -ml-[3px] rounded-full bg-white shadow"
-                      style={{ left: '50%' }}
-                    />
-                  </div>
-                  <div className="flex justify-between text-[10px] font-mono-num text-slate-400">
-                    <span>Right turn 55°</span>
-                    <span>0° Center</span>
-                    <span>Left turn 55°</span>
-                  </div>
-                </div>
-              )}
-
-              <div className="grid grid-cols-3 gap-1.5 text-[10.5px] font-mono-num">
-                <div className="px-2 py-1 rounded-lg bg-black/40 border border-white/10 text-center">
-                  <span className="text-slate-400">YAW </span>
-                  <span ref={yawBadgeRef} className="text-white font-bold">0°</span>
-                </div>
-                <div className="px-2 py-1 rounded-lg bg-black/40 border border-white/10 text-center">
-                  <span className="text-slate-400">ROLL </span>
-                  <span ref={rollBadgeRef} className="text-white font-bold">0°</span>
-                </div>
-                <div className="px-2 py-1 rounded-lg bg-black/40 border border-white/10 text-center">
-                  <span className="text-slate-400">LIGHT </span>
-                  <span ref={lightBadgeRef} className="text-white font-bold">0</span>
-                </div>
-              </div>
-            </div>
-          )}
-
           {/* Engine Load Error Banner */}
           {engineStatus.status === 'error' && (
             <div className="relative z-20 shrink-0 p-3 rounded-2xl bg-rose-950/90 border border-rose-500/40 flex flex-wrap items-center justify-between gap-2 text-xs">
@@ -1394,14 +1395,14 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
                 <button
                   type="button"
                   onClick={() => initFaceLandmarker(true)}
-                  className="px-3 py-2 rounded-xl bg-rose-500 text-white font-semibold min-h-[40px]"
+                  className="px-3 py-2 rounded-xl bg-rose-500 text-white font-semibold min-h-[40px] whitespace-nowrap"
                 >
                   Retry Model
                 </button>
                 <button
                   type="button"
                   onClick={() => uploadInputRef.current?.click()}
-                  className="px-3 py-2 rounded-xl bg-white/10 text-white font-semibold min-h-[40px]"
+                  className="px-3 py-2 rounded-xl bg-white/10 text-white font-semibold min-h-[40px] whitespace-nowrap"
                 >
                   Use upload instead
                 </button>
@@ -1409,8 +1410,8 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
             </div>
           )}
 
-          {/* Camera Viewport / Preview Overlay / Final Ready Summary */}
-          <div className="relative z-0 flex-1 min-h-[260px] rounded-[24px] overflow-hidden bg-black border border-emerald-500/20">
+          {/* Spacious Camera Viewport / Preview Overlay / Final Ready Summary */}
+          <div className="relative z-0 flex-1 min-h-[320px] rounded-[24px] overflow-hidden bg-black border border-emerald-500/20">
             {/* Persistent <video> & mesh <canvas> remain mounted so Retake/Next never drops camera stream */}
             {cameraActive && (
               <div
@@ -1438,7 +1439,7 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
                 >
                   <circle
                     cx="150"
-                    cy="185"
+                    cy="195"
                     r={RING_RADIUS}
                     fill="none"
                     stroke="rgba(255, 255, 255, 0.14)"
@@ -1447,21 +1448,21 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
                   <circle
                     ref={poseRingRef}
                     cx="150"
-                    cy="185"
+                    cy="195"
                     r={RING_RADIUS}
                     fill="none"
                     stroke="#38BDF8"
-                    strokeWidth="4"
+                    strokeWidth="4.5"
                     strokeLinecap="round"
                     strokeDasharray={RING_CIRCUMFERENCE}
                     strokeDashoffset={RING_CIRCUMFERENCE * 0.9}
-                    transform="rotate(-90 150 185)"
-                    style={{ transition: 'stroke-dashoffset 120ms linear, stroke 180ms ease' }}
+                    transform="rotate(-90 150 195)"
+                    style={{ transition: 'stroke-dashoffset 100ms linear, stroke 180ms ease' }}
                   />
                   {currentStep.key === 'front' && (
                     <ellipse
                       cx="150"
-                      cy="185"
+                      cy="195"
                       rx="76"
                       ry="98"
                       fill="none"
@@ -1470,24 +1471,76 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
                       strokeDasharray="5 5"
                     />
                   )}
+                  {currentStep.key === 'left' && (
+                    <path
+                      d="M126 195 H172 M162 185 L174 195 L162 205"
+                      fill="none"
+                      stroke="rgba(56, 189, 248, 0.78)"
+                      strokeWidth="3"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  )}
+                  {currentStep.key === 'right' && (
+                    <path
+                      d="M174 195 H128 M138 185 L126 195 L138 205"
+                      fill="none"
+                      stroke="rgba(56, 189, 248, 0.78)"
+                      strokeWidth="3"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  )}
                 </svg>
+
+                {/* Clean Top Contrast Scrim: Plain Human Guidance + Unboxed Telemetry */}
+                <div className="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/80 via-black/45 to-transparent px-3.5 pt-3 pb-7 space-y-2">
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <span className="font-semibold text-white leading-snug">
+                      {currentStep.instruction}
+                    </span>
+                    <span className="shrink-0 font-mono-num text-[11px] text-slate-300 whitespace-nowrap">
+                      Yaw <span ref={yawBadgeRef} className="text-white font-semibold">0°</span>
+                      {' · '}
+                      Light <span ref={lightBadgeRef} className="text-white font-semibold">Good</span>
+                    </span>
+                  </div>
+
+                  {(currentStep.key === 'left' || currentStep.key === 'right') && (
+                    <div className="relative h-1.5 rounded-full bg-white/15 overflow-hidden">
+                      <div
+                        className="absolute top-0 bottom-0 bg-emerald-400/50 border-x border-emerald-300"
+                        style={
+                          currentStep.key === 'left'
+                            ? { left: '16%', width: '16%' }
+                            : { left: '68%', width: '16%' }
+                        }
+                      />
+                      <div
+                        ref={yawMarkerRef}
+                        className="absolute top-0 bottom-0 w-2 -ml-1 rounded-full bg-white shadow"
+                        style={{ left: '50%' }}
+                      />
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
-            {/* Final Step Complete Summary Card */}
+            {/* Final Step Complete Summary Card with Visual Thumbnails */}
             {state.finalReady ? (
-              <div className="relative z-10 w-full h-full flex flex-col items-center justify-center p-5 text-center gap-4 bg-[#070D0A]">
-                <div className="w-14 h-14 rounded-full bg-emerald-500/15 border border-emerald-400/40 flex items-center justify-center">
-                  <FileCheck2 className="w-7 h-7 text-emerald-400" />
+              <div className="relative z-10 w-full h-full flex flex-col items-center justify-center p-5 text-center gap-4 bg-[#070D0A] overflow-y-auto">
+                <div className="w-12 h-12 rounded-full bg-emerald-500/15 border border-emerald-400/40 flex items-center justify-center shrink-0">
+                  <FileCheck2 className="w-6 h-6 text-emerald-400" />
                 </div>
                 <div className="space-y-1">
-                  <h2 className="font-display text-lg font-bold">Angles Ready</h2>
+                  <h2 className="font-display text-lg font-bold">Scan Complete</h2>
                   <p className="text-xs text-slate-400 max-w-xs">
-                    Tap &quot;See my report&quot; to compute your facial symmetry, proportions, and score.
+                    Tap any angle below to retake, or open your full analysis report.
                   </p>
                 </div>
 
-                <div className="w-full max-w-sm grid grid-cols-3 gap-2">
+                <div className="w-full max-w-md grid grid-cols-3 gap-2">
                   {STEP_META.map((s, idx) => {
                     const st = state.captures[s.key];
                     const isAccepted = st.status === 'accepted';
@@ -1497,24 +1550,37 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
                         key={s.key}
                         type="button"
                         onClick={() => dispatch({ type: 'GO_TO', step: idx })}
-                        className={`p-2.5 rounded-xl border text-left transition active:scale-[0.98] ${
+                        className={`rounded-2xl border overflow-hidden text-left transition active:scale-[0.98] ${
                           isAccepted
-                            ? 'bg-emerald-500/10 border-emerald-500/30'
+                            ? 'bg-emerald-500/10 border-emerald-500/35'
                             : 'bg-white/[0.04] border-white/10'
                         }`}
                       >
-                        <p className="text-xs font-bold text-white">{s.shortTitle}</p>
-                        <p
-                          className={`text-[10.5px] mt-0.5 ${
-                            isAccepted
-                              ? missingLm
-                                ? 'text-amber-300'
-                                : 'text-emerald-400'
-                              : 'text-slate-400'
-                          }`}
-                        >
-                          {isAccepted ? (missingLm ? 'Lower acc.' : 'Captured') : 'Skipped'}
-                        </p>
+                        <div className="aspect-[4/3] w-full bg-black/70 flex items-center justify-center overflow-hidden">
+                          {st.previewUrl ? (
+                            <img
+                              src={st.previewUrl}
+                              alt={`${s.shortTitle} capture`}
+                              className={`w-full h-full object-cover ${st.isMirrored ? 'scale-x-[-1]' : ''}`}
+                            />
+                          ) : (
+                            <Camera className="w-5 h-5 text-slate-500" />
+                          )}
+                        </div>
+                        <div className="px-2.5 py-2">
+                          <p className="text-xs font-bold text-white truncate">{s.shortTitle}</p>
+                          <p
+                            className={`text-[10.5px] truncate ${
+                              isAccepted
+                                ? missingLm
+                                  ? 'text-amber-300'
+                                  : 'text-emerald-400'
+                                : 'text-slate-400'
+                            }`}
+                          >
+                            {isAccepted ? (missingLm ? 'Lower acc.' : 'Ready · Retake') : 'Skipped · Add'}
+                          </p>
+                        </div>
                       </button>
                     );
                   })}
@@ -1546,6 +1612,16 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
                     state.pendingReview.isMirrored ? 'scale-x-[-1]' : ''
                   }`}
                 />
+                {isCleanPassPending && (
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent px-4 pb-4 pt-10 flex items-center justify-center">
+                    <span className="inline-flex items-center gap-1.5 text-sm font-bold text-emerald-300">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                      {state.stepIndex < STEP_META.length - 1
+                        ? `${currentStep.shortTitle} captured — moving to ${STEP_META[state.stepIndex + 1].shortTitle}...`
+                        : 'All angles captured!'}
+                    </span>
+                  </div>
+                )}
               </div>
             ) : !cameraActive ? (
               <div className="relative z-10 w-full h-full flex flex-col items-center justify-center p-6 text-center gap-3">
@@ -1670,6 +1746,8 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
                         } (lower confidence)`
                       : state.pendingReview.quality?.level === 'WARN'
                       ? 'Captured with lower-accuracy note'
+                      : isCleanPassPending
+                      ? 'Clean capture — advancing...'
                       : 'Photo ready'}
                   </span>
                   {state.pendingReview.quality && (
@@ -1686,7 +1764,7 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
                     type="button"
                     disabled={state.busy}
                     onClick={handleRetake}
-                    className="py-3 rounded-xl bg-white/10 hover:bg-white/15 active:scale-[0.98] text-xs font-semibold min-h-[48px] flex items-center justify-center gap-1.5 transition"
+                    className="py-3 rounded-xl bg-white/10 hover:bg-white/15 active:scale-[0.98] text-xs font-semibold min-h-[48px] flex items-center justify-center gap-1.5 transition whitespace-nowrap"
                   >
                     <RotateCcw className="w-4 h-4" /> Retake
                   </button>
@@ -1694,87 +1772,98 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
                     type="button"
                     disabled={state.busy}
                     onClick={handleAccept}
-                    className="py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-[0.98] text-[#03150E] text-xs font-bold min-h-[48px] flex items-center justify-center gap-1.5 transition"
+                    className="py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-[0.98] text-[#03150E] text-xs font-bold min-h-[48px] flex items-center justify-center gap-1.5 transition whitespace-nowrap"
                   >
-                    <CheckCircle2 className="w-4 h-4" /> Use this photo
+                    <CheckCircle2 className="w-4 h-4" /> {isCleanPassPending ? 'Next now' : 'Use this photo'}
                   </button>
                 </div>
               </div>
             ) : (
-              <>
+              <div className="space-y-2.5">
                 <p
                   ref={gateReasonRef}
-                  className="text-sm sm:text-base font-semibold text-sky-200 text-center min-h-[24px]"
+                  className="text-sm font-semibold text-sky-200 text-center min-h-[22px]"
                 >
                   {cameraActive ? 'Align your face inside the ring' : 'Enable camera or upload a photo'}
                 </p>
 
-                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                <button
+                  ref={shutterBtnRef}
+                  type="button"
+                  onClick={handleManualCapture}
+                  disabled={!cameraActive || engineStatus.status !== 'ready' || state.busy}
+                  className="w-full py-3.5 px-5 rounded-2xl bg-white/10 text-slate-300 font-semibold text-sm min-h-[48px] flex items-center justify-center gap-2 transition active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed whitespace-nowrap"
+                >
+                  {state.busy ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Capturing...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Camera className="w-4 h-4" />
+                      <span ref={shutterLabelRef}>Align face in ring</span>
+                    </>
+                  )}
+                </button>
+
+                <div className="flex items-center justify-between gap-1.5 overflow-x-auto no-scrollbar">
                   <button
-                    ref={shutterBtnRef}
                     type="button"
-                    onClick={handleManualCapture}
-                    disabled={!cameraActive || engineStatus.status !== 'ready' || state.busy}
-                    className="flex-1 py-3.5 px-4 rounded-2xl bg-white/10 text-slate-300 font-semibold text-sm min-h-[48px] flex items-center justify-center gap-2 transition active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+                    disabled={state.busy}
+                    onClick={() => setAutoCapture((v) => !v)}
+                    className={`px-3 py-2.5 rounded-xl text-xs font-semibold min-h-[44px] flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 border transition active:scale-[0.98] ${
+                      autoCapture
+                        ? 'bg-emerald-500/15 border-emerald-500/35 text-emerald-300'
+                        : 'bg-white/5 border-white/10 text-slate-300'
+                    }`}
                   >
-                    {state.busy ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        <span>Capturing...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Camera className="w-4 h-4" />
-                        <span ref={shutterLabelRef}>Capture Angle</span>
-                      </>
-                    )}
+                    <span>Auto: {autoCapture ? 'On' : 'Off'}</span>
                   </button>
 
-                  <div className="flex flex-wrap items-center gap-2">
-                    {state.stepIndex > 0 && (
-                      <button
-                        type="button"
-                        disabled={state.busy}
-                        onClick={handleBack}
-                        className="px-3.5 py-3 rounded-2xl bg-white/10 hover:bg-white/15 active:scale-[0.98] text-xs font-semibold min-h-[48px] flex items-center justify-center gap-1"
-                      >
-                        <ArrowLeft className="w-4 h-4" /> Back
-                      </button>
-                    )}
-
+                  {state.stepIndex > 0 && (
                     <button
                       type="button"
                       disabled={state.busy}
-                      onClick={() => uploadInputRef.current?.click()}
-                      className="flex-1 sm:flex-initial px-3.5 py-3 rounded-2xl bg-white/10 hover:bg-white/15 active:scale-[0.98] text-xs font-semibold min-h-[48px] flex items-center justify-center gap-1.5"
+                      onClick={handleBack}
+                      className="px-3 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 active:scale-[0.98] text-xs font-semibold min-h-[44px] flex items-center justify-center gap-1 whitespace-nowrap shrink-0"
                     >
-                      <Upload className="w-4 h-4 text-emerald-400" /> Upload photo
+                      <ArrowLeft className="w-3.5 h-3.5" /> Back
                     </button>
+                  )}
 
-                    {currentStep.optional && (
-                      <button
-                        type="button"
-                        disabled={state.busy}
-                        onClick={handleSkip}
-                        className="flex-1 sm:flex-initial px-3.5 py-3 rounded-2xl bg-white/10 hover:bg-white/15 active:scale-[0.98] text-xs font-semibold min-h-[48px] flex items-center justify-center gap-1.5"
-                      >
-                        <SkipForward className="w-4 h-4" /> Skip for now
-                      </button>
-                    )}
+                  <button
+                    type="button"
+                    disabled={state.busy}
+                    onClick={() => uploadInputRef.current?.click()}
+                    className="px-3 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 active:scale-[0.98] text-xs font-semibold min-h-[44px] flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0"
+                  >
+                    <Upload className="w-3.5 h-3.5 text-emerald-400" /> Upload
+                  </button>
 
-                    {frontAccepted && state.stepIndex > 0 && (
-                      <button
-                        type="button"
-                        disabled={state.busy}
-                        onClick={handleFinish}
-                        className="flex-1 sm:flex-initial px-4 py-3 rounded-2xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 active:scale-[0.98] text-emerald-300 text-xs font-bold min-h-[48px] flex items-center justify-center gap-1.5"
-                      >
-                        <CheckCircle2 className="w-4 h-4" /> Finish / Analyze
-                      </button>
-                    )}
-                  </div>
+                  {currentStep.optional && (
+                    <button
+                      type="button"
+                      disabled={state.busy}
+                      onClick={handleSkip}
+                      className="px-3 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 active:scale-[0.98] text-xs font-semibold min-h-[44px] flex items-center justify-center gap-1 whitespace-nowrap shrink-0"
+                    >
+                      <SkipForward className="w-3.5 h-3.5" /> Skip
+                    </button>
+                  )}
+
+                  {frontAccepted && state.stepIndex > 0 && (
+                    <button
+                      type="button"
+                      disabled={state.busy}
+                      onClick={handleFinish}
+                      className="ml-auto px-3.5 py-2.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 active:scale-[0.98] text-emerald-300 text-xs font-bold min-h-[44px] flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" /> Analyze Now
+                    </button>
+                  )}
                 </div>
-              </>
+              </div>
             )}
 
             {/* Hidden Developer Test Panel (toggled by tapping Scan ID 5 times) */}
