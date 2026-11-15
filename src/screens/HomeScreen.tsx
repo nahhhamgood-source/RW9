@@ -420,7 +420,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         {/* Centered Greeting & Daily Motivational Line */}
         <div className="text-center space-y-1">
           <h1 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-balance">
-            {greetingText}, {profile.name || 'Friend'}
+            {profile.name.trim() ? `${greetingText}, ${profile.name.trim()}` : greetingText}
           </h1>
           <p className="text-xs font-medium text-[var(--accent)]">
             {dailyMotivationalLine}

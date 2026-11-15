@@ -71,7 +71,7 @@ export async function initFaceLandmarker(forceRetry = false): Promise<FaceLandma
           delegate: 'CPU',
         },
         runningMode: 'IMAGE',
-        numFaces: 1,
+        numFaces: 2,
         minFaceDetectionConfidence: 0.25,
         minFacePresenceConfidence: 0.25,
         minTrackingConfidence: 0.25,
@@ -156,6 +156,7 @@ export function detectLandmarksFromVideo(
   video: HTMLVideoElement
 ): {
   landmarks: NormalizedLandmark[] | null;
+  multipleFaces: boolean;
   matrixData: number[] | null;
   blendshapes: Record<string, number> | null;
   sampleCanvas: HTMLCanvasElement;
@@ -166,16 +167,25 @@ export function detectLandmarksFromVideo(
   try {
     const sampleCanvas = getDownscaledCanvas(video, 480);
     const result = engineState.landmarker.detect(sampleCanvas);
+    const faceCount = result?.faceLandmarks?.length ?? 0;
     const rawMatrix = result?.facialTransformationMatrixes?.[0]?.data;
     const blendshapes = extractBlendshapeMap(result?.faceBlendshapes?.[0]?.categories);
     return {
-      landmarks: result?.faceLandmarks?.[0] ?? null,
+      landmarks: faceCount === 1 ? result?.faceLandmarks?.[0] ?? null : null,
+      multipleFaces: faceCount > 1,
       matrixData: rawMatrix ? Array.from(rawMatrix) : null,
       blendshapes,
       sampleCanvas,
     };
   } catch {
     return null;
+  }
+}
+
+export class MultipleFacesError extends Error {
+  constructor() {
+    super('Multiple faces detected — scan only your own face');
+    this.name = 'MultipleFacesError';
   }
 }
 
@@ -201,6 +211,11 @@ export async function detectLandmarksOnStill(
     try {
       const target = canvas.width > 960 ? getDownscaledCanvas(canvas, 960) : canvas;
       const result = lm.detect(target);
+      const faceCount = result?.faceLandmarks?.length ?? 0;
+      if (faceCount > 1) {
+        reject(new MultipleFacesError());
+        return;
+      }
       const rawMatrix = result?.facialTransformationMatrixes?.[0]?.data;
       const blendshapes = extractBlendshapeMap(result?.faceBlendshapes?.[0]?.categories);
       resolve({

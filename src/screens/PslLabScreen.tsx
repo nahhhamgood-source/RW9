@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { db } from '../db/database';
 import {
+  evaluateScanComparisonMatch,
   getPslTierMeta,
   getScannerState,
   initFaceLandmarker,
@@ -203,6 +204,7 @@ export const PslLabScreen: React.FC<PslLabScreenProps> = ({ scans, settings, onB
                   activeScan={activeScan}
                   scans={scans}
                   slangTierNames={settings.slangTierNames ?? true}
+                  includeSkinScore={settings.includeSkinScoreInScans !== false}
                   onSelectScan={(id) => setSelectedResultId(id)}
                   onStartNewScan={() => {
                     setAugmentScan(null);
@@ -302,6 +304,24 @@ export const PslLabScreen: React.FC<PslLabScreenProps> = ({ scans, settings, onB
                     beforeLabel={thumbnailScans[compareA]?.date || 'Earlier'}
                     afterLabel={thumbnailScans[compareB]?.date || 'Later'}
                   />
+                  {(() => {
+                    const match = evaluateScanComparisonMatch(
+                      thumbnailScans[compareA],
+                      thumbnailScans[compareB]
+                    );
+                    return (
+                      <div
+                        className={`p-2.5 rounded-xl border text-xs flex flex-wrap items-center justify-between gap-2 ${
+                          match.comparable
+                            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-300'
+                            : 'bg-amber-500/10 border-amber-500/30 text-amber-800 dark:text-amber-300'
+                        }`}
+                      >
+                        <span className="font-bold">Setup match: {match.label}</span>
+                        <span>{match.reasons.join(' · ')}</span>
+                      </div>
+                    );
+                  })()}
                 </>
               )}
             </div>

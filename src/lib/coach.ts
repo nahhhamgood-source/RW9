@@ -204,12 +204,39 @@ export function answerCoachQuery(query: string, ctx: CoachContext): CoachRespons
     };
   }
 
+  // 7. Height & posture questions
+  if (q.includes('height') || q.includes('grow') || q.includes('tall') || q.includes('posture')) {
+    const heightStr = ctx.profile.heightCm > 0 ? `${ctx.profile.heightCm.toFixed(1)} cm` : 'not logged yet';
+    const hasParents =
+      Boolean(ctx.profile.fatherHeightCm && ctx.profile.fatherHeightCm > 100) &&
+      Boolean(ctx.profile.motherHeightCm && ctx.profile.motherHeightCm > 100);
+    return {
+      title: 'Height & Posture Guidance',
+      bullets: [
+        `Current saved height: ${heightStr} (morning is ~1–2 cm taller than evening from disc hydration).`,
+        hasParents
+          ? 'Your Height Outlook range is shown in Grow based on mid-parental genetics (±8.5 cm).'
+          : 'Add your mother and father height in Grow to unlock your mid-parental height range.',
+        'Real bone growth depends on age, growth plates, 8–10h sleep, protein/calcium/vitamin D nutrition, and overall health.',
+        'Supplements like collagen or pills do not lengthen bone; good posture and thoracic extension only restore ~1–2 cm of upright appearance.',
+      ],
+      moreDetail:
+        'Growth plates close after puberty (around late teens in most people). A doctor checks bone age via a left-hand X-ray if growth seems stalled. Measure barefoot against a wall once a month at the same morning hour.',
+      suggestedActions: [
+        { label: 'Add Posture Reset (Chin Tucks)', protocolId: 'body-posture-reset' },
+        { label: 'Add Fixed Sleep Window', protocolId: 'body-sleep-fixed' },
+      ],
+      escalateNote:
+        'Talk to a doctor if growth has unexpectedly stopped very early or you are considering medical questions — never use unprescribed hormones.',
+    };
+  }
+
   // Default helpful summary
   return {
     title: 'Offline Coach',
     bullets: [
       'I read strictly from your local ASCEND logs, skin diary, workouts, and PSL LAB scans.',
-      'Ask me: "Why is my face puffy?", "What should I do today?", "Fix my skin", "Explain my scan", "What haircut suits me?", or "Analyze my month".',
+      'Ask me: "Why is my face puffy?", "What should I do today?", "Fix my skin", "Explain my scan", "What haircut suits me?", "Height & posture", or "Analyze my month".',
       'All guidance stays private on this device with zero internet requests.',
     ],
     moreDetail: 'For persistent acne, hair loss, jaw pain, or extreme fatigue, always consult a licensed doctor or dermatologist.',

@@ -11,7 +11,7 @@ import {
   Sparkles,
   Trash2,
 } from 'lucide-react';
-import { addProtocolToPlan, db, getOrCreateDailyLog } from '../../db/database';
+import { addProtocolToPlan, db, getOrCreateDailyLog, isUnder18OrGrowing } from '../../db/database';
 import { toLocalDateKey } from '../../lib/date';
 import { calculateMifflinStJeor } from '../../lib/fitness';
 import { BeforeAfterSlider } from '../ui/Charts';
@@ -40,7 +40,7 @@ export const LeanFaceModule: React.FC<LeanFaceModuleProps> = ({
   const weightKg = Math.max(35, profile.weightKg || 74);
   const heightCm = Math.max(120, profile.heightCm || 178);
   const age = Math.max(12, profile.age || 24);
-  const isUnder18 = age < 18;
+  const isUnder18 = isUnder18OrGrowing(profile);
 
   const cutMetrics = useMemo(() => {
     const calc = calculateMifflinStJeor({
@@ -191,10 +191,10 @@ export const LeanFaceModule: React.FC<LeanFaceModuleProps> = ({
             <div className="p-4 rounded-2xl bg-sky-500/10 border border-sky-500/30 space-y-1.5 text-xs">
               <p className="font-bold text-sky-700 dark:text-sky-300 flex items-center gap-1.5">
                 <Info className="w-4 h-4 shrink-0" />
-                Under 18 / Still Growing — Talk to a Doctor
+                Still growing — healthy fuel first
               </p>
               <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
-                Cut calculators are hidden while you are still growing. Focus on resistance training, 8–9 hours of sleep, hydration, and whole-food quality rather than calorie restriction.
+                Calorie-cut calculators stay hidden while you are under 18 or still growing. Eat enough nutrient-dense meals, sleep 8–10 hours, stay active, and keep hydration steady.
               </p>
             </div>
           ) : (
@@ -238,24 +238,40 @@ export const LeanFaceModule: React.FC<LeanFaceModuleProps> = ({
           )}
         </div>
 
-        {/* Stop-cutting signs card */}
+        {/* Stop-cutting / Growth protection card */}
         <div className="lg:col-span-5 ascend-card p-5 space-y-3 border-amber-500/25">
           <h2 className="font-display text-base font-bold flex items-center gap-2">
             <ShieldAlert className="w-4 h-4 text-amber-400" />
-            Stop-Cutting Signs
+            {isUnder18 ? 'Growing Body Habits' : 'Stop-Cutting Signs'}
           </h2>
-          <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-            Extreme cutting makes a face look older and tired, not &ldquo;hollow&rdquo;. Pause your deficit and return to maintenance if you notice:
-          </p>
-          <ul className="space-y-1.5 text-xs text-slate-600 dark:text-slate-300">
-            <li>• Low daily energy or weak gym performance</li>
-            <li>• Poor or fragmented sleep</li>
-            <li>• Constant hunger or obsessing over food</li>
-            <li>• A gaunt, drained, or dark-under-eye look</li>
-          </ul>
-          <p className="text-[11px] text-slate-500 dark:text-slate-400 pt-2 border-t border-slate-200 dark:border-white/10">
-            Calories are always clamped above your safe floor ({cutMetrics.safeFloor} kcal).
-          </p>
+          {isUnder18 ? (
+            <>
+              <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                Your face naturally leans out as your jaw and height mature. Never restrict calories just for sharper cheeks right now:
+              </p>
+              <ul className="space-y-1.5 text-xs text-slate-600 dark:text-slate-300">
+                <li>• Eat balanced meals with protein, fruit, and whole foods</li>
+                <li>• Sleep 8–10 hours consistently each night</li>
+                <li>• Stay active with sports, walks, and bodyweight training</li>
+                <li>• Steady daily water naturally reduces morning puffiness</li>
+              </ul>
+            </>
+          ) : (
+            <>
+              <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                Extreme cutting makes a face look older and tired, not &ldquo;hollow&rdquo;. Pause your deficit and return to maintenance if you notice:
+              </p>
+              <ul className="space-y-1.5 text-xs text-slate-600 dark:text-slate-300">
+                <li>• Low daily energy or weak gym performance</li>
+                <li>• Poor or fragmented sleep</li>
+                <li>• Constant hunger or obsessing over food</li>
+                <li>• A gaunt, drained, or dark-under-eye look</li>
+              </ul>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 pt-2 border-t border-slate-200 dark:border-white/10">
+                Calories are always clamped above your safe floor ({cutMetrics.safeFloor} kcal).
+              </p>
+            </>
+          )}
         </div>
       </div>
 

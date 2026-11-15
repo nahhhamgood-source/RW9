@@ -18,7 +18,17 @@ export type TimeBlock = 'morning' | 'afternoon' | 'evening';
 
 export type AccentPreset = 'mint' | 'violet' | 'amber' | 'sky';
 
-export type ThemeMode = 'dark' | 'light';
+export type ThemeMode = 'dark' | 'light' | 'system';
+
+export type ToneMode = 'normal' | 'chill' | 'serious';
+
+export type MealType = 'breakfast' | 'lunch' | 'dinner' | 'snack';
+
+export type DietGoalMode = 'cut' | 'maintain' | 'lean_gain';
+
+export type StillGrowingStatus = 'yes' | 'no' | 'unsure';
+
+export type GoalHorizon = 'this_week' | 'this_month' | 'three_months' | 'one_year';
 
 export type UnitSystem = 'metric' | 'imperial';
 
@@ -34,11 +44,20 @@ export interface UserProfile {
   id: 'me';
   name: string;
   age: number;
+  ageExplicitlySet?: boolean;
+  birthDate?: string;
   sex: 'male' | 'female' | 'other';
   heightCm: number;
   weightKg: number;
   waistCm: number | null;
   neckCm: number | null;
+  stillGrowing?: StillGrowingStatus;
+  motherHeightCm?: number | null;
+  fatherHeightCm?: number | null;
+  dreamHeightCm?: number | null;
+  monthlyHeightReminder?: boolean;
+  usualBedtime?: string;
+  usualWakeTime?: string;
   skinType: SkinType;
   skinConcerns: string[];
   hairType: HairType;
@@ -49,6 +68,7 @@ export interface UserProfile {
   targetSleepHours: number;
   sunExposure: 'low' | 'moderate' | 'high';
   goals: string[];
+  dietGoal?: DietGoalMode;
   focusAreas?: FocusAreaId[];
   mindSubGoals?: MindSubGoalId[];
   dailyTimeBudgetMin: 15 | 30 | 60 | 90;
@@ -65,28 +85,55 @@ export interface UserProfile {
   updatedAt: number;
 }
 
+export interface ReminderPreferences {
+  enabled: boolean;
+  morning: string;
+  spf: string;
+  workout: string;
+  sleep: string;
+  rescanDays: number;
+  waterReminder?: boolean;
+  waterIntervalMin?: number;
+  breakfastTime?: string;
+  lunchTime?: string;
+  dinnerTime?: string;
+  mealLogReminder?: boolean;
+  exerciseTime?: string;
+  exerciseReminder?: boolean;
+  postureBreakEnabled?: boolean;
+  weeklyPhotoEnabled?: boolean;
+  monthlyHeightEnabled?: boolean;
+  studyReminderEnabled?: boolean;
+  studyReminderTime?: string;
+  quietHoursStart?: string;
+  quietHoursEnd?: string;
+  maxPerDay?: number;
+}
+
 export interface AppSettings {
   id: 'app';
   theme: ThemeMode;
   accent: AccentPreset;
   units: UnitSystem;
+  easyMode?: boolean;
+  tone?: ToneMode;
+  soundEnabled?: boolean;
   saveThumbnails: boolean;
+  includeSkinScoreInScans?: boolean;
   autoPedometer?: boolean;
   slangTierNames?: boolean;
+  dayStartsAt4am?: boolean;
+  onlineConsentSeen?: boolean;
+  onlineFoodEnabled?: boolean;
+  onlineCoachEnabled?: boolean;
   prayerTrackingEnabled?: boolean;
   dhikrTaskEnabled?: boolean;
   prayerTimes?: Record<PrayerKey, string>;
   tongueReminderTimes?: string[];
   pinHash: string | null;
-  reminders: {
-    enabled: boolean;
-    morning: string;
-    spf: string;
-    workout: string;
-    sleep: string;
-    rescanDays: number;
-  };
+  reminders: ReminderPreferences;
   lastWeeklyReviewDate: string | null;
+  lastBackupDate?: string | null;
 }
 
 export interface ProtocolDefinition {
@@ -102,6 +149,8 @@ export interface ProtocolDefinition {
   why: string;
   safetyNote?: string;
   isAdvancedOptional?: boolean;
+  exerciseSlug?: string;
+  watchQuery?: string;
   tags: string[];
 }
 
@@ -118,11 +167,54 @@ export interface ActiveProtocolTask {
   evidence: EvidenceTag;
   why: string;
   safetyNote?: string;
+  isAdvancedOptional?: boolean;
+  exerciseSlug?: string;
+  watchQuery?: string;
   isCustom: boolean;
   enabled: boolean;
   sortOrder: number;
   sourceFocusArea?: string;
   daysOfWeek?: number[]; // 0=Sun..6=Sat; undefined = daily
+  scheduledDate?: string; // If set (e.g. tomorrow YYYY-MM-DD), belongs to that date
+  deferredFromDate?: string; // If moved from a specific date to tomorrow
+  reminderTime?: string; // Optional HH:MM reminder
+}
+
+export interface LifeGoal {
+  id?: number;
+  title: string;
+  focusArea: 'face' | 'body' | 'mind' | 'growth';
+  targetLabel: string;
+  horizon: GoalHorizon;
+  progressPct: number;
+  milestones: Array<{
+    id: string;
+    horizon: GoalHorizon;
+    label: string;
+    done: boolean;
+  }>;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface LifeListItem {
+  id?: number;
+  title: string;
+  timeframe: GoalHorizon;
+  dueDate?: string;
+  note?: string;
+  done: boolean;
+  doneAt?: number;
+  createdAt: number;
+}
+
+export interface HeightLogEntry {
+  id?: number;
+  date: string; // YYYY-MM-DD
+  heightCm: number;
+  timeOfDay: 'morning' | 'evening';
+  note?: string;
+  createdAt: number;
 }
 
 export interface TaskCompletion {
@@ -425,6 +517,7 @@ export interface MealScanEntry {
   id?: number;
   date: string; // YYYY-MM-DD
   timestamp: number;
+  mealType?: MealType;
   mealTitle: string;
   confidence: 'High' | 'Medium' | 'Low';
   items: MealFoodItem[];
@@ -452,4 +545,64 @@ export interface PuffinessLogEntry {
   createdAt: number;
 }
 
+export type QuitHabitCategory =
+  | 'nicotine'
+  | 'sugar'
+  | 'junk_food'
+  | 'caffeine'
+  | 'doomscroll'
+  | 'late_night'
+  | 'gaming'
+  | 'skin_picking'
+  | 'alcohol'
+  | 'private';
 
+export interface QuitHabitItem {
+  id?: number;
+  category?: QuitHabitCategory;
+  title: string;
+  reason?: string;
+  triggers?: string[];
+  swaps?: string[];
+  isPrivate?: boolean;
+  slipDates?: string[];
+  urgesResisted?: number;
+  lastResetAt: number;
+  longestDays: number;
+  createdAt: number;
+}
+
+export interface QuitSlipEntry {
+  id?: number;
+  habitId: number;
+  date: string;
+  trigger?: string;
+  tweak?: string;
+  createdAt: number;
+}
+
+export interface ExerciseSessionLog {
+  id?: number;
+  date: string;
+  programId: string;
+  programTitle: string;
+  domain: 'face' | 'grow';
+  level: 1 | 2;
+  minutes: number;
+  xpEarned: number;
+  completedAt: number;
+}
+
+export interface GrowthCheckoffEntry {
+  id: string; // `${date}::${habitId}`
+  date: string; // YYYY-MM-DD
+  habitId: string;
+  xpEarned: number;
+  completedAt: number;
+}
+
+export interface GrowthProgramProgress {
+  id: 'spine_posture' | 'stretch_flow' | 'active_play';
+  completedDays: number[];
+  updatedAt: number;
+}

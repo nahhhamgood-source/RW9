@@ -87,6 +87,7 @@ export const CURATED_PROTOCOLS: ProtocolDefinition[] = [
     evidence: 'Not proven',
     why: 'Not proven to change adult bone; harmless if gentle and supports relaxed nasal breathing.',
     safetyNote: 'Zero hard force, zero pressure on teeth, zero clenching.',
+    isAdvancedOptional: true,
     tags: ['face', 'jaw_neck', 'posture'],
   },
   {
@@ -157,6 +158,8 @@ export const CURATED_PROTOCOLS: ProtocolDefinition[] = [
     ],
     evidence: 'Proven',
     why: 'Supports steady fat loss, lymphatic drainage, and calm daytime energy.',
+    exerciseSlug: 'brisk-walk',
+    watchQuery: 'brisk walking posture technique proper form',
     tags: ['body', 'body_fat', 'debloat', 'health'],
   },
   {
@@ -175,6 +178,8 @@ export const CURATED_PROTOCOLS: ProtocolDefinition[] = [
     evidence: 'Likely works',
     why: 'Counters forward-head posture so neck and jawline profile read cleaner.',
     safetyNote: 'Stop immediately on any neck discomfort.',
+    exerciseSlug: 'chin-tucks',
+    watchQuery: 'cervical chin tucks proper form',
     tags: ['body', 'posture', 'jaw_neck'],
   },
   {
@@ -192,6 +197,8 @@ export const CURATED_PROTOCOLS: ProtocolDefinition[] = [
     ],
     evidence: 'Proven',
     why: 'Opens rounded shoulders and strengthens upper-back posture.',
+    exerciseSlug: 'wall-angels',
+    watchQuery: 'wall angels exercise proper form',
     tags: ['body', 'posture', 'frame'],
   },
   {
@@ -209,16 +216,19 @@ export const CURATED_PROTOCOLS: ProtocolDefinition[] = [
     ],
     evidence: 'Proven',
     why: 'Keeps joints fluid so lifting and upright posture feel natural.',
+    exerciseSlug: 'thoracic-mobility-flow',
+    watchQuery: 'thoracic hip shoulder mobility routine proper form',
     tags: ['body', 'posture', 'energy'],
   },
   {
     id: 'body-neck-set',
-    title: 'Neck set (optional)',
+    title: 'Neck set',
     actionLine: 'Do light controlled neck and trap work safely.',
     minutes: 6,
     xp: 15,
     category: 'training',
     defaultBlock: 'afternoon',
+    isAdvancedOptional: true,
     steps: [
       'Perform 2–3 light sets of controlled dumbbell shrugs.',
       'Add gentle manual neck flexion only if completely pain-free.',
@@ -227,6 +237,8 @@ export const CURATED_PROTOCOLS: ProtocolDefinition[] = [
     evidence: 'Likely works',
     why: 'Proportional neck and traps frame the lower face safely.',
     safetyNote: 'Keep loads light and controlled; stop on any neck strain.',
+    exerciseSlug: 'neck-shrugs',
+    watchQuery: 'dumbbell shrugs neck flexion safe proper form',
     tags: ['body', 'jaw_neck', 'frame'],
   },
   {
@@ -244,6 +256,8 @@ export const CURATED_PROTOCOLS: ProtocolDefinition[] = [
     ],
     evidence: 'Proven',
     why: 'Progressive strength training reshapes shoulder-to-waist frame over months.',
+    exerciseSlug: 'strength-training',
+    watchQuery: 'compound strength workout proper form',
     tags: ['body', 'training', 'body_fat', 'frame'],
   },
   {

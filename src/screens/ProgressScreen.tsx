@@ -630,8 +630,8 @@ export const ProgressScreen: React.FC<ProgressScreenProps> = ({
 
       {/* Trend Charts + 28-Day Dot Matrix + 12-Week Heatmap */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-4">
-        <div className="lg:col-span-4 ascend-card p-4 space-y-2">
-          <h2 className="font-display text-sm font-bold">PSL LAB Trend</h2>
+        <div className="lg:col-span-4 ascend-card p-4 space-y-2.5">
+          <h2 className="font-display text-sm font-bold">PSL LAB Trend &amp; Tier History</h2>
           <SmoothAreaChart
             points={[...scans].reverse().map((s) => ({ label: s.date.slice(5), value: s.pslEstimate }))}
             unit="/8"
@@ -639,6 +639,21 @@ export const ProgressScreen: React.FC<ProgressScreenProps> = ({
             maxVal={7.5}
             emptyLabel="Log 2+ PSL LAB scans to chart progress."
           />
+          {scans.length > 0 && (
+            <div className="space-y-1.5 pt-2 border-t border-slate-200 dark:border-white/10 max-h-36 overflow-y-auto">
+              {[...scans].slice(0, 6).map((s) => {
+                const tier = getPslTierMeta(s.pslEstimate, slangTierNames);
+                return (
+                  <div key={s.id ?? s.timestamp} className="flex items-center justify-between gap-2 text-xs">
+                    <span className="font-mono-num text-slate-500 dark:text-slate-400">{s.date}</span>
+                    <span className="font-semibold text-[var(--accent)] truncate">
+                      {tier.displayLabel} ({s.pslEstimate}/8)
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
           <p className="text-[10.5px] text-slate-500 dark:text-slate-400 pt-1">
             {PSL_HONEST_DISCLAIMER}
           </p>

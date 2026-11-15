@@ -6,11 +6,15 @@ import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig(() => {
   return {
+    define: {
+      __APP_VERSION__: JSON.stringify('2.2.0'),
+      __BUILD_DATE__: JSON.stringify(new Date().toISOString().slice(0, 10)),
+    },
     plugins: [
       react(),
       tailwindcss(),
       VitePWA({
-        registerType: 'autoUpdate',
+        registerType: 'prompt',
         includeAssets: [
           'icon.svg',
           'apple-touch-icon.png',
@@ -23,7 +27,8 @@ export default defineConfig(() => {
           id: '/',
           name: 'ASCEND Self-Care OS',
           short_name: 'ASCEND',
-          description: '100% offline personal appearance progress, daily protocol, and on-device facial analysis.',
+          description:
+            'Local-first daily plan, nutrition, exercise, and on-device facial analysis with optional AI meal scan and coach.',
           theme_color: '#0B0F0D',
           background_color: '#0B0F0D',
           display: 'standalone',
@@ -51,8 +56,9 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
+          cleanupOutdatedCaches: true,
           maximumFileSizeToCacheInBytes: 25 * 1024 * 1024,
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2,wasm,task}'],
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,webp,woff,woff2,wasm,task}'],
           navigateFallbackDenylist: [/^\/mediapipe\//, /^\/api\//],
           runtimeCaching: [
             {
@@ -67,6 +73,22 @@ export default defineConfig(() => {
         },
       }),
     ],
+    build: {
+      chunkSizeWarningLimit: 650,
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes('@mediapipe/tasks-vision')) return 'vendor-mediapipe';
+            if (id.includes('dexie')) return 'vendor-dexie';
+            if (id.includes('lucide-react')) return 'vendor-icons';
+            if (id.includes('/node_modules/react/') || id.includes('/node_modules/react-dom/')) {
+              return 'vendor-react';
+            }
+            return undefined;
+          },
+        },
+      },
+    },
     resolve: {
       alias: {
         '@': path.resolve(import.meta.dirname, '.'),

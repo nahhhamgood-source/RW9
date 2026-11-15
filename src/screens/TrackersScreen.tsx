@@ -12,7 +12,7 @@ import {
   Check,
   Utensils,
 } from 'lucide-react';
-import { db, getOrCreateDailyLog, recalculateXpAndBadges } from '../db/database';
+import { db, getOrCreateDailyLog, isUnder18OrGrowing, recalculateXpAndBadges } from '../db/database';
 import { toLocalDateKey } from '../lib/date';
 import {
   calculateEstimated1RM,
@@ -96,6 +96,9 @@ export const TrackersScreen: React.FC<TrackersScreenProps> = ({
     return () => clearTimeout(t);
   }, [restSeconds, showToast]);
 
+  const hideCut = isUnder18OrGrowing(profile);
+  const safeGoalMode = hideCut && goalMode === 'cut' ? 'maintain' : goalMode;
+
   const calorieCalc = useMemo(
     () =>
       calculateMifflinStJeor({
@@ -104,9 +107,9 @@ export const TrackersScreen: React.FC<TrackersScreenProps> = ({
         heightCm: profile.heightCm,
         age: profile.age,
         activityLevel: profile.activityLevel,
-        goalMode,
+        goalMode: safeGoalMode,
       }),
-    [profile, weightKg, goalMode]
+    [profile, weightKg, safeGoalMode]
   );
 
   const navyBf = useMemo(
@@ -275,49 +278,66 @@ export const TrackersScreen: React.FC<TrackersScreenProps> = ({
               </div>
             </div>
 
-            <div>
-              <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1.5">Pace Goal</label>
-              <div className="grid grid-cols-3 gap-2">
-                {([
-                  { id: 'cut', label: 'Gradual Cut' },
-                  { id: 'maintain', label: 'Maintain' },
-                  { id: 'lean_gain', label: 'Lean Gain' },
-                ] as const).map((g) => (
-                  <button
-                    key={g.id}
-                    type="button"
-                    onClick={() => setGoalMode(g.id)}
-                    className={`py-2 rounded-xl text-xs font-semibold min-h-[40px] ${
-                      goalMode === g.id
-                        ? 'bg-[var(--accent)] text-[var(--accent-contrast)]'
-                        : 'bg-slate-100 dark:bg-white/5'
-                    }`}
-                  >
-                    {g.label}
-                  </button>
-                ))}
+            {hideCut ? (
+              <div className="p-3.5 rounded-2xl bg-sky-500/10 border border-sky-500/25 space-y-1.5 text-xs">
+                <p className="font-bold text-sky-700 dark:text-sky-300">
+                  Growth-first mode (Under 18 / Still growing)
+                </p>
+                <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                  Calorie-cut calculators are hidden while you are growing. Focus on: eat enough, sleep 8–10h, stay active.
+                </p>
+                <div className="flex justify-between pt-1">
+                  <span>Protein target</span>
+                  <strong className="font-mono-num">{calorieCalc.proteinGrams} g/day</strong>
+                </div>
               </div>
-            </div>
+            ) : (
+              <>
+                <div>
+                  <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1.5">Pace Goal</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {([
+                      { id: 'cut', label: 'Gradual Cut' },
+                      { id: 'maintain', label: 'Maintain' },
+                      { id: 'lean_gain', label: 'Lean Gain' },
+                    ] as const).map((g) => (
+                      <button
+                        key={g.id}
+                        type="button"
+                        onClick={() => setGoalMode(g.id)}
+                        className={`py-2 rounded-xl text-xs font-semibold min-h-[44px] ${
+                          safeGoalMode === g.id
+                            ? 'bg-[var(--accent)] text-[var(--accent-contrast)]'
+                            : 'bg-slate-100 dark:bg-white/5'
+                        }`}
+                      >
+                        {g.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
-            <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 space-y-2 text-xs">
-              <div className="flex justify-between">
-                <span>US Navy Body Fat (approximate)</span>
-                <strong className="font-mono-num text-[var(--accent)]">
-                  {navyBf ? `${navyBf.bodyFatPct}%` : 'Enter waist > neck'}
-                </strong>
-              </div>
-              <div className="flex justify-between">
-                <span>Daily Calorie Target (Floor {calorieCalc.safeFloor} kcal)</span>
-                <strong className="font-mono-num">{calorieCalc.recommendedCalories} kcal</strong>
-              </div>
-              <div className="flex justify-between">
-                <span>Protein Target</span>
-                <strong className="font-mono-num">{calorieCalc.proteinGrams} g/day</strong>
-              </div>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 pt-1.5 border-t border-slate-200 dark:border-white/10">
-                {calorieCalc.formulaLabel}. {navyBf ? navyBf.formulaText : ''} Facial fat cannot be spot-reduced; steady systemic pacing works best.
-              </p>
-            </div>
+                <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 space-y-2 text-xs">
+                  <div className="flex justify-between">
+                    <span>US Navy Body Fat (approximate)</span>
+                    <strong className="font-mono-num text-[var(--accent)]">
+                      {navyBf ? `${navyBf.bodyFatPct}%` : 'Enter waist > neck'}
+                    </strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Daily Calorie Target (Floor {calorieCalc.safeFloor} kcal)</span>
+                    <strong className="font-mono-num">{calorieCalc.recommendedCalories} kcal</strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Protein Target</span>
+                    <strong className="font-mono-num">{calorieCalc.proteinGrams} g/day</strong>
+                  </div>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 pt-1.5 border-t border-slate-200 dark:border-white/10">
+                    {calorieCalc.formulaLabel}. {navyBf ? navyBf.formulaText : ''} Facial fat cannot be spot-reduced; steady systemic pacing works best.
+                  </p>
+                </div>
+              </>
+            )}
 
             <button
               type="submit"

@@ -1,7 +1,21 @@
+let dayStartHour = 0;
+
+export function setDayStartHour4am(enabled: boolean): void {
+  dayStartHour = enabled ? 4 : 0;
+}
+
+export function isDayStart4amEnabled(): boolean {
+  return dayStartHour === 4;
+}
+
 export function toLocalDateKey(date: Date = new Date()): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
+  const shifted =
+    dayStartHour > 0 && date.getHours() < dayStartHour
+      ? new Date(date.getFullYear(), date.getMonth(), date.getDate() - 1, 12, 0, 0)
+      : date;
+  const y = shifted.getFullYear();
+  const m = String(shifted.getMonth() + 1).padStart(2, '0');
+  const d = String(shifted.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
 }
 
@@ -13,7 +27,10 @@ export function parseDateKey(key: string): Date {
 export function addDays(key: string, delta: number): string {
   const dt = parseDateKey(key);
   dt.setDate(dt.getDate() + delta);
-  return toLocalDateKey(dt);
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, '0');
+  const d = String(dt.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 export function getMondayOfWeek(key: string): string {
@@ -21,7 +38,10 @@ export function getMondayOfWeek(key: string): string {
   const day = dt.getDay(); // 0=Sun..6=Sat
   const diff = day === 0 ? -6 : 1 - day;
   dt.setDate(dt.getDate() + diff);
-  return toLocalDateKey(dt);
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, '0');
+  const d = String(dt.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 export function getWeekDates(anchorKey: string): string[] {
@@ -30,8 +50,7 @@ export function getWeekDates(anchorKey: string): string[] {
 }
 
 export function getIsoWeekKey(key: string): string {
-  const monday = getMondayOfWeek(key);
-  return monday;
+  return getMondayOfWeek(key);
 }
 
 export function formatShortDay(key: string): string {

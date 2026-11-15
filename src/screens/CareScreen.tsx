@@ -12,7 +12,14 @@ import {
   Droplets,
 } from 'lucide-react';
 import { db, recalculateXpAndBadges } from '../db/database';
-import { HAIRCUT_BY_FACE_SHAPE, SKIN_STARTER_GUIDE, STYLE_BASICS } from '../data/care';
+import {
+  GROOMING_CHECKLIST_CARDS,
+  HAIRCUT_BY_FACE_SHAPE,
+  POSTURE_CARE_TIPS,
+  SKIN_ESSENTIAL_CARDS,
+  SKIN_STARTER_GUIDE,
+  STYLE_BASICS,
+} from '../data/care';
 import { toLocalDateKey } from '../lib/date';
 import { BeforeAfterSlider } from '../components/ui/Charts';
 import { LeanFaceModule } from '../components/care/LeanFaceModule';
@@ -234,9 +241,9 @@ export const CareScreen: React.FC<CareScreenProps> = ({
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="font-display text-2xl font-bold">Care Hub</h1>
+        <h1 className="font-display text-2xl font-bold">Looks Care</h1>
         <p className="text-xs text-slate-500 dark:text-slate-400">
-          Evidence-backed basics first · Track only products &amp; clothes you own
+          Simple, science-backed basics first · Track only products &amp; clothes you own
         </p>
       </div>
 
@@ -403,6 +410,28 @@ export const CareScreen: React.FC<CareScreenProps> = ({
                 </div>
               )}
             </div>
+          </div>
+
+          {/* Skin Essentials (Patch Test, SPF, 7-Day Reset) */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {SKIN_ESSENTIAL_CARDS.map((card) => (
+              <div key={card.title} className="ascend-card p-4 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="font-display text-sm font-bold">{card.title}</h3>
+                  <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 text-[10px] font-bold">
+                    {card.evidence}
+                  </span>
+                </div>
+                <ul className="space-y-1 text-xs text-slate-600 dark:text-slate-300">
+                  {card.steps.map((step) => (
+                    <li key={step}>• {step}</li>
+                  ))}
+                </ul>
+                <p className="text-[11px] text-amber-600 dark:text-amber-300 pt-1 border-t border-slate-200 dark:border-white/10">
+                  <strong>Avoid:</strong> {card.mistake}
+                </p>
+              </div>
+            ))}
           </div>
 
           {/* Skin Diary + Month Calendar + Before/After Slider */}
@@ -695,6 +724,34 @@ export const CareScreen: React.FC<CareScreenProps> = ({
               </div>
             </div>
           </div>
+
+          {/* Grooming Basics (Brows, Beard Neckline, Teeth & Nails) */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {GROOMING_CHECKLIST_CARDS.map((card) => (
+              <div key={card.title} className="ascend-card p-4 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="font-display text-sm font-bold">{card.title}</h3>
+                  <span
+                    className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                      card.evidence === 'Proven'
+                        ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300'
+                        : 'bg-sky-500/15 text-sky-600 dark:text-sky-300'
+                    }`}
+                  >
+                    {card.evidence}
+                  </span>
+                </div>
+                <ul className="space-y-1 text-xs text-slate-600 dark:text-slate-300">
+                  {card.steps.map((step) => (
+                    <li key={step}>• {step}</li>
+                  ))}
+                </ul>
+                <p className="text-[11px] text-amber-600 dark:text-amber-300 pt-1 border-t border-slate-200 dark:border-white/10">
+                  <strong>Avoid:</strong> {card.mistake}
+                </p>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -839,8 +896,8 @@ export const CareScreen: React.FC<CareScreenProps> = ({
               </ul>
             </div>
 
-            <div className="pt-3 border-t border-slate-200 dark:border-white/10">
-              <h3 className="font-display text-sm font-bold mb-2">Cohesive Color Palettes</h3>
+            <div className="pt-3 border-t border-slate-200 dark:border-white/10 space-y-2">
+              <h3 className="font-display text-sm font-bold">Cohesive Color Palettes</h3>
               <div className="space-y-2.5">
                 {STYLE_BASICS.colorPalettes.map((pal) => (
                   <div key={pal.name} className="p-3 rounded-xl bg-slate-50 dark:bg-white/[0.03] text-xs">
@@ -852,6 +909,22 @@ export const CareScreen: React.FC<CareScreenProps> = ({
                 ))}
               </div>
             </div>
+
+            {POSTURE_CARE_TIPS.map((card) => (
+              <div key={card.title} className="pt-3 border-t border-slate-200 dark:border-white/10 space-y-1.5 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="font-display text-sm font-bold">{card.title}</h3>
+                  <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 text-[10px] font-bold">
+                    {card.evidence}
+                  </span>
+                </div>
+                <ul className="space-y-1 text-slate-600 dark:text-slate-300">
+                  {card.steps.map((s) => (
+                    <li key={s}>• {s}</li>
+                  ))}
+                </ul>
+              </div>
+            ))}
           </div>
         </div>
       )}

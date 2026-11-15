@@ -1,24 +1,25 @@
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
-  Home,
-  ListChecks,
-  ScanFace,
-  TrendingUp,
-  HeartPulse,
-  Settings,
-  Bell,
-  WifiOff,
-  Lock,
   ArrowLeft,
-  Menu,
-  X,
-  Sparkles,
+  Bell,
   BookOpen,
+  CalendarCheck2,
+  Grid,
+  HeartPulse,
+  LayoutDashboard,
+  ListChecks,
+  Lock,
+  Menu,
   MessageSquareText,
   Plus,
-  User,
+  Ruler,
+  ScanFace,
+  Settings,
+  Sparkles,
   Utensils,
+  WifiOff,
+  X,
 } from 'lucide-react';
 import {
   createDefaultProfile,
@@ -29,10 +30,11 @@ import {
   getOrCreateDailyLog,
   requestPersistentStorageAndCheck,
 } from './db/database';
-import type { AppSettings, UserProfile } from './types';
-import { toLocalDateKey } from './lib/date';
+import type { AppSettings, MealType, UserProfile } from './types';
+import { en } from './i18n/en';
+import { setDayStartHour4am, toLocalDateKey } from './lib/date';
 import { sha256Hex } from './lib/crypto';
-import { initFaceLandmarker } from './lib/faceAnalysis';
+import { installGlobalErrorListeners } from './lib/errorLog';
 import { getInAppDueReminders } from './lib/notifications';
 import {
   getPedometerState,
@@ -46,32 +48,65 @@ import { getRankForLevel } from './data/badges';
 import { useOnlineStatus } from './hooks/usePWAInstall';
 import { ToastProvider, useToast } from './components/ui/ToastProvider';
 import { ErrorBoundary } from './components/ui/ErrorBoundary';
-import { QuickLogSheet } from './components/modals/QuickLogSheet';
+import { ScreenSkeleton } from './components/ui/Skeletons';
+import { PWAUpdateBanner } from './components/PWAUpdateBanner';
+import { QuickLogSheet, type QuickLogTab } from './components/modals/QuickLogSheet';
 import { OnboardingModal } from './components/modals/OnboardingModal';
 import { CoachDrawer } from './components/modals/CoachDrawer';
-import { HomeScreen } from './screens/HomeScreen';
-import { RoutineScreen } from './screens/RoutineScreen';
-import { CareScreen } from './screens/CareScreen';
-import { TrackersScreen } from './screens/TrackersScreen';
-import { ProgressScreen } from './screens/ProgressScreen';
-import { AcademyScreen } from './screens/AcademyScreen';
-import { SettingsScreen } from './screens/SettingsScreen';
-import { NutritionScreen } from './screens/NutritionScreen';
+import { ReminderCenterModal } from './components/modals/ReminderCenterModal';
 
-const PslLabScreen = lazy(() =>
-  import('./screens/PslLabScreen').then((m) => ({ default: m.PslLabScreen }))
+const PlanScreen = lazy(() =>
+  import('./screens/PlanScreen').then((m) => ({ default: m.PlanScreen }))
+);
+const FoodScreen = lazy(() =>
+  import('./screens/FoodScreen').then((m) => ({ default: m.FoodScreen }))
+);
+const FaceHubScreen = lazy(() =>
+  import('./screens/FaceHubScreen').then((m) => ({ default: m.FaceHubScreen }))
+);
+const GrowScreen = lazy(() =>
+  import('./screens/GrowScreen').then((m) => ({ default: m.GrowScreen }))
+);
+const HealthScreen = lazy(() =>
+  import('./screens/HealthScreen').then((m) => ({ default: m.HealthScreen }))
+);
+const MoreScreen = lazy(() =>
+  import('./screens/MoreScreen').then((m) => ({ default: m.MoreScreen }))
+);
+const HomeScreen = lazy(() =>
+  import('./screens/HomeScreen').then((m) => ({ default: m.HomeScreen }))
+);
+const RoutineScreen = lazy(() =>
+  import('./screens/RoutineScreen').then((m) => ({ default: m.RoutineScreen }))
+);
+const AcademyScreen = lazy(() =>
+  import('./screens/AcademyScreen').then((m) => ({ default: m.AcademyScreen }))
+);
+const SettingsScreen = lazy(() =>
+  import('./screens/SettingsScreen').then((m) => ({ default: m.SettingsScreen }))
 );
 
 type ScreenId =
-  | 'home'
+  | 'plan'
+  | 'food'
+  | 'face'
+  | 'grow'
+  | 'health'
+  | 'more'
+  | 'dashboard'
   | 'routine'
-  | 'psl'
-  | 'nutrition'
-  | 'progress'
-  | 'care'
-  | 'trackers'
   | 'academy'
   | 'settings';
+
+function getInitials(name: string): string {
+  const clean = name.trim();
+  if (!clean) return 'ME';
+  const parts = clean.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  }
+  return clean.slice(0, 2).toUpperCase();
+}
 
 const AppShell: React.FC = () => {
   const { showToast } = useToast();
@@ -82,14 +117,18 @@ const AppShell: React.FC = () => {
   const [initialSettings, setInitialSettings] = useState<AppSettings | null>(null);
   const [storageWarning, setStorageWarning] = useState<string | null>(null);
   const [isInputFocused, setIsInputFocused] = useState(false);
-  const [screen, setScreen] = useState<ScreenId>('home');
+  const [screen, setScreen] = useState<ScreenId>('plan');
   const [subTab, setSubTab] = useState<string | undefined>(undefined);
   const [selectedDate, setSelectedDate] = useState<string>(toLocalDateKey());
 
+  const [foodMealType, setFoodMealType] = useState<MealType | undefined>(undefined);
+  const [foodMode, setFoodMode] = useState<'timeline' | 'scan' | 'quick' | undefined>(undefined);
+
   const [quickLogOpen, setQuickLogOpen] = useState(false);
-  const [quickLogTab, setQuickLogTab] = useState<'water' | 'nutrition' | 'sleep' | 'body' | 'mood' | 'skin'>('water');
+  const [quickLogTab, setQuickLogTab] = useState<QuickLogTab>('water');
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [coachOpen, setCoachOpen] = useState(false);
+  const [coachInitialPrompt, setCoachInitialPrompt] = useState<string | undefined>(undefined);
   const [remindersOpen, setRemindersOpen] = useState(false);
   const [navDrawerOpen, setNavDrawerOpen] = useState(false);
   const [pedometerState, setPedometerState] = useState<PedometerState>(() => getPedometerState());
@@ -113,7 +152,6 @@ const AppShell: React.FC = () => {
     mainRef.current?.scrollTo({ top: 0, behavior: 'auto' });
   }, [screen, subTab]);
 
-  // PIN lock state
   const [unlocked, setUnlocked] = useState(false);
   const [pinAttempt, setPinAttempt] = useState('');
 
@@ -151,14 +189,16 @@ const AppShell: React.FC = () => {
   };
 
   useEffect(() => {
+    installGlobalErrorListeners();
     bootDb();
     const t = setTimeout(() => {
-      initFaceLandmarker().catch(() => {});
-    }, 600);
+      import('./lib/faceAnalysis')
+        .then((m) => m.initFaceLandmarker())
+        .catch(() => {});
+    }, 900);
     return () => clearTimeout(t);
   }, []);
 
-  // Hide floating bottom dock + FAB while an editable input/textarea/select is focused on mobile
   useEffect(() => {
     const isEditableField = (el: EventTarget | null) => {
       if (!(el instanceof HTMLElement)) return false;
@@ -190,7 +230,9 @@ const AppShell: React.FC = () => {
   const settingsQuery = useLiveQuery(() => (dbReady ? db.settings.get('app') : undefined), [dbReady]);
   const profile = profileQuery ?? initialProfile ?? createDefaultProfile();
   const settings = settingsQuery ?? initialSettings ?? createDefaultSettings();
-  const xpState = useLiveQuery(() => (dbReady ? db.xpState.get('xp') : undefined), [dbReady]) ?? createDefaultXpState();
+  const xpState =
+    useLiveQuery(() => (dbReady ? db.xpState.get('xp') : undefined), [dbReady]) ??
+    createDefaultXpState();
   const tasks =
     useLiveQuery(
       () =>
@@ -239,16 +281,53 @@ const AppShell: React.FC = () => {
           : [],
       [dbReady]
     ) ?? [];
+  const goals =
+    useLiveQuery(
+      () =>
+        dbReady ? db.goals.toArray().then((arr) => arr.sort((a, b) => a.createdAt - b.createdAt)) : [],
+      [dbReady]
+    ) ?? [];
+  const lifeList = useLiveQuery(() => (dbReady ? db.lifeList.toArray() : []), [dbReady]) ?? [];
+  const heightLogs = useLiveQuery(() => (dbReady ? db.heightLogs.toArray() : []), [dbReady]) ?? [];
+  const quitItems = useLiveQuery(() => (dbReady ? db.quitItems.toArray() : []), [dbReady]) ?? [];
+  const quitSlips = useLiveQuery(() => (dbReady ? db.quitSlips.toArray() : []), [dbReady]) ?? [];
+  const growthCheckoffs =
+    useLiveQuery(() => (dbReady ? db.growthCheckoffs.toArray() : []), [dbReady]) ?? [];
+  const growthPrograms =
+    useLiveQuery(() => (dbReady ? db.growthPrograms.toArray() : []), [dbReady]) ?? [];
 
+  // Theme sync supporting 'system' | 'dark' | 'light' + dynamic <meta name="theme-color">
   useEffect(() => {
     const root = document.documentElement;
-    if (settings.theme === 'dark') {
-      root.classList.add('dark');
-    } else {
-      root.classList.remove('dark');
+    const media = window.matchMedia?.('(prefers-color-scheme: dark)');
+
+    const applyTheme = () => {
+      const resolvedDark =
+        settings.theme === 'dark' || (settings.theme === 'system' && Boolean(media?.matches));
+      if (resolvedDark) {
+        root.classList.add('dark');
+      } else {
+        root.classList.remove('dark');
+      }
+      root.setAttribute('data-accent', settings.accent);
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) {
+        meta.setAttribute('content', resolvedDark ? '#06090F' : '#F4F7FA');
+      }
+    };
+
+    applyTheme();
+    if (settings.theme === 'system' && media) {
+      media.addEventListener('change', applyTheme);
+      return () => media.removeEventListener('change', applyTheme);
     }
-    root.setAttribute('data-accent', settings.accent);
+    return undefined;
   }, [settings.theme, settings.accent]);
+
+  useEffect(() => {
+    setDayStartHour4am(Boolean(settings.dayStartsAt4am));
+    setSelectedDate(toLocalDateKey());
+  }, [settings.dayStartsAt4am]);
 
   const flushQueuedSteps = useCallback(async () => {
     const queued = stepsQueueRef.current;
@@ -351,34 +430,117 @@ const AppShell: React.FC = () => {
     [showToast]
   );
 
+  const todayLogForRem = useMemo(
+    () => dailyLogs.find((l) => l.date === toLocalDateKey()),
+    [dailyLogs]
+  );
+  const todayMealsCountForRem = useMemo(
+    () => mealScans.filter((m) => m.date === toLocalDateKey()).length,
+    [mealScans]
+  );
   const dueReminders = useMemo(
-    () => getInAppDueReminders(settings, scans[0]?.date ?? null, toLocalDateKey()),
-    [settings, scans]
+    () =>
+      getInAppDueReminders(settings, scans[0]?.date ?? null, toLocalDateKey(), {
+        todayLog: todayLogForRem,
+        waterTargetMl: profile.waterTargetMl || 3000,
+        todayMealsCount: todayMealsCountForRem,
+      }),
+    [settings, scans, todayLogForRem, profile.waterTargetMl, todayMealsCountForRem]
   );
 
-  const navigate = (nextScreen: string, nextSubTab?: string) => {
-    setScreen(nextScreen as ScreenId);
-    setSubTab(nextSubTab);
+  const navigate = useCallback((nextScreen: string, nextSubTab?: string) => {
+    let target: ScreenId = 'plan';
+    let resolvedSub = nextSubTab;
+
+    switch (nextScreen) {
+      case 'home':
+      case 'plan':
+        target = 'plan';
+        break;
+      case 'food':
+        target = 'food';
+        setFoodMode(nextSubTab === 'scan' || nextSubTab === 'quick' ? nextSubTab : 'timeline');
+        break;
+      case 'psl':
+        target = 'face';
+        resolvedSub = resolvedSub ?? 'scanner';
+        break;
+      case 'care':
+        target = 'face';
+        resolvedSub = resolvedSub ?? 'care';
+        break;
+      case 'face':
+        target = 'face';
+        break;
+      case 'grow':
+        target = 'grow';
+        break;
+      case 'nutrition':
+        target = 'health';
+        resolvedSub = resolvedSub ?? 'meals';
+        break;
+      case 'trackers':
+        target = 'health';
+        resolvedSub = resolvedSub ?? 'body';
+        break;
+      case 'progress':
+        target = 'health';
+        resolvedSub = resolvedSub ?? 'trends';
+        break;
+      case 'health':
+        target = 'health';
+        break;
+      case 'more':
+        target = 'more';
+        break;
+      case 'dashboard':
+        target = 'dashboard';
+        break;
+      case 'routine':
+        target = 'routine';
+        break;
+      case 'academy':
+        target = 'academy';
+        break;
+      case 'settings':
+        target = 'settings';
+        break;
+      default:
+        target = 'plan';
+    }
+
+    setScreen(target);
+    setSubTab(resolvedSub);
     setNavDrawerOpen(false);
     setQuickLogOpen(false);
     setCoachOpen(false);
     setRemindersOpen(false);
     document.body.classList.remove('ascend-scroll-lock');
     mainRef.current?.scrollTo({ top: 0, behavior: 'auto' });
+  }, []);
+
+  const openQuickLogWithTab = (t?: QuickLogTab | 'skin') => {
+    setQuickLogTab(t === 'skin' ? 'photo' : (t ?? 'water'));
+    setQuickLogOpen(true);
+  };
+
+  const openCoach = (prompt?: string) => {
+    setCoachInitialPrompt(prompt);
+    setCoachOpen(true);
   };
 
   if (dbError) {
     return (
       <div className="min-h-[100dvh] flex items-center justify-center p-6">
         <div className="ascend-card max-w-sm w-full p-6 text-center space-y-3">
-          <h1 className="font-display text-lg font-bold">Storage Initialization Error</h1>
+          <h1 className="font-display text-lg font-bold">{en.shell.storageErrorTitle}</h1>
           <p className="text-xs text-slate-500 dark:text-slate-400">{dbError}</p>
           <button
             type="button"
             onClick={bootDb}
             className="px-4 py-2.5 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-semibold min-h-[44px]"
           >
-            Retry Startup
+            {en.shell.retryStartup}
           </button>
         </div>
       </div>
@@ -392,13 +554,19 @@ const AppShell: React.FC = () => {
           className="w-12 h-12 rounded-2xl bg-[var(--accent-soft)] border border-[var(--accent)]/40 flex items-center justify-center"
           style={{ boxShadow: '0 0 24px var(--accent-glow)' }}
         >
-          <svg viewBox="0 0 24 24" className="w-6 h-6 text-[var(--accent)] animate-pulse" fill="none" stroke="currentColor" strokeWidth="2.4">
+          <svg
+            viewBox="0 0 24 24"
+            className="w-6 h-6 text-[var(--accent)] animate-pulse"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.4"
+          >
             <path d="M12 3L4 19h4l4-8 4 8h4L12 3z" strokeLinejoin="round" />
           </svg>
         </div>
         <div className="text-center space-y-1">
-          <p className="font-display text-base font-bold tracking-tight">ASCEND.OS</p>
-          <p className="text-xs text-slate-500 dark:text-slate-400">Loading your local vault...</p>
+          <p className="font-display text-base font-bold tracking-tight">{en.appName}</p>
+          <p className="text-xs text-slate-500 dark:text-slate-400">{en.shell.openingPlan}</p>
         </div>
       </div>
     );
@@ -422,7 +590,7 @@ const AppShell: React.FC = () => {
           <div className="w-12 h-12 rounded-2xl bg-[var(--accent-soft)] text-[var(--accent)] flex items-center justify-center mx-auto">
             <Lock className="w-5 h-5" />
           </div>
-          <h1 className="font-display text-lg font-bold">ASCEND.OS Locked</h1>
+          <h1 className="font-display text-lg font-bold">{en.shell.lockedTitle}</h1>
           <input
             type="password"
             inputMode="numeric"
@@ -431,27 +599,27 @@ const AppShell: React.FC = () => {
             value={pinAttempt}
             onChange={(e) => setPinAttempt(e.target.value)}
             autoFocus
-            className="w-full px-4 py-3 rounded-xl bg-slate-100 dark:bg-white/5 text-center font-mono-num text-lg tracking-widest"
+            className="w-full px-4 py-3 rounded-xl bg-slate-100 dark:bg-white/5 text-center font-mono-num text-lg tracking-widest min-h-[44px]"
           />
           <button
             type="submit"
             className="w-full py-2.5 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-sm font-semibold min-h-[44px]"
           >
-            Unlock
+            {en.shell.unlockBtn}
           </button>
         </form>
       </div>
     );
   }
 
-  const isSubScreen = ['care', 'academy', 'settings'].includes(screen);
+  const isSubScreen = ['more', 'dashboard', 'routine', 'academy', 'settings'].includes(screen);
+  const avatarInitials = getInitials(profile.name);
 
   return (
     <div className="h-[100dvh] min-h-[100dvh] w-full max-w-full overflow-x-clip flex flex-col">
-      {/* Luxury Obsidian Top Bar: Left Circular Menu · Center Branded Title · Right Circular Alerts & Profile */}
-      <header className="shrink-0 z-30 backdrop-blur-xl bg-[#F3F6F4]/85 dark:bg-[#040407]/85 border-b border-slate-200/70 dark:border-emerald-500/15 no-print">
-        <div className="max-w-6xl mx-auto px-4 h-14 grid grid-cols-3 items-center">
-          {/* Left Zone */}
+      {/* Top Bar: Left Menu/Back · Center ASCEND · Right Ask, Bell, More/Avatar */}
+      <header className="shrink-0 z-30 backdrop-blur-xl bg-[#F4F7FA]/85 dark:bg-[#06090F]/85 border-b border-slate-200/70 dark:border-white/10 no-print">
+        <div className="max-w-6xl mx-auto px-3 sm:px-4 h-14 grid grid-cols-3 items-center">
           <div className="flex items-center gap-1.5 justify-start">
             <button
               type="button"
@@ -464,8 +632,8 @@ const AppShell: React.FC = () => {
             {isSubScreen && (
               <button
                 type="button"
-                onClick={() => navigate('home')}
-                aria-label="Back to Dashboard"
+                onClick={() => navigate('plan', 'now')}
+                aria-label="Back to Plan"
                 className="w-11 h-11 rounded-full bg-white dark:bg-white/[0.06] border border-slate-200 dark:border-white/10 flex items-center justify-center hover:border-[var(--accent)]/40 transition"
               >
                 <ArrowLeft className="w-4 h-4" />
@@ -473,35 +641,41 @@ const AppShell: React.FC = () => {
             )}
           </div>
 
-          {/* Center Zone: Glowing Emerald Emblem + Wordmark */}
           <button
             type="button"
-            onClick={() => navigate('home')}
+            onClick={() => navigate('plan', 'now')}
             className="flex items-center justify-center gap-2 whitespace-nowrap shrink-0 mx-auto min-h-[44px]"
           >
             <span
               className="w-6 h-6 rounded-full bg-[var(--accent-soft)] border border-[var(--accent)]/45 flex items-center justify-center shrink-0"
-              style={{ boxShadow: '0 0 14px var(--accent-glow)' }}
+              style={{ boxShadow: '0 0 12px var(--accent-glow)' }}
             >
-              <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 text-[var(--accent)]" fill="none" stroke="currentColor" strokeWidth="2.4">
+              <svg
+                viewBox="0 0 24 24"
+                className="w-3.5 h-3.5 text-[var(--accent)]"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.4"
+              >
                 <path d="M12 3L4 19h4l4-8 4 8h4L12 3z" strokeLinejoin="round" />
               </svg>
             </span>
             <span className="font-display text-sm sm:text-base font-bold tracking-tight whitespace-nowrap">
-              ASCEND.OS
+              {en.appName}
             </span>
           </button>
 
-          {/* Right Zone: Reminders & Profile/Settings */}
-          <div className="flex items-center gap-1.5 justify-end">
-            {!isOnline && (
-              <span
-                title="Offline Ready"
-                className="hidden sm:inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-semibold text-amber-500"
-              >
-                <WifiOff className="w-3.5 h-3.5" />
-              </span>
-            )}
+          <div className="flex items-center gap-1 sm:gap-1.5 justify-end">
+            <button
+              type="button"
+              onClick={() => openCoach()}
+              aria-label="Ask coach"
+              className="inline-flex items-center gap-1 px-2.5 h-11 rounded-full bg-white dark:bg-white/[0.06] border border-slate-200 dark:border-white/10 text-xs font-semibold hover:border-[var(--accent)]/40 transition"
+            >
+              <MessageSquareText className="w-4 h-4 text-[var(--accent)]" />
+              <span className="hidden sm:inline">{en.nav.askCoach}</span>
+            </button>
+
             <button
               type="button"
               onClick={() => setRemindersOpen(true)}
@@ -510,20 +684,21 @@ const AppShell: React.FC = () => {
             >
               <Bell className="w-4 h-4" />
               {dueReminders.length > 0 && (
-                <span className="absolute top-2.5 right-2.5 w-1.5 h-1.5 rounded-full bg-[var(--accent)]" />
+                <span className="absolute top-2.5 right-2.5 w-2 h-2 rounded-full bg-[var(--accent)]" />
               )}
             </button>
+
             <button
               type="button"
-              onClick={() => navigate('settings')}
-              aria-label="Open Profile and Settings"
-              className={`w-11 h-11 rounded-full border flex items-center justify-center transition ${
-                screen === 'settings'
-                  ? 'bg-[var(--accent-soft)] border-[var(--accent)]/45 text-[var(--accent)]'
-                  : 'bg-white dark:bg-white/[0.06] border-slate-200 dark:border-white/10 hover:border-[var(--accent)]/40'
+              onClick={() => navigate('more')}
+              aria-label="Open More and Settings"
+              className={`w-11 h-11 rounded-full border flex items-center justify-center text-xs font-bold transition ${
+                screen === 'more' || screen === 'settings'
+                  ? 'bg-[var(--accent)] text-[var(--accent-contrast)] border-transparent'
+                  : 'bg-[var(--accent-soft)] border-[var(--accent)]/35 text-[var(--accent)] hover:border-[var(--accent)]/60'
               }`}
             >
-              <User className="w-4 h-4" />
+              {avatarInitials}
             </button>
           </div>
         </div>
@@ -533,262 +708,318 @@ const AppShell: React.FC = () => {
       <main
         ref={mainRef}
         className={`flex-1 min-h-0 overflow-y-auto overflow-x-clip overscroll-y-contain touch-pan-y [-webkit-overflow-scrolling:touch] ${
-          isInputFocused
-            ? 'pb-8'
-            : 'pb-[calc(104px+env(safe-area-inset-bottom))]'
+          isInputFocused ? 'pb-8' : 'pb-[calc(108px+env(safe-area-inset-bottom))]'
         }`}
       >
-        <div className="max-w-6xl w-full mx-auto px-4 pt-4 min-w-0">
-        {storageWarning && (
-          <div className="mb-4 p-3.5 rounded-2xl bg-amber-500/15 border border-amber-500/40 text-xs text-amber-800 dark:text-amber-200 flex items-start justify-between gap-3">
-            <span>{storageWarning}</span>
-            <button
-              type="button"
-              onClick={() => setStorageWarning(null)}
-              className="px-2 py-1 rounded-lg bg-black/20 text-[11px] font-semibold shrink-0 min-h-[32px]"
-            >
-              Dismiss
-            </button>
-          </div>
-        )}
-        <div key={screen} className="ascend-panel-enter">
-        {screen === 'home' && (
-          <ErrorBoundary screenName="Dashboard">
-            <HomeScreen
-              profile={profile}
-              settings={settings}
-              xpState={xpState}
-              tasks={tasks}
-              completions={completions}
-              dailyLogs={dailyLogs}
-              bodyMetrics={bodyMetrics}
-              scans={scans}
-              workouts={workouts}
-              selectedDate={selectedDate}
-              onSelectDate={setSelectedDate}
-              onOpenQuickLog={(t) => {
-                setQuickLogTab(t ?? 'water');
-                setQuickLogOpen(true);
-              }}
-              onNavigate={navigate}
-              onOpenCoach={() => setCoachOpen(true)}
-              onOpenOnboarding={() => setOnboardingOpen(true)}
-              pedometerState={pedometerState}
-              onTogglePedometer={handleTogglePedometer}
-              onAddSteps={(delta) => handleAddSteps(delta, selectedDate)}
-              onSetSteps={(exact) => handleSetSteps(exact, selectedDate)}
-              onUpdateStepTarget={handleUpdateStepTarget}
-            />
-          </ErrorBoundary>
-        )}
+        <div className="max-w-6xl w-full mx-auto px-4 pt-4 min-w-0 space-y-3">
+          {!isOnline && (
+            <div className="p-3 rounded-2xl bg-sky-500/12 border border-sky-500/30 text-xs font-medium text-sky-700 dark:text-sky-300 flex items-center gap-2">
+              <WifiOff className="w-4 h-4 shrink-0" />
+              <span>{en.offline.banner}</span>
+            </div>
+          )}
 
-        {screen === 'routine' && (
-          <ErrorBoundary screenName="Routine">
-            <RoutineScreen
-              profile={profile}
-              settings={settings}
-              tasks={tasks}
-              completions={completions}
-              dailyLogs={dailyLogs}
-              selectedDate={selectedDate}
-              initialView={subTab}
-            />
-          </ErrorBoundary>
-        )}
+          {storageWarning && (
+            <div className="p-3.5 rounded-2xl bg-amber-500/15 border border-amber-500/40 text-xs text-amber-800 dark:text-amber-200 flex items-start justify-between gap-3">
+              <span>{storageWarning}</span>
+              <button
+                type="button"
+                onClick={() => setStorageWarning(null)}
+                className="px-2 py-1 rounded-lg bg-black/20 text-[11px] font-semibold shrink-0 min-h-[32px]"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
 
-        {screen === 'psl' && (
-          <ErrorBoundary screenName="PSL LAB">
-            <Suspense
-              fallback={
-                <div className="ascend-card p-8 text-center text-xs text-slate-500 dark:text-slate-400">
-                  Loading Face Scanner &amp; Report module...
-                </div>
-              }
-            >
-              <PslLabScreen scans={scans} settings={settings} onBack={() => navigate('home')} />
-            </Suspense>
-          </ErrorBoundary>
-        )}
+          <Suspense fallback={<ScreenSkeleton />}>
+            <div key={screen} className="ascend-panel-enter">
+              {screen === 'plan' && (
+                <ErrorBoundary screenName="Plan">
+                  <PlanScreen
+                    profile={profile}
+                    settings={settings}
+                    xpState={xpState}
+                    tasks={tasks}
+                    completions={completions}
+                    dailyLogs={dailyLogs}
+                    mealScans={mealScans}
+                    workouts={workouts}
+                    goals={goals}
+                    lifeList={lifeList}
+                    latestScan={scans[0] ?? null}
+                    selectedDate={selectedDate}
+                    initialTab={subTab}
+                    onOpenQuickLog={(t) => openQuickLogWithTab(t)}
+                    onNavigate={navigate}
+                    onOpenCoach={() => openCoach()}
+                  />
+                </ErrorBoundary>
+              )}
 
-        {screen === 'progress' && (
-          <ErrorBoundary screenName="Insights">
-            <ProgressScreen
-              profile={profile}
-              xpState={xpState}
-              tasks={tasks}
-              completions={completions}
-              dailyLogs={dailyLogs}
-              bodyMetrics={bodyMetrics}
-              scans={scans}
-              workouts={workouts}
-              slangTierNames={settings.slangTierNames ?? true}
-              initialSubTab={subTab}
-              onOpenQuickLog={(t) => {
-                setQuickLogTab(t ?? 'water');
-                setQuickLogOpen(true);
-              }}
-              onOpenOnboarding={() => setOnboardingOpen(true)}
-              onNavigate={navigate}
-            />
-          </ErrorBoundary>
-        )}
+              {screen === 'food' && (
+                <ErrorBoundary screenName="Food">
+                  <FoodScreen
+                    profile={profile}
+                    settings={settings}
+                    dailyLogs={dailyLogs}
+                    mealScans={mealScans}
+                    bodyMetrics={bodyMetrics}
+                    initialMealType={foodMealType}
+                    initialMode={foodMode}
+                    onOpenNutritionVault={() => navigate('health', 'meals')}
+                    onOpenCoach={() => openCoach('Ask about calories, protein, or meal swaps')}
+                  />
+                </ErrorBoundary>
+              )}
 
-        {screen === 'care' && (
-          <ErrorBoundary screenName="Care Hub">
-            <CareScreen
-              profile={profile}
-              products={products}
-              skinEntries={skinEntries}
-              hairPrefs={hairPrefs}
-              wardrobe={wardrobe}
-              outfits={outfits}
-              scans={scans}
-              puffinessLogs={puffinessLogs}
-              initialTab={subTab}
-            />
-          </ErrorBoundary>
-        )}
+              {screen === 'face' && (
+                <ErrorBoundary screenName="Face">
+                  <FaceHubScreen
+                    profile={profile}
+                    settings={settings}
+                    products={products}
+                    skinEntries={skinEntries}
+                    hairPrefs={hairPrefs}
+                    wardrobe={wardrobe}
+                    outfits={outfits}
+                    scans={scans}
+                    puffinessLogs={puffinessLogs}
+                    initialTab={subTab}
+                    onBackToPlan={() => navigate('plan', 'now')}
+                    onAskCoach={() => openCoach('Explain my scan')}
+                  />
+                </ErrorBoundary>
+              )}
 
-        {screen === 'nutrition' && (
-          <ErrorBoundary screenName="Nutrition Vision">
-            <NutritionScreen
-              profile={profile}
-              dailyLogs={dailyLogs}
-              mealScans={mealScans}
-            />
-          </ErrorBoundary>
-        )}
+              {screen === 'grow' && (
+                <ErrorBoundary screenName="Grow">
+                  <GrowScreen
+                    profile={profile}
+                    units={settings.units}
+                    heightLogs={heightLogs}
+                    growthCheckoffs={growthCheckoffs}
+                    growthPrograms={growthPrograms}
+                    onOpenHeightLog={() => openQuickLogWithTab('height')}
+                    onAskCoach={() => openCoach('Ask about height and posture')}
+                  />
+                </ErrorBoundary>
+              )}
 
-        {screen === 'trackers' && (
-          <ErrorBoundary screenName="Health">
-            <TrackersScreen
-              profile={profile}
-              dailyLogs={dailyLogs}
-              bodyMetrics={bodyMetrics}
-              workouts={workouts}
-              initialTab={subTab}
-              onOpenNutrition={() => navigate('nutrition')}
-            />
-          </ErrorBoundary>
-        )}
+              {screen === 'health' && (
+                <ErrorBoundary screenName="Health">
+                  <HealthScreen
+                    profile={profile}
+                    settings={settings}
+                    xpState={xpState}
+                    tasks={tasks}
+                    completions={completions}
+                    dailyLogs={dailyLogs}
+                    bodyMetrics={bodyMetrics}
+                    scans={scans}
+                    workouts={workouts}
+                    mealScans={mealScans}
+                    quitItems={quitItems}
+                    quitSlips={quitSlips}
+                    initialTab={subTab}
+                    onOpenQuickLog={(t) => openQuickLogWithTab(t)}
+                    onOpenOnboarding={() => setOnboardingOpen(true)}
+                    onNavigate={navigate}
+                  />
+                </ErrorBoundary>
+              )}
 
-        {screen === 'academy' && (
-          <ErrorBoundary screenName="Academy">
-            <AcademyScreen />
-          </ErrorBoundary>
-        )}
+              {screen === 'more' && (
+                <ErrorBoundary screenName="More">
+                  <MoreScreen
+                    profile={profile}
+                    xpState={xpState}
+                    onNavigate={navigate}
+                    onOpenCoach={() => openCoach()}
+                    onOpenReminders={() => setRemindersOpen(true)}
+                  />
+                </ErrorBoundary>
+              )}
 
-        {screen === 'settings' && (
-          <ErrorBoundary screenName="Settings">
-            <SettingsScreen
-              profile={profile}
-              settings={settings}
-              onOpenOnboarding={() => setOnboardingOpen(true)}
-            />
-          </ErrorBoundary>
-        )}
-        </div>
+              {screen === 'dashboard' && (
+                <ErrorBoundary screenName="Pro Dashboard">
+                  <HomeScreen
+                    profile={profile}
+                    settings={settings}
+                    xpState={xpState}
+                    tasks={tasks}
+                    completions={completions}
+                    dailyLogs={dailyLogs}
+                    bodyMetrics={bodyMetrics}
+                    scans={scans}
+                    workouts={workouts}
+                    selectedDate={selectedDate}
+                    onSelectDate={setSelectedDate}
+                    onOpenQuickLog={(t) => openQuickLogWithTab(t)}
+                    onNavigate={navigate}
+                    onOpenCoach={() => openCoach()}
+                    onOpenOnboarding={() => setOnboardingOpen(true)}
+                    pedometerState={pedometerState}
+                    onTogglePedometer={handleTogglePedometer}
+                    onAddSteps={(delta) => handleAddSteps(delta, selectedDate)}
+                    onSetSteps={(exact) => handleSetSteps(exact, selectedDate)}
+                    onUpdateStepTarget={handleUpdateStepTarget}
+                  />
+                </ErrorBoundary>
+              )}
 
-        <footer className="py-6 text-center text-[11px] text-slate-500 dark:text-slate-500">
-          Self-tracking estimates, not medical advice. 100% local offline data.
-        </footer>
+              {screen === 'routine' && (
+                <ErrorBoundary screenName="Habit Library">
+                  <RoutineScreen
+                    profile={profile}
+                    settings={settings}
+                    tasks={tasks}
+                    completions={completions}
+                    dailyLogs={dailyLogs}
+                    selectedDate={selectedDate}
+                    initialView={subTab}
+                  />
+                </ErrorBoundary>
+              )}
+
+              {screen === 'academy' && (
+                <ErrorBoundary screenName="Academy">
+                  <AcademyScreen />
+                </ErrorBoundary>
+              )}
+
+              {screen === 'settings' && (
+                <ErrorBoundary screenName="Settings">
+                  <SettingsScreen
+                    profile={profile}
+                    settings={settings}
+                    onOpenOnboarding={() => setOnboardingOpen(true)}
+                  />
+                </ErrorBoundary>
+              )}
+            </div>
+          </Suspense>
+
+          <footer className="py-6 text-center text-xs text-slate-500 dark:text-slate-400">
+            {en.safety.scoreFooter} {en.shell.footerNotice}
+          </footer>
+          <PWAUpdateBanner />
         </div>
       </main>
 
-      {/* Floating Glassmorphism Pill Bottom Dock + Floating Quick Log Orb (hidden when typing) */}
+      {/* Floating Bottom Dock: 5 Tabs (Plan · Food · Face · Grow · Health) + Paired Quick-Add "+" */}
       {!isInputFocused && (
-      <div className="fixed bottom-3 left-0 right-0 z-40 px-4 pointer-events-none no-print">
-        <div className="max-w-lg mx-auto flex items-center justify-center gap-2.5">
-          <nav
-            aria-label="Primary navigation"
-            className="pointer-events-auto flex-1 h-[68px] sm:h-[74px] rounded-full ascend-glass-dock grid grid-cols-5 items-center px-1 gap-0.5"
-          >
-            {([
-              { id: 'progress', label: 'Insights', icon: <TrendingUp className="w-[17px] h-[17px]" /> },
-              { id: 'home', label: 'Home', icon: <Home className="w-[17px] h-[17px]" /> },
-              { id: 'nutrition', label: 'Fuel AI', icon: <Utensils className="w-[17px] h-[17px]" /> },
-              { id: 'psl', label: 'Face AI', icon: <ScanFace className="w-[17px] h-[17px]" /> },
-              { id: 'trackers', label: 'Health', icon: <HeartPulse className="w-[17px] h-[17px]" /> },
-            ] as const).map((item) => {
-              const active = screen === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => navigate(item.id)}
-                  className={`flex flex-col items-center justify-center py-1.5 px-0.5 rounded-full min-h-[52px] min-w-0 transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] active:scale-95 ${
-                    active
-                      ? 'bg-[var(--accent-soft)] text-[var(--accent)] font-bold scale-[1.02] border border-[var(--accent)]/25'
-                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white border border-transparent'
-                  }`}
-                >
-                  {item.icon}
-                  <span className="text-[9.5px] sm:text-[10px] mt-0.5 whitespace-nowrap leading-none tracking-tight">
-                    {item.label}
-                  </span>
-                </button>
-              );
-            })}
-          </nav>
+        <div className="fixed bottom-3 left-0 right-0 z-40 px-3 sm:px-4 pointer-events-none no-print">
+          <div className="max-w-xl mx-auto flex items-center justify-center gap-2">
+            <nav
+              aria-label="Primary navigation"
+              className="pointer-events-auto flex-1 h-[64px] sm:h-[70px] rounded-full ascend-glass-dock grid grid-cols-5 items-center px-1 gap-0.5"
+            >
+              {([
+                {
+                  id: 'plan',
+                  label: en.nav.plan,
+                  icon: <CalendarCheck2 className="w-[17px] h-[17px]" />,
+                },
+                {
+                  id: 'food',
+                  label: en.nav.food,
+                  icon: <Utensils className="w-[17px] h-[17px]" />,
+                },
+                {
+                  id: 'face',
+                  label: en.nav.face,
+                  icon: <ScanFace className="w-[17px] h-[17px]" />,
+                },
+                {
+                  id: 'grow',
+                  label: en.nav.grow,
+                  icon: <Ruler className="w-[17px] h-[17px]" />,
+                },
+                {
+                  id: 'health',
+                  label: en.nav.health,
+                  icon: <HeartPulse className="w-[17px] h-[17px]" />,
+                },
+              ] as const).map((item) => {
+                const active = screen === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => navigate(item.id)}
+                    className={`flex flex-col items-center justify-center py-1.5 px-0.5 rounded-full min-h-[48px] min-w-0 transition-all duration-200 active:scale-95 ${
+                      active
+                        ? 'bg-[var(--accent-soft)] text-[var(--accent)] font-bold border border-[var(--accent)]/30'
+                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white border border-transparent'
+                    }`}
+                  >
+                    {item.icon}
+                    <span className="text-[10.5px] sm:text-[11px] mt-0.5 whitespace-nowrap leading-none tracking-tight">
+                      {item.label}
+                    </span>
+                  </button>
+                );
+              })}
+            </nav>
 
-          <button
-            type="button"
-            onClick={() => {
-              setQuickLogTab('water');
-              setQuickLogOpen(true);
-            }}
-            aria-label="Quick Log"
-            className="pointer-events-auto w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-[var(--accent)] text-[var(--accent-contrast)] shadow-[0_12px_28px_-8px_rgba(0,0,0,0.65)] flex items-center justify-center hover:scale-105 active:scale-95 transition-transform shrink-0 border border-white/15"
-          >
-            <Plus className="w-6 h-6" strokeWidth={2.5} />
-          </button>
+            <button
+              type="button"
+              onClick={() => openQuickLogWithTab('water')}
+              aria-label={en.nav.quickAdd}
+              className="pointer-events-auto w-13 h-13 sm:w-15 sm:h-15 rounded-full bg-[var(--accent)] text-[var(--accent-contrast)] shadow-[0_12px_28px_-8px_rgba(0,0,0,0.55)] flex items-center justify-center hover:scale-105 active:scale-95 transition-transform shrink-0 border border-white/15"
+              style={{ minWidth: 52, minHeight: 52 }}
+            >
+              <Plus className="w-6 h-6" strokeWidth={2.5} />
+            </button>
+          </div>
         </div>
-      </div>
       )}
 
-      {/* Hamburger Slide-Over Navigation Drawer */}
+      {/* Slide-Over Menu Drawer */}
       {navDrawerOpen && (
         <div className="fixed inset-0 z-50 flex no-print">
           <div
             className="fixed inset-0 bg-black/70 backdrop-blur-sm"
             onClick={() => setNavDrawerOpen(false)}
           />
-          <aside className="relative z-10 w-72 max-w-[85vw] h-full bg-white dark:bg-[#080C0A]/95 dark:backdrop-blur-2xl border-r border-slate-200 dark:border-emerald-500/20 p-5 flex flex-col justify-between overflow-y-auto">
+          <aside className="relative z-10 w-72 max-w-[85vw] h-full bg-white dark:bg-[#0C121D]/95 dark:backdrop-blur-2xl border-r border-slate-200 dark:border-white/10 p-5 flex flex-col justify-between overflow-y-auto">
             <div className="space-y-5">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <span className="w-7 h-7 rounded-xl bg-[var(--accent-soft)] border border-[var(--accent)]/40 flex items-center justify-center">
                     <Sparkles className="w-3.5 h-3.5 text-[var(--accent)]" />
                   </span>
-                  <span className="font-display text-base font-bold">ASCEND.OS</span>
+                  <span className="font-display text-base font-bold">{en.appName}</span>
                 </div>
                 <button
                   type="button"
                   onClick={() => setNavDrawerOpen(false)}
                   aria-label="Close navigation menu"
-                  className="w-9 h-9 rounded-xl flex items-center justify-center hover:bg-slate-100 dark:hover:bg-white/5"
+                  className="w-11 h-11 rounded-xl flex items-center justify-center hover:bg-slate-100 dark:hover:bg-white/5"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
-              <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0C1410]/80 border border-slate-200 dark:border-emerald-500/20 space-y-1">
-                <p className="text-sm font-bold">{profile.name || 'Member'}</p>
-                <p className="text-[11px] uppercase tracking-widest text-[var(--accent)] font-semibold">
-                  Level {xpState.level} {getRankForLevel(xpState.level)} · {xpState.currentStreak}d Streak
+              <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-white/[0.04] border border-slate-200 dark:border-white/10 space-y-1">
+                {profile.name.trim() && <p className="text-sm font-bold">{profile.name.trim()}</p>}
+                <p className="text-xs text-[var(--accent)] font-semibold">
+                  Level {xpState.level} {getRankForLevel(xpState.level)} · {xpState.currentStreak}d streak
                 </p>
               </div>
 
               <div className="space-y-1">
                 {[
-                  { id: 'home', label: 'Dashboard', icon: <Home className="w-4 h-4" /> },
-                  { id: 'nutrition', label: 'AI Nutrition & Calorie Vision', icon: <Utensils className="w-4 h-4" /> },
-                  { id: 'routine', label: 'Daily Stack & Mind', icon: <ListChecks className="w-4 h-4" /> },
-                  { id: 'psl', label: 'PSL LAB (3-Angle)', icon: <ScanFace className="w-4 h-4" /> },
-                  { id: 'progress', label: 'Insights & Reports', icon: <TrendingUp className="w-4 h-4" /> },
-                  { id: 'trackers', label: 'Health & Gym', icon: <HeartPulse className="w-4 h-4" /> },
-                  { id: 'care', label: 'Care Hub (Skin/Lean Face/Hair)', icon: <Sparkles className="w-4 h-4" /> },
-                  { id: 'academy', label: 'Academy & Myths Wall', icon: <BookOpen className="w-4 h-4" /> },
+                  { id: 'plan', label: 'Plan (Now · Today · Goals)', icon: <CalendarCheck2 className="w-4 h-4" /> },
+                  { id: 'food', label: 'Food (Meals & Calories)', icon: <Utensils className="w-4 h-4" /> },
+                  { id: 'face', label: 'Face (Scanner & Looks Care)', icon: <ScanFace className="w-4 h-4" /> },
+                  { id: 'grow', label: 'Grow (Height & Posture)', icon: <Ruler className="w-4 h-4" /> },
+                  { id: 'health', label: 'Health (Body, Sleep & Trends)', icon: <HeartPulse className="w-4 h-4" /> },
+                  { id: 'more', label: 'More (Search All & Quit list)', icon: <Grid className="w-4 h-4" /> },
+                  { id: 'routine', label: 'Habit Library & Mind', icon: <ListChecks className="w-4 h-4" /> },
+                  { id: 'academy', label: 'Academy & Myths', icon: <BookOpen className="w-4 h-4" /> },
+                  { id: 'dashboard', label: 'Pro Telemetry Dashboard', icon: <LayoutDashboard className="w-4 h-4" /> },
                   { id: 'settings', label: 'Settings & Backup', icon: <Settings className="w-4 h-4" /> },
                 ].map((navItem) => {
                   const active = screen === navItem.id;
@@ -816,22 +1047,21 @@ const AppShell: React.FC = () => {
                 type="button"
                 onClick={() => {
                   setNavDrawerOpen(false);
-                  setQuickLogTab('water');
-                  setQuickLogOpen(true);
+                  openQuickLogWithTab('water');
                 }}
                 className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-bold min-h-[44px]"
               >
-                <Plus className="w-4 h-4" /> Quick Log Vitals
+                <Plus className="w-4 h-4" /> {en.quickAdd.title}
               </button>
               <button
                 type="button"
                 onClick={() => {
                   setNavDrawerOpen(false);
-                  setCoachOpen(true);
+                  openCoach();
                 }}
                 className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 text-xs font-semibold min-h-[44px]"
               >
-                <MessageSquareText className="w-4 h-4 text-[var(--accent)]" /> Open Local Coach
+                <MessageSquareText className="w-4 h-4 text-[var(--accent)]" /> Ask local coach
               </button>
             </div>
           </aside>
@@ -844,16 +1074,28 @@ const AppShell: React.FC = () => {
         initialTab={quickLogTab}
         dateKey={selectedDate}
         profile={profile}
+        units={settings.units}
         onClose={() => setQuickLogOpen(false)}
-        onOpenSkinLab={() => navigate('care')}
+        onOpenSkinLab={() => navigate('face', 'skin')}
+        onOpenMealScanner={(mType) => {
+          setFoodMealType(mType);
+          navigate('food', 'scan');
+        }}
+        onOpenQuitHabits={() => navigate('health', 'quit')}
       />
 
       {onboardingOpen && (
-        <OnboardingModal profile={profile} onClose={() => setOnboardingOpen(false)} />
+        <OnboardingModal
+          profile={profile}
+          currentTone={settings.tone ?? 'normal'}
+          onClose={() => setOnboardingOpen(false)}
+        />
       )}
 
       <CoachDrawer
         open={coachOpen}
+        initialPrompt={coachInitialPrompt}
+        settings={settings}
         context={{
           profile,
           tasks,
@@ -863,47 +1105,22 @@ const AppShell: React.FC = () => {
           scans,
           workouts,
         }}
-        onClose={() => setCoachOpen(false)}
+        onClose={() => {
+          setCoachOpen(false);
+          setCoachInitialPrompt(undefined);
+        }}
       />
 
-      {remindersOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-4 no-print"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setRemindersOpen(false);
-          }}
-        >
-          <div className="ascend-card max-w-md w-full p-5 space-y-3">
-            <div className="flex items-center justify-between">
-              <h2 className="font-display text-base font-bold">In-App Reminders</h2>
-              <button
-                type="button"
-                onClick={() => setRemindersOpen(false)}
-                className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-slate-100 dark:hover:bg-white/5"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            {dueReminders.length === 0 ? (
-              <p className="text-xs text-slate-500 dark:text-slate-400 py-4 text-center">
-                No active reminders due right now. Adjust schedule in Settings.
-              </p>
-            ) : (
-              <div className="space-y-2">
-                {dueReminders.map((r) => (
-                  <div key={r.id} className="p-3 rounded-xl bg-slate-50 dark:bg-white/[0.03] text-xs">
-                    <div className="flex justify-between font-semibold">
-                      <span>{r.title}</span>
-                      <span className="font-mono-num text-[var(--accent)]">{r.time}</span>
-                    </div>
-                    <p className="text-slate-500 dark:text-slate-400 mt-0.5">{r.body}</p>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      <ReminderCenterModal
+        open={remindersOpen}
+        settings={settings}
+        lastScanDate={scans[0]?.date ?? null}
+        todayKey={toLocalDateKey()}
+        todayLog={todayLogForRem}
+        waterTargetMl={profile.waterTargetMl || 3000}
+        todayMealsCount={todayMealsCountForRem}
+        onClose={() => setRemindersOpen(false)}
+      />
     </div>
   );
 };
@@ -911,7 +1128,7 @@ const AppShell: React.FC = () => {
 export default function App() {
   return (
     <ToastProvider>
-      <ErrorBoundary screenName="ASCEND.OS">
+      <ErrorBoundary screenName="ASCEND">
         <AppShell />
       </ErrorBoundary>
     </ToastProvider>

@@ -1,5 +1,12 @@
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
-import type { IncomingMessage, ServerResponse } from 'node:http';
+import {
+  enforcePostSecurity,
+  readJsonBodyWithLimit,
+  redactSecrets,
+  sendJson,
+  type VercelLikeRequest,
+  type VercelLikeResponse,
+} from './_security.js';
 
 // Change this model ID (or set GEMINI_FOOD_MODEL in Vercel Environment Variables) to switch models.
 export const GEMINI_FOOD_MODEL = process.env.GEMINI_FOOD_MODEL?.trim() || 'gemini-3.1-flash-lite';
@@ -7,16 +14,6 @@ export const GEMINI_FOOD_MODEL = process.env.GEMINI_FOOD_MODEL?.trim() || 'gemin
 export const config = {
   maxDuration: 60,
 };
-
-interface VercelRequest extends IncomingMessage {
-  body?: unknown;
-  method?: string;
-}
-
-interface VercelResponse extends ServerResponse {
-  status: (code: number) => VercelResponse;
-  json: (payload: unknown) => void;
-}
 
 interface AnalyzeFoodBody {
   imageBase64?: string;
@@ -62,58 +59,15 @@ const FOOD_RESPONSE_SCHEMA = {
           sugar_g: { type: Type.NUMBER },
           notes: { type: Type.STRING },
         },
-        required: [
-          'name',
-          'portion_g',
-          'calories',
-          'protein_g',
-          'carbs_g',
-          'fats_g',
-          'sodium_mg',
-          'sugar_g',
-        ],
+        required: ['name', 'portion_g', 'calories', 'protein_g', 'carbs_g', 'fats_g', 'sodium_mg', 'sugar_g'],
       },
     },
   },
-  required: [
-    'name',
-    'portion_g',
-    'calories',
-    'protein_g',
-    'carbs_g',
-    'fats_g',
-    'sodium_mg',
-    'sugar_g',
-    'confidence',
-    'notes',
-  ],
+  required: ['name', 'portion_g', 'calories', 'protein_g', 'carbs_g', 'fats_g', 'sodium_mg', 'sugar_g', 'confidence', 'notes'],
 };
 
-function sendJson(res: VercelResponse, statusCode: number, body: Record<string, unknown>) {
-  res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  if (typeof res.status === 'function' && typeof res.json === 'function') {
-    res.status(statusCode).json(body);
-    return;
-  }
-  res.statusCode = statusCode;
-  res.end(JSON.stringify(body));
-}
-
-async function readJsonBody(req: VercelRequest): Promise<AnalyzeFoodBody> {
-  if (req.body && typeof req.body === 'object') {
-    return req.body as AnalyzeFoodBody;
-  }
-  if (typeof req.body === 'string' && req.body.trim()) {
-    return JSON.parse(req.body) as AnalyzeFoodBody;
-  }
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  const raw = Buffer.concat(chunks).toString('utf8').trim();
-  if (!raw) return {};
-  return JSON.parse(raw) as AnalyzeFoodBody;
-}
+const ALLOWED_IMAGE_MIME = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const MAX_DECODED_IMAGE_BYTES = 480 * 1024;
 
 function extractUpstreamError(err: unknown, apiKey?: string): {
   status: number;
@@ -123,21 +77,18 @@ function extractUpstreamError(err: unknown, apiKey?: string): {
   const errObj = (err && typeof err === 'object' ? err : {}) as {
     status?: unknown;
     statusCode?: unknown;
-    code?: unknown;
     message?: unknown;
     name?: unknown;
   };
 
-  let rawDetail =
-    err instanceof Error ? err.message : typeof errObj.message === 'string' ? errObj.message : String(err || 'Unknown upstream error');
-  if (apiKey) {
-    rawDetail = rawDetail.split(apiKey).join('[redacted]');
-  }
+  const rawDetail = redactSecrets(
+    err instanceof Error ? err.message : typeof errObj.message === 'string' ? errObj.message : String(err || 'Unknown upstream error'),
+    apiKey
+  );
 
   const numericStatus = Number(errObj.status ?? errObj.statusCode);
   let status = Number.isInteger(numericStatus) && numericStatus >= 400 && numericStatus <= 599 ? numericStatus : 500;
 
-  // Fallback status detection from error message / code when SDK wraps HTTP error
   if (status === 500) {
     if (/\b401\b|UNAUTHENTICATED/i.test(rawDetail)) status = 401;
     else if (/\b403\b|PERMISSION_DENIED/i.test(rawDetail)) status = 403;
@@ -153,55 +104,25 @@ function extractUpstreamError(err: unknown, apiKey?: string): {
       detail: rawDetail || 'Upstream Gemini call aborted at 20000ms.',
     };
   }
-
   if (/API_KEY_INVALID|invalid api key|API key not valid/i.test(rawDetail) || status === 401) {
-    return {
-      status: status === 401 ? 401 : 400,
-      error: 'Invalid Gemini API key.',
-      detail: rawDetail,
-    };
+    return { status: status === 401 ? 401 : 400, error: 'Invalid Gemini API key.', detail: rawDetail };
   }
-
   if (status === 403 || /PERMISSION_DENIED/i.test(rawDetail)) {
-    return {
-      status: 403,
-      error: 'Gemini API permission denied (403).',
-      detail: rawDetail,
-    };
+    return { status: 403, error: 'Gemini API permission denied (403).', detail: rawDetail };
   }
-
   if (status === 404 || /NOT_FOUND|is not found for API version/i.test(rawDetail)) {
-    return {
-      status: 404,
-      error: `Gemini model "${GEMINI_FOOD_MODEL}" was not found (404).`,
-      detail: rawDetail,
-    };
+    return { status: 404, error: `Gemini model "${GEMINI_FOOD_MODEL}" was not found (404).`, detail: rawDetail };
   }
-
   if (status === 429 || /RESOURCE_EXHAUSTED|quota/i.test(rawDetail)) {
-    return {
-      status: 429,
-      error: 'Gemini API quota or rate limit exceeded (429).',
-      detail: rawDetail,
-    };
+    return { status: 429, error: 'Gemini API quota or rate limit exceeded (429).', detail: rawDetail };
   }
-
   if (status === 400 || /INVALID_ARGUMENT|Unable to process input image/i.test(rawDetail)) {
-    return {
-      status: 400,
-      error: 'Invalid request or unreadable food image (400).',
-      detail: rawDetail,
-    };
+    return { status: 400, error: 'Invalid request or unreadable food image (400).', detail: rawDetail };
   }
-
-  return {
-    status,
-    error: `Gemini food scan failed (${status}).`,
-    detail: rawDetail,
-  };
+  return { status, error: `Gemini food scan failed (${status}).`, detail: rawDetail };
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default async function handler(req: VercelLikeRequest, res: VercelLikeResponse): Promise<void> {
   const reqId = `food-${Date.now().toString(36)}`;
   const tStart = Date.now();
   console.log(`[${reqId}] step=start method=${req.method}`);
@@ -221,16 +142,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
+  if (!enforcePostSecurity(req, res, 'analyze-food', { limitPerMin: 15 })) {
+    return;
+  }
+
   let apiKey = '';
   try {
     const tParseStart = Date.now();
     let body: AnalyzeFoodBody;
     try {
-      body = await readJsonBody(req);
+      body = await readJsonBodyWithLimit<AnalyzeFoodBody>(req, 720_000);
     } catch (err) {
       const detail = err instanceof Error ? err.message : 'Malformed JSON payload';
       console.log(`[${reqId}] step=parse_body_error ms=${Date.now() - tParseStart} detail=${detail}`);
-      sendJson(res, 400, { ok: false, error: 'Invalid JSON request body.', detail });
+      sendJson(res, 400, { ok: false, error: 'Invalid or oversized JSON request.', detail });
       return;
     }
     console.log(`[${reqId}] step=parse_body ms=${Date.now() - tParseStart}`);
@@ -246,12 +171,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const cleanedBase64 = rawBase64.includes(',') ? rawBase64.split(',')[1] : rawBase64;
+    if (!/^[A-Za-z0-9+/=]+$/.test(cleanedBase64)) {
+      sendJson(res, 400, {
+        ok: false,
+        error: 'Invalid base64 image encoding.',
+      });
+      return;
+    }
+
     const approxBytes = Math.round((cleanedBase64.length * 3) / 4);
-    const mimeType =
-      typeof body.mimeType === 'string' && body.mimeType.startsWith('image/')
-        ? body.mimeType
-        : 'image/jpeg';
-    const contextText = (typeof body.context === 'string' ? body.context : body.mealNote || '').trim();
+    if (approxBytes > MAX_DECODED_IMAGE_BYTES) {
+      sendJson(res, 413, {
+        ok: false,
+        error: `Image is too large (${Math.round(approxBytes / 1024)} KB). Keep photos under 480 KB.`,
+      });
+      return;
+    }
+
+    const rawMime = typeof body.mimeType === 'string' ? body.mimeType.trim().toLowerCase() : 'image/jpeg';
+    const mimeType = ALLOWED_IMAGE_MIME.has(rawMime) ? rawMime : 'image/jpeg';
+    const contextText = (typeof body.context === 'string' ? body.context : body.mealNote || '')
+      .trim()
+      .slice(0, 240);
     console.log(
       `[${reqId}] step=validate_image ms=${Date.now() - tStart} approxKB=${Math.round(approxBytes / 1024)} mimeType=${mimeType}`
     );
@@ -319,7 +260,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const tFormatStart = Date.now();
     const rawText = (response.text ?? '').trim();
     if (!rawText) {
-      console.log(`[${reqId}] step=empty_response ms=${Date.now() - tStart}`);
       sendJson(res, 502, {
         ok: false,
         error: 'Vision model returned an empty response.',
@@ -333,12 +273,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       parsed = JSON.parse(rawText) as Record<string, unknown>;
     } catch (err) {
       const detail = err instanceof Error ? err.message : 'Invalid JSON from Gemini';
-      console.log(`[${reqId}] step=parse_gemini_json_error ms=${Date.now() - tStart} detail=${detail}`);
-      sendJson(res, 502, {
-        ok: false,
-        error: 'Model returned malformed JSON.',
-        detail,
-      });
+      sendJson(res, 502, { ok: false, error: 'Model returned malformed JSON.', detail });
       return;
     }
 

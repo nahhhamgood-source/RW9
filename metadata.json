@@ -1,6 +1,6 @@
 {
   "name": "ASCEND",
-  "description": "Personal 100% offline self-care, daily protocol, lifestyle tracker, and on-device facial landmark analysis system.",
+  "description": "Local-first personal self-care, daily habit plan, nutrition & exercise tracker, and on-device facial landmark analysis with optional AI meal scan and coach.",
   "requestFramePermissions": ["camera"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

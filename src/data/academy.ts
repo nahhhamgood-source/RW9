@@ -492,11 +492,21 @@ export const GLOSSARY_TERMS: GlossaryTerm[] = [
     honestTake: 'Every human face has natural asymmetry. Camera roll, focal length, and side lighting often exaggerate minor differences on phone photos.',
   },
   {
-    term: 'Internet Tier Labels (Chad, Chadlite, HTN, LTN, Normie)',
-    meaning: 'Online looksmaxing slang used in forums for rough subjective appearance tiers.',
-    honestTake: 'Forum shorthand for rough opinions, not medical or scientific categories. ASCEND uses neutral measurement tiers (Developing, Mid, High, Top, Elite) and never applies degrading labels.',
+    term: 'Internet Tier Labels (Chad, Chadlite, HTN, True Normie, LTN, Developing)',
+    meaning: 'Community PSL tiers centered on whole numbers: 7.5+ Chad (Elite), 6.5–7.49 Chadlite, 5.5–6.49 HTN (High-Tier Normie), 4.5–5.49 True Normie, 3.5–4.49 LTN (Low-Tier Normie), <3.5 Developing.',
+    honestTake: 'Most people naturally land between 4.0 and 5.5 (LTN to True Normie); 7+ is very rare. Internet slang is rough shorthand, never clinical science—and Settings lets you switch to neutral labels anytime.',
   },
 ];
+
+export const ACADEMY_META = {
+  lastReviewed: '2026-04',
+  sources: [
+    'WHO 2007 Height-for-Age Reference (5–19 years, LMS framework)',
+    'American Academy of Dermatology (AAD) basic cleanser/moisturizer/SPF 30+ guidance',
+    'NIH / NHLBI & Mifflin-St Jeor energy expenditure equations',
+    'Standard anthropometry & cervical posture ergonomics literature',
+  ],
+};
 
 export const MYTHS_WALL: MythClaim[] = [
   {

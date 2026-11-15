@@ -1,6 +1,6 @@
 /**
- * Documented thresholds, typical adult proportion ranges, and calibration weights
- * for ASCEND on-device facial landmark analysis.
+ * Documented thresholds, typical adult proportion ranges, calibration weights,
+ * and centered Tier Ladder definitions for ASCEND on-device facial landmark analysis.
  *
  * Every score is a rough photo-based estimate — camera distance, focal length,
  * head tilt, and lighting significantly change computed ratios.
@@ -9,7 +9,7 @@
 export const QUALITY_THRESHOLDS = {
   /** BLOCK only if face is very tiny (< 15% of frame width) */
   MIN_FACE_WIDTH_BLOCK: 0.15,
-  /** Ideal comfort band >= 21% of frame width */
+  /** Comfortable framing >= 21% of frame width */
   MIN_FACE_WIDTH_PASS: 0.21,
   /** BLOCK above 97% of frame height (lens pressed directly against face) */
   MAX_FACE_HEIGHT_BLOCK: 0.97,
@@ -49,23 +49,12 @@ export const QUALITY_THRESHOLDS = {
   MAX_MOUTH_OPEN_WARN: 0.26,
 } as const;
 
-/**
- * Neutral-expression gate thresholds (MediaPipe blendshapes, 0 = neutral, 1 = expressive).
- * - < 0.28: PASS (neutral face with natural resting tolerance)
- * - 0.28–0.52: WARN (amber shutter enabled, "Relax your face a little")
- * - > 0.52: BLOCK ("Neutral face please: mouth closed, relax your forehead")
- */
 export const EXPRESSION_THRESHOLDS = {
   PASS_MAX: 0.28,
   WARN_MAX: 0.52,
-  /** Resting sensor noise floor subtracted before normalizing blendshape cues */
   RESTING_NOISE_FLOOR: 0.12,
 } as const;
 
-/**
- * Blendshape weights and user-facing cues for neutral-expression scoring.
- * Higher weight catches clear non-neutral expressions while staying tolerant of resting faces.
- */
 export const EXPRESSION_BLENDSHAPE_GROUPS: Array<{
   id: string;
   keys: string[];
@@ -73,93 +62,20 @@ export const EXPRESSION_BLENDSHAPE_GROUPS: Array<{
   cue: string;
   domain: 'mouth' | 'eyes';
 }> = [
-  {
-    id: 'smile',
-    keys: ['mouthSmileLeft', 'mouthSmileRight'],
-    weight: 0.95,
-    cue: 'Smile detected',
-    domain: 'mouth',
-  },
-  {
-    id: 'jawOpen',
-    keys: ['jawOpen'],
-    weight: 1.05,
-    cue: 'Mouth open',
-    domain: 'mouth',
-  },
-  {
-    id: 'mouthFunnel',
-    keys: ['mouthFunnel'],
-    weight: 0.95,
-    cue: 'Mouth open',
-    domain: 'mouth',
-  },
-  {
-    id: 'mouthPucker',
-    keys: ['mouthPucker'],
-    weight: 0.9,
-    cue: 'Lips puckered',
-    domain: 'mouth',
-  },
-  {
-    id: 'cheekPuff',
-    keys: ['cheekPuff'],
-    weight: 1.0,
-    cue: 'Cheeks puffed',
-    domain: 'mouth',
-  },
-  {
-    id: 'browInnerUp',
-    keys: ['browInnerUp'],
-    weight: 0.7,
-    cue: 'Eyebrows raised',
-    domain: 'eyes',
-  },
-  {
-    id: 'browDown',
-    keys: ['browDownLeft', 'browDownRight'],
-    weight: 0.6,
-    cue: 'Brows furrowed',
-    domain: 'eyes',
-  },
-  {
-    id: 'eyeSquint',
-    keys: ['eyeSquintLeft', 'eyeSquintRight'],
-    weight: 0.55,
-    cue: 'Eyes squinted',
-    domain: 'eyes',
-  },
-  {
-    id: 'eyeWide',
-    keys: ['eyeWideLeft', 'eyeWideRight'],
-    weight: 0.75,
-    cue: 'Eyes wide open',
-    domain: 'eyes',
-  },
-  {
-    id: 'mouthStretch',
-    keys: ['mouthStretchLeft', 'mouthStretchRight', 'mouthStretch'],
-    weight: 0.65,
-    cue: 'Mouth stretched',
-    domain: 'mouth',
-  },
-  {
-    id: 'mouthPress',
-    keys: ['mouthPressLeft', 'mouthPressRight'],
-    weight: 0.55,
-    cue: 'Lips pressed',
-    domain: 'mouth',
-  },
-  {
-    id: 'noseSneer',
-    keys: ['noseSneerLeft', 'noseSneerRight'],
-    weight: 0.65,
-    cue: 'Nose wrinkled',
-    domain: 'mouth',
-  },
+  { id: 'smile', keys: ['mouthSmileLeft', 'mouthSmileRight'], weight: 0.95, cue: 'Smile detected', domain: 'mouth' },
+  { id: 'jawOpen', keys: ['jawOpen'], weight: 1.05, cue: 'Mouth open', domain: 'mouth' },
+  { id: 'mouthFunnel', keys: ['mouthFunnel'], weight: 0.95, cue: 'Mouth open', domain: 'mouth' },
+  { id: 'mouthPucker', keys: ['mouthPucker'], weight: 0.9, cue: 'Lips puckered', domain: 'mouth' },
+  { id: 'cheekPuff', keys: ['cheekPuff'], weight: 1.0, cue: 'Cheeks puffed', domain: 'mouth' },
+  { id: 'browInnerUp', keys: ['browInnerUp'], weight: 0.7, cue: 'Eyebrows raised', domain: 'eyes' },
+  { id: 'browDown', keys: ['browDownLeft', 'browDownRight'], weight: 0.6, cue: 'Brows furrowed', domain: 'eyes' },
+  { id: 'eyeSquint', keys: ['eyeSquintLeft', 'eyeSquintRight'], weight: 0.55, cue: 'Eyes squinted', domain: 'eyes' },
+  { id: 'eyeWide', keys: ['eyeWideLeft', 'eyeWideRight'], weight: 0.75, cue: 'Eyes wide open', domain: 'eyes' },
+  { id: 'mouthStretch', keys: ['mouthStretchLeft', 'mouthStretchRight', 'mouthStretch'], weight: 0.65, cue: 'Mouth stretched', domain: 'mouth' },
+  { id: 'mouthPress', keys: ['mouthPressLeft', 'mouthPressRight'], weight: 0.55, cue: 'Lips pressed', domain: 'mouth' },
+  { id: 'noseSneer', keys: ['noseSneerLeft', 'noseSneerRight'], weight: 0.65, cue: 'Nose wrinkled', domain: 'mouth' },
 ];
 
-/** Confidence weight multipliers used in overall confidence-weighted averaging */
 export const CONFIDENCE_WEIGHTS: Record<'high' | 'medium' | 'low', number> = {
   high: 1.0,
   medium: 0.72,
@@ -169,11 +85,11 @@ export const CONFIDENCE_WEIGHTS: Record<'high' | 'medium' | 'low', number> = {
 /**
  * Calibrated population means & shrinkage factor weights.
  * final = mean + scanConfidence * (raw - mean)
- * At raw sub-score mean 67, calculateCalibratedPslScore(67) = 4.8 (True Normie average).
+ * At raw sub-score mean 67, calculateCalibratedPslScore(67) = 4.9 (True Normie center).
  */
 export const CONFIDENCE_SHRINKAGE_CONSTANTS = {
   POPULATION_SUBSCORE_MEAN: 67,
-  POPULATION_PSL_MEAN: 4.8,
+  POPULATION_PSL_MEAN: 4.9,
   FACTOR_WEIGHTS: {
     pose: 0.24,
     expression: 0.28,
@@ -181,15 +97,9 @@ export const CONFIDENCE_SHRINKAGE_CONSTANTS = {
     sharpness: 0.15,
     angles: 0.15,
   },
-  /** Extra shrinkage multiplier on mouth, lip, jaw, and eye metrics when expression is WARN */
   WARN_EXPRESSION_METRIC_MULTIPLIER: 0.55,
 } as const;
 
-/**
- * Documented physiological human bounds for key landmark ratios & angles.
- * If PLAUSIBILITY_OUTLIER_THRESHOLD or more metrics fall outside these bounds,
- * the scan is flagged as unusual instead of showing a misleading report.
- */
 export const PLAUSIBILITY_OUTLIER_THRESHOLD = 3;
 
 export const HUMAN_METRIC_PLAUSIBLE_RANGES = {
@@ -207,16 +117,11 @@ export const HUMAN_METRIC_PLAUSIBLE_RANGES = {
   gonialAngle: { label: 'Gonial angle', min: 95, max: 152 },
 } as const;
 
-/** Documented canthal tilt classification cutoffs (degrees, pose-corrected) */
 export const CANTHAL_TILT_THRESHOLDS = {
   POSITIVE_MIN_DEG: 1.5,
   NEGATIVE_MAX_DEG: -1.5,
 } as const;
 
-/**
- * Typical adult geometric target ranges & distance penalties used to convert
- * raw landmark ratios into 0–100 sub-scores.
- */
 export const METRIC_RANGES = {
   THIRDS_PCT: { min: 30.0, ideal: 33.3, max: 36.6 },
   FWHR: { min: 1.75, ideal: 1.9, max: 2.05 },
@@ -234,13 +139,8 @@ export const METRIC_RANGES = {
   ELINE_OFFSET_U: { min: 1.0, ideal: 2.8, max: 4.5 },
 } as const;
 
-/**
- * Raised IPD-normalized extrapolation constant above forehead landmark 10
- * so estimated upper third reflects typical anatomical hairline placement (~33%).
- */
 export const HAIRLINE_EXTRAPOLATION_IPD = 0.54;
 
-/** Sub-score weights for calibrated PSL estimate (modulated dynamically by confidence) */
 export const PSL_SUBSCORE_WEIGHTS = {
   symmetry: 0.18,
   proportions: 0.16,
@@ -251,8 +151,10 @@ export const PSL_SUBSCORE_WEIGHTS = {
   leanness: 0.10,
 } as const;
 
+export type PslTierId = 'Developing' | 'LTN' | 'True Normie' | 'HTN' | 'Chadlite' | 'Chad';
+
 export interface PslTierMeta {
-  id: 'Developing' | 'LTN' | 'True Normie' | 'HTN' | 'Chadlite' | 'Chad';
+  id: PslTierId;
   slangLabel: string;
   neutralLabel: string;
   displayLabel: string;
@@ -265,61 +167,103 @@ export interface PslTierMeta {
 
 export type NeutralPslTierMeta = PslTierMeta;
 
+export interface PslLadderRung {
+  id: PslTierId;
+  minScore: number;
+  maxScore: number;
+  rangeLabel: string;
+  slangName: string;
+  slangFull: string;
+  neutralName: string;
+  explanation: string;
+}
+
+export const PSL_LADDER_RUNGS: PslLadderRung[] = [
+  {
+    id: 'Chad',
+    minScore: 7.5,
+    maxScore: 8.0,
+    rangeLabel: '7.5 – 8.0',
+    slangName: 'Chad',
+    slangFull: 'Chad (Elite)',
+    neutralName: 'Elite',
+    explanation: 'Very rare multi-angle symmetry, bone framing, and skin clarity.',
+  },
+  {
+    id: 'Chadlite',
+    minScore: 6.5,
+    maxScore: 7.49,
+    rangeLabel: '6.5 – 7.4',
+    slangName: 'Chadlite',
+    slangFull: 'Chadlite',
+    neutralName: 'Top',
+    explanation: 'Distinct symmetry, sharp jaw contours, and strong eye framing.',
+  },
+  {
+    id: 'HTN',
+    minScore: 5.5,
+    maxScore: 6.49,
+    rangeLabel: '5.5 – 6.4',
+    slangName: 'HTN',
+    slangFull: 'HTN (High-Tier Normie)',
+    neutralName: 'High',
+    explanation: 'Above-average harmony, clean skin tone, and tidy lower-third lines.',
+  },
+  {
+    id: 'True Normie',
+    minScore: 4.5,
+    maxScore: 5.49,
+    rangeLabel: '4.5 – 5.4',
+    slangName: 'True Normie',
+    slangFull: 'True Normie',
+    neutralName: 'Average',
+    explanation: 'Balanced everyday range where most people naturally land.',
+  },
+  {
+    id: 'LTN',
+    minScore: 3.5,
+    maxScore: 4.49,
+    rangeLabel: '3.5 – 4.4',
+    slangName: 'LTN',
+    slangFull: 'LTN (Low-Tier Normie)',
+    neutralName: 'Below average',
+    explanation: 'Common baseline with big upside from body fat, skin care, hair, and sleep.',
+  },
+  {
+    id: 'Developing',
+    minScore: 1.0,
+    maxScore: 3.49,
+    rangeLabel: '< 3.5',
+    slangName: 'Developing',
+    slangFull: 'Developing',
+    neutralName: 'Developing',
+    explanation: 'Early photo reading — lighting, bloat, posture, and core habits move this fast.',
+  },
+];
+
 export const PSL_SCALE_GUIDE: Array<{
   rangeLabel: string;
   slangName: string;
   neutralName: string;
   explanation: string;
-}> = [
-  {
-    rangeLabel: '1.0 – 3.4',
-    slangName: 'Developing',
-    neutralName: 'Developing',
-    explanation: 'Early photo baseline — posture, lighting angle, puffiness, and core habits shift this quickly.',
-  },
-  {
-    rangeLabel: '3.5 – 4.4',
-    slangName: 'LTN (Low-Tier Normie)',
-    neutralName: 'Below average',
-    explanation: 'Common starting point; body fat, skincare consistency, hair fit, and grooming move scores upward.',
-  },
-  {
-    rangeLabel: '4.5 – 4.9',
-    slangName: 'True Normie',
-    neutralName: 'Average',
-    explanation: 'Balanced everyday proportions where many people land naturally.',
-  },
-  {
-    rangeLabel: '5.0 – 5.9',
-    slangName: 'HTN (High-Tier Normie)',
-    neutralName: 'High',
-    explanation: 'Strong visual harmony, clear skin tone, and clean lower-third definition.',
-  },
-  {
-    rangeLabel: '6.0 – 6.9',
-    slangName: 'Chadlite',
-    neutralName: 'Top',
-    explanation: 'Distinct multi-angle symmetry, eye-area framing, and defined bone contours.',
-  },
-  {
-    rangeLabel: '7.0 – 8.0',
-    slangName: 'Chad',
-    neutralName: 'Elite',
-    explanation: 'Extremely rare structural harmony across bone framing, symmetry, and skin clarity.',
-  },
-];
+}> = [...PSL_LADDER_RUNGS].reverse().map((r) => ({
+  rangeLabel: r.rangeLabel,
+  slangName: r.slangFull,
+  neutralName: r.neutralName,
+  explanation: r.explanation,
+}));
 
 export const WHAT_MOVES_PSL = {
   realisticLevers: [
-    'Body fat percentage (leaner frame sharpens jaw and cheek contours)',
-    'Skin clarity (gentle cleanser, moisturizer, daily SPF, consistent sleep)',
-    'Haircut and facial hair tailored to face shape',
-    'Grooming (clean brows, oral care, tidy neckline)',
-    'Upright neck posture and proportional neck/trap muscle',
-    'Camera lighting, eye-level angle, and arm’s-length distance',
+    'Body fat level (leaner frame sharpens jaw and cheek lines)',
+    'Clear skin routine (gentle wash, moisturizer, daily SPF, 7–9h sleep)',
+    'Haircut and facial hair tailored to your face shape',
+    'Grooming (tidy brows, clean neck, oral care)',
+    'Upright neck posture and strong back/traps',
+    'Soft front window light and arm’s-length eye-level camera',
   ],
   doesNotMove: [
-    'Adult bone structure (does not remodel from chewing gadgets, mewing, or face tapping)',
+    'Adult bone structure (chewing gadgets or tapping cannot reshape adult skull bones)',
   ],
 } as const;
 
@@ -333,7 +277,7 @@ export function getPslTierMeta(score: number, useSlangNames = true): PslTierMeta
       bracketLabel: 'Developing',
       rangeLabel: '< 3.5',
       plainLabel: 'Developing',
-      constructiveLine: 'Biggest levers for you: lighting, sleep, skin basics, and steady habits.',
+      constructiveLine: 'Biggest levers for you: soft front light, sleep, skin basics, and steady habits.',
       explanation: 'Early photo baseline shaped strongly by lighting, angle, and daily routines.',
     };
   }
@@ -346,46 +290,46 @@ export function getPslTierMeta(score: number, useSlangNames = true): PslTierMeta
       bracketLabel: useSlangNames ? 'LTN (Low-Tier Normie)' : 'Below average',
       rangeLabel: '3.5 – 4.4',
       plainLabel: useSlangNames ? 'Low-Tier Normie' : 'Below average',
-      constructiveLine: 'Biggest levers for you: skin, leanness, grooming, and haircut framing.',
-      explanation: 'Realistic everyday baseline with high upside from leanness, skin clarity, and grooming.',
+      constructiveLine: 'Biggest levers for you: skin care, leanness, grooming, and haircut framing.',
+      explanation: 'Common baseline with large gains from clear skin, less puffiness, and hair fit.',
     };
   }
-  if (score < 5.0) {
+  if (score < 5.5) {
     return {
       id: 'True Normie',
       slangLabel: 'True Normie',
       neutralLabel: 'Average',
       displayLabel: useSlangNames ? 'True Normie' : 'Average',
       bracketLabel: useSlangNames ? 'True Normie (Average)' : 'Average',
-      rangeLabel: '4.5 – 4.9',
-      plainLabel: useSlangNames ? 'Average' : 'Average',
-      constructiveLine: 'Biggest levers for you: lean body fat, consistent SPF, and upright posture.',
-      explanation: 'Balanced everyday range; grooming, lower bloat, and hair fit refine presentation.',
+      rangeLabel: '4.5 – 5.4',
+      plainLabel: 'Average',
+      constructiveLine: 'Biggest levers for you: lean body fat, daily SPF, and upright neck posture.',
+      explanation: 'Balanced everyday range; lower bloat, clean skin, and hair fit sharpen presentation.',
     };
   }
-  if (score < 6.0) {
+  if (score < 6.5) {
     return {
       id: 'HTN',
       slangLabel: 'HTN',
       neutralLabel: 'High',
       displayLabel: useSlangNames ? 'HTN' : 'High',
       bracketLabel: useSlangNames ? 'HTN (High-Tier Normie)' : 'High',
-      rangeLabel: '5.0 – 5.9',
+      rangeLabel: '5.5 – 6.4',
       plainLabel: useSlangNames ? 'High-Tier Normie' : 'High',
-      constructiveLine: 'Biggest levers for you: maintain leanness, skin barrier, and neck/trap frame.',
-      explanation: 'Above-average proportion harmony and defined lower-third lines across angles.',
+      constructiveLine: 'Biggest levers for you: stay lean, protect skin barrier, and train neck/back.',
+      explanation: 'Above-average balance, clear skin tone, and sharp lower-third lines across angles.',
     };
   }
-  if (score < 7.0) {
+  if (score < 7.5) {
     return {
       id: 'Chadlite',
       slangLabel: 'Chadlite',
       neutralLabel: 'Top',
       displayLabel: useSlangNames ? 'Chadlite' : 'Top',
       bracketLabel: useSlangNames ? 'Chadlite (Top)' : 'Top',
-      rangeLabel: '6.0 – 6.9',
-      plainLabel: useSlangNames ? 'Top' : 'Top',
-      constructiveLine: 'Biggest levers for you: sleep consistency, UV protection, and clean grooming.',
+      rangeLabel: '6.5 – 7.4',
+      plainLabel: 'Top',
+      constructiveLine: 'Biggest levers for you: sleep steadiness, daily UV care, and neat grooming.',
       explanation: 'Strong structural alignment across symmetry, eye area, jawline, and skin clarity.',
     };
   }
@@ -395,10 +339,10 @@ export function getPslTierMeta(score: number, useSlangNames = true): PslTierMeta
     neutralLabel: 'Elite',
     displayLabel: useSlangNames ? 'Chad' : 'Elite',
     bracketLabel: useSlangNames ? 'Chad (Elite)' : 'Elite',
-    rangeLabel: '7.0+',
-    plainLabel: useSlangNames ? 'Elite' : 'Elite',
+    rangeLabel: '7.5 – 8.0',
+    plainLabel: 'Elite',
     constructiveLine: 'Biggest levers for you: protect skin with SPF and keep basic health habits steady.',
-    explanation: 'Rare multi-angle proportion balance and clear structural contrast.',
+    explanation: 'Very rare multi-angle structural harmony, balance, and clear framing.',
   };
 }
 
@@ -408,3 +352,57 @@ export function getNeutralTierMeta(score: number, useSlangNames = true): PslTier
 
 export const PSL_HONEST_DISCLAIMER =
   'PSL is an internet scale. This is a rough estimate from photos, not science and not your worth.';
+
+export interface ScanComparisonMatch {
+  comparable: boolean;
+  label: 'Comparable' | 'Not comparable';
+  reasons: string[];
+}
+
+export function evaluateScanComparisonMatch(
+  scanA: {
+    lightingScore: number;
+    savedFrontSnapshot?: { faceWidthFrac: number; yawDeg: number } | null;
+  } | null | undefined,
+  scanB: {
+    lightingScore: number;
+    savedFrontSnapshot?: { faceWidthFrac: number; yawDeg: number } | null;
+  } | null | undefined
+): ScanComparisonMatch {
+  if (!scanA || !scanB) {
+    return {
+      comparable: false,
+      label: 'Not comparable',
+      reasons: ['Need two scans to check setup consistency'],
+    };
+  }
+
+  const reasons: string[] = [];
+  const lightDiff = Math.abs((scanA.lightingScore || 0) - (scanB.lightingScore || 0));
+  if (lightDiff > 18) {
+    reasons.push(`Lighting shifted by ${Math.round(lightDiff)} pts`);
+  }
+
+  const snapA = scanA.savedFrontSnapshot;
+  const snapB = scanB.savedFrontSnapshot;
+  if (snapA && snapB) {
+    const distDiff = Math.abs((snapA.faceWidthFrac || 0) - (snapB.faceWidthFrac || 0));
+    if (distDiff > 0.1) {
+      reasons.push('Camera distance changed noticeably');
+    }
+    const yawDiff = Math.abs((snapA.yawDeg || 0) - (snapB.yawDeg || 0));
+    if (yawDiff > 8) {
+      reasons.push(`Head angle shifted (${Math.round(yawDiff)}° yaw)`);
+    }
+  }
+
+  const comparable = reasons.length === 0;
+  return {
+    comparable,
+    label: comparable ? 'Comparable' : 'Not comparable',
+    reasons: comparable
+      ? ['Similar lighting, distance, and front head angle']
+      : reasons,
+  };
+}
+

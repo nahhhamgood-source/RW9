@@ -1,20 +1,29 @@
 import Dexie, { type Table } from 'dexie';
 import { CURATED_PROTOCOLS, PROTOCOL_MAP } from '../data/protocols';
 import { BADGE_DEFINITIONS, xpRequiredForLevel } from '../data/badges';
-import { addDays, getIsoWeekKey, toLocalDateKey } from '../lib/date';
+import { addDays, getIsoWeekKey, setDayStartHour4am, toLocalDateKey } from '../lib/date';
 import { calculateMifflinStJeor } from '../lib/fitness';
 import type {
   ActiveProtocolTask,
   AppSettings,
   BodyMetricEntry,
   DailyLog,
+  ExerciseSessionLog,
   FaceScanResult,
   FocusAreaId,
+  GoalHorizon,
+  GrowthCheckoffEntry,
+  GrowthProgramProgress,
   HairPreference,
+  HeightLogEntry,
+  LifeGoal,
+  LifeListItem,
   MealScanEntry,
   OutfitRecord,
   OwnedProduct,
   PuffinessLogEntry,
+  QuitHabitItem,
+  QuitSlipEntry,
   SkinEntry,
   TaskCompletion,
   UnlockedBadge,
@@ -25,11 +34,27 @@ import type {
 } from '../types';
 
 const BOOT_MIRROR_KEY = 'ascend_boot_mirror_v1';
+const PRE_UPGRADE_SNAPSHOT_KEY = 'ascend_pre_upgrade_backup_v6';
 
 export interface BootMirrorPayload {
   onboardingComplete: boolean;
   profile: UserProfile;
   updatedAt: number;
+}
+
+export function isAgeUnknown(
+  profile: Pick<UserProfile, 'age' | 'ageExplicitlySet' | 'onboardingSkipped'>
+): boolean {
+  if (!Number.isFinite(profile.age) || profile.age <= 0) return true;
+  if (profile.onboardingSkipped && profile.ageExplicitlySet !== true) return true;
+  return false;
+}
+
+export function isUnder18OrGrowing(
+  profile: Pick<UserProfile, 'age' | 'stillGrowing' | 'ageExplicitlySet' | 'onboardingSkipped'>
+): boolean {
+  if (isAgeUnknown(profile)) return true;
+  return profile.age < 18 || profile.stillGrowing === 'yes';
 }
 
 export function readBootMirror(): BootMirrorPayload | null {
@@ -106,7 +131,7 @@ export async function requestPersistentStorageAndCheck(): Promise<{
       persisted,
       storageAvailable: false,
       warning:
-        'Browser storage appears blocked (private mode or in-app browser). Changes may not persist after closing this tab.',
+        'Browser storage looks limited here (private mode or in-app browser). Back up with Export in Settings so you do not lose data.',
     };
   }
 
@@ -134,6 +159,14 @@ export class AscendDB extends Dexie {
   xpState!: Table<XpState, string>;
   mealScans!: Table<MealScanEntry, number>;
   puffinessLogs!: Table<PuffinessLogEntry, number>;
+  goals!: Table<LifeGoal, number>;
+  lifeList!: Table<LifeListItem, number>;
+  heightLogs!: Table<HeightLogEntry, number>;
+  quitItems!: Table<QuitHabitItem, number>;
+  quitSlips!: Table<QuitSlipEntry, number>;
+  exerciseLogs!: Table<ExerciseSessionLog, number>;
+  growthCheckoffs!: Table<GrowthCheckoffEntry, string>;
+  growthPrograms!: Table<GrowthProgramProgress, string>;
 
   constructor() {
     super('ascend_offline_db');
@@ -204,6 +237,97 @@ export class AscendDB extends Dexie {
       mealScans: '++id, date, timestamp',
       puffinessLogs: '++id, date, createdAt',
     });
+    this.version(5).stores({
+      profile: 'id',
+      settings: 'id',
+      protocolTasks: 'id, protocolId, block, category, enabled, sortOrder, scheduledDate',
+      taskCompletions: 'id, date, taskId',
+      dailyLogs: 'date',
+      bodyMetrics: '++id, date',
+      skinEntries: '++id, date, createdAt',
+      products: '++id, domain, routineSlot, inUse',
+      hairPreferences: '++id, faceShape, isFavorite',
+      wardrobeItems: '++id, category',
+      outfits: '++id, date, isSavedCombo',
+      workouts: '++id, date',
+      scans: '++id, date, timestamp',
+      xpState: 'id',
+      mealScans: '++id, date, timestamp',
+      puffinessLogs: '++id, date, createdAt',
+      goals: '++id, horizon, focusArea, createdAt',
+      lifeList: '++id, timeframe, done, dueDate, createdAt',
+      heightLogs: '++id, date, createdAt',
+    });
+    this.version(6).stores({
+      profile: 'id',
+      settings: 'id',
+      protocolTasks: 'id, protocolId, block, category, enabled, sortOrder, scheduledDate',
+      taskCompletions: 'id, date, taskId',
+      dailyLogs: 'date',
+      bodyMetrics: '++id, date',
+      skinEntries: '++id, date, createdAt',
+      products: '++id, domain, routineSlot, inUse',
+      hairPreferences: '++id, faceShape, isFavorite',
+      wardrobeItems: '++id, category',
+      outfits: '++id, date, isSavedCombo',
+      workouts: '++id, date',
+      scans: '++id, date, timestamp',
+      xpState: 'id',
+      mealScans: '++id, date, timestamp, mealType',
+      puffinessLogs: '++id, date, createdAt',
+      goals: '++id, horizon, focusArea, createdAt',
+      lifeList: '++id, timeframe, done, dueDate, createdAt',
+      heightLogs: '++id, date, createdAt',
+      quitItems: '++id, createdAt',
+      growthCheckoffs: 'id, date, habitId',
+      growthPrograms: 'id',
+    });
+    this.version(7)
+      .stores({
+        profile: 'id',
+        settings: 'id',
+        protocolTasks: 'id, protocolId, block, category, enabled, sortOrder, scheduledDate',
+        taskCompletions: 'id, date, taskId',
+        dailyLogs: 'date',
+        bodyMetrics: '++id, date',
+        skinEntries: '++id, date, createdAt',
+        products: '++id, domain, routineSlot, inUse',
+        hairPreferences: '++id, faceShape, isFavorite',
+        wardrobeItems: '++id, category',
+        outfits: '++id, date, isSavedCombo',
+        workouts: '++id, date',
+        scans: '++id, date, timestamp',
+        xpState: 'id',
+        mealScans: '++id, date, timestamp, mealType',
+        puffinessLogs: '++id, date, createdAt',
+        goals: '++id, horizon, focusArea, createdAt',
+        lifeList: '++id, timeframe, done, dueDate, createdAt',
+        heightLogs: '++id, date, createdAt',
+        quitItems: '++id, category, createdAt',
+        quitSlips: '++id, habitId, date, createdAt',
+        exerciseLogs: '++id, date, programId, domain',
+        growthCheckoffs: 'id, date, habitId',
+        growthPrograms: 'id',
+      })
+      .upgrade(async (tx) => {
+        try {
+          if (typeof window !== 'undefined' && window.localStorage) {
+            const existingProfile = await tx.table('profile').get('me');
+            const existingSettings = await tx.table('settings').get('app');
+            window.localStorage.setItem(
+              PRE_UPGRADE_SNAPSHOT_KEY,
+              JSON.stringify({
+                upgradedFromVersion: 6,
+                upgradedAt: new Date().toISOString(),
+                profile: existingProfile ?? null,
+                settings: existingSettings ?? null,
+              })
+            );
+          }
+        } catch {
+          // Non-fatal pre-upgrade backup guard
+        }
+      });
   }
 }
 
@@ -214,19 +338,26 @@ export function createDefaultProfile(): UserProfile {
     sex: 'male',
     weightKg: 74,
     heightCm: 178,
-    age: 24,
+    age: 20,
     activityLevel: 'moderate',
     goalMode: 'maintain',
   });
   return {
     id: 'me',
-    name: 'Alex',
-    age: 24,
+    name: '',
+    age: 20,
+    ageExplicitlySet: false,
     sex: 'male',
     heightCm: 178,
     weightKg: 74,
     waistCm: null,
     neckCm: null,
+    stillGrowing: 'unsure',
+    motherHeightCm: null,
+    fatherHeightCm: null,
+    dreamHeightCm: null,
+    usualBedtime: '23:00',
+    usualWakeTime: '07:00',
     skinType: 'combination',
     skinConcerns: ['oiliness'],
     hairType: 'wavy',
@@ -236,7 +367,8 @@ export function createDefaultProfile(): UserProfile {
     equipment: 'full_gym',
     targetSleepHours: 8,
     sunExposure: 'moderate',
-    goals: ['skin', 'consistency', 'body_fat'],
+    goals: ['skin', 'consistency'],
+    dietGoal: 'maintain',
     focusAreas: ['face', 'body'],
     mindSubGoals: [],
     dailyTimeBudgetMin: 30,
@@ -258,10 +390,18 @@ export function createDefaultSettings(): AppSettings {
   return {
     id: 'app',
     theme: 'dark',
-    accent: 'mint',
+    accent: 'sky',
     units: 'metric',
+    easyMode: true,
+    tone: 'normal',
+    soundEnabled: false,
     saveThumbnails: true,
+    includeSkinScoreInScans: true,
     slangTierNames: true,
+    dayStartsAt4am: false,
+    onlineConsentSeen: false,
+    onlineFoodEnabled: false,
+    onlineCoachEnabled: false,
     prayerTrackingEnabled: false,
     dhikrTaskEnabled: false,
     prayerTimes: {
@@ -280,8 +420,25 @@ export function createDefaultSettings(): AppSettings {
       workout: '17:30',
       sleep: '22:15',
       rescanDays: 14,
+      waterReminder: false,
+      waterIntervalMin: 120,
+      breakfastTime: '08:30',
+      lunchTime: '13:30',
+      dinnerTime: '19:30',
+      mealLogReminder: false,
+      exerciseReminder: false,
+      exerciseTime: '18:00',
+      postureBreakEnabled: false,
+      weeklyPhotoEnabled: true,
+      monthlyHeightEnabled: true,
+      studyReminderEnabled: false,
+      studyReminderTime: '16:00',
+      quietHoursStart: '23:00',
+      quietHoursEnd: '07:00',
+      maxPerDay: 6,
     },
     lastWeeklyReviewDate: null,
+    lastBackupDate: null,
     autoPedometer: false,
   };
 }
@@ -311,8 +468,17 @@ export function buildPlanForProfile(
   settings?: Partial<AppSettings> | null
 ): ActiveProtocolTask[] {
   const budget = profile.dailyTimeBudgetMin;
-  // Never exceed 8-10 active tasks per day
-  const targetCount = budget === 15 ? 6 : budget === 30 ? 8 : 10;
+  const isEasy = settings?.easyMode ?? true;
+  // Simple mode keeps daily stack light (5-6 core habits); Plus/Pro allows up to 10
+  const targetCount = isEasy
+    ? budget === 15
+      ? 5
+      : 6
+    : budget === 15
+    ? 6
+    : budget === 30
+    ? 8
+    : 10;
 
   const activeFocus: FocusAreaId[] =
     profile.focusAreas && profile.focusAreas.length > 0
@@ -391,7 +557,6 @@ export function buildPlanForProfile(
     boost('mind-dhikr-quran', 109, 'Prayer');
   }
 
-  // Fallback baseline if user has no explicit focus areas yet
   if (candidateIds.size === 0) {
     boost('face-cleanse-am', 100, 'Face');
     boost('face-spf-daily', 98, 'Face');
@@ -415,7 +580,6 @@ export function buildPlanForProfile(
 
   scored.sort((a, b) => b.priority - a.priority);
 
-  // Deduplicate by protocol.id and cap strictly to 8-10 max tasks
   const seen = new Set<string>();
   const finalList: typeof scored = [];
   for (const item of scored) {
@@ -438,6 +602,9 @@ export function buildPlanForProfile(
     evidence: item.protocol.evidence,
     why: item.protocol.why,
     safetyNote: item.protocol.safetyNote,
+    isAdvancedOptional: item.protocol.isAdvancedOptional,
+    exerciseSlug: item.protocol.exerciseSlug,
+    watchQuery: item.protocol.watchQuery,
     isCustom: false,
     enabled: true,
     sortOrder: idx,
@@ -452,7 +619,6 @@ export async function ensureDatabaseReady(): Promise<{
 }> {
   let profile = (await db.profile.get('me')) ?? null;
 
-  // Recover from tiny localStorage mirror if IndexedDB record is absent
   if (!profile) {
     const mirror = readBootMirror();
     if (mirror?.profile && mirror.onboardingComplete) {
@@ -466,24 +632,77 @@ export async function ensureDatabaseReady(): Promise<{
       await db.profile.put(restored);
       profile = (await db.profile.get('me')) ?? restored;
     }
-  } else if (profile.onboardingDone || profile.onboardingComplete || profile.onboardingSkipped) {
-    // Keep mirror synced when profile is already onboarded
-    writeBootMirror(profile);
+  } else {
+    if (profile.name === 'Alex' && (profile.onboardingSkipped || !profile.onboardingComplete)) {
+      profile = { ...profile, name: '' };
+      await db.profile.update('me', { name: '' });
+    }
+    if (profile.onboardingDone || profile.onboardingComplete || profile.onboardingSkipped) {
+      writeBootMirror(profile);
+    }
   }
 
   let settings = await db.settings.get('app');
   if (!settings) {
     settings = createDefaultSettings();
     await db.settings.put(settings);
+  } else {
+    const defaults = createDefaultSettings();
+    const needsSync =
+      settings.easyMode === undefined ||
+      settings.tone === undefined ||
+      settings.slangTierNames === undefined ||
+      settings.includeSkinScoreInScans === undefined ||
+      settings.reminders?.maxPerDay === undefined;
+    if (needsSync) {
+      settings = {
+        ...defaults,
+        ...settings,
+        easyMode: settings.easyMode ?? true,
+        tone: settings.tone ?? 'normal',
+        slangTierNames: settings.slangTierNames ?? true,
+        includeSkinScoreInScans: settings.includeSkinScoreInScans ?? true,
+        reminders: {
+          ...defaults.reminders,
+          ...settings.reminders,
+        },
+      };
+      await db.settings.put(settings);
+    }
   }
+  setDayStartHour4am(Boolean(settings.dayStartsAt4am));
+
   const xp = await db.xpState.get('xp');
   if (!xp) {
     await db.xpState.put(createDefaultXpState());
   }
-  const existingTasks = await db.protocolTasks.count();
-  if (existingTasks === 0) {
+  const existingTasks = await db.protocolTasks.toArray();
+  if (existingTasks.length === 0) {
     const initialTasks = buildPlanForProfile(profile ?? createDefaultProfile(), null, settings);
     await db.protocolTasks.bulkPut(initialTasks);
+  } else {
+    const patchUpdates: ActiveProtocolTask[] = [];
+    for (const task of existingTasks) {
+      const def = PROTOCOL_MAP[task.protocolId];
+      if (!def) continue;
+      if (
+        task.title.includes('(optional)') ||
+        task.isAdvancedOptional !== def.isAdvancedOptional ||
+        task.exerciseSlug !== def.exerciseSlug ||
+        task.watchQuery !== def.watchQuery
+      ) {
+        patchUpdates.push({
+          ...task,
+          title: def.title,
+          isAdvancedOptional: def.isAdvancedOptional,
+          exerciseSlug: def.exerciseSlug,
+          watchQuery: def.watchQuery,
+        });
+      }
+    }
+    if (patchUpdates.length > 0) {
+      await db.protocolTasks.bulkPut(patchUpdates);
+    }
   }
 
   return {
@@ -515,17 +734,152 @@ export async function regenerateProtocolFromProfile(profile: UserProfile): Promi
   ]);
   const latestScan = scans[0] ?? null;
   const generated = buildPlanForProfile(profile, latestScan, settings ?? null);
-  const customTasks = await db.protocolTasks.filter((t) => t.isCustom).toArray();
+  const preservedCustomOrTomorrow = await db.protocolTasks
+    .filter((t) => Boolean(t.isCustom || t.scheduledDate))
+    .toArray();
+  const preservedIds = new Set(preservedCustomOrTomorrow.map((t) => t.id));
   await db.transaction('rw', db.protocolTasks, async () => {
     await db.protocolTasks.clear();
-    await db.protocolTasks.bulkPut([...generated, ...customTasks]);
+    await db.protocolTasks.bulkPut([
+      ...generated.filter((g) => !preservedIds.has(g.id)),
+      ...preservedCustomOrTomorrow,
+    ]);
+  });
+}
+
+export async function deferTaskToTomorrow(taskId: string, fromDateKey: string): Promise<string> {
+  const tomorrowKey = addDays(toLocalDateKey(), 1);
+  await db.protocolTasks.update(taskId, {
+    deferredFromDate: fromDateKey,
+    scheduledDate: tomorrowKey,
+  });
+  return tomorrowKey;
+}
+
+export async function prepareSuggestedTomorrowPlan(
+  profile: UserProfile,
+  settings?: Partial<AppSettings> | null
+): Promise<number> {
+  const tomorrowKey = addDays(toLocalDateKey(), 1);
+  const existingTomorrow = await db.protocolTasks
+    .filter((t) => t.scheduledDate === tomorrowKey)
+    .toArray();
+  const existingProtocols = new Set(existingTomorrow.map((t) => t.protocolId));
+
+  const suggestions = buildPlanForProfile(profile, null, settings).slice(0, 6);
+  const newItems: ActiveProtocolTask[] = [];
+  for (const s of suggestions) {
+    if (existingProtocols.has(s.protocolId)) continue;
+    newItems.push({
+      ...s,
+      id: `tmrw-${tomorrowKey}-${s.protocolId}`,
+      scheduledDate: tomorrowKey,
+      isCustom: false,
+      enabled: true,
+      sortOrder: existingTomorrow.length + newItems.length,
+    });
+  }
+  if (newItems.length > 0) {
+    await db.protocolTasks.bulkPut(newItems);
+  }
+  return newItems.length;
+}
+
+export async function saveHeightLog(params: {
+  date: string;
+  heightCm: number;
+  timeOfDay: 'morning' | 'evening';
+  note?: string;
+}): Promise<number> {
+  const safeHeight = Math.max(90, Math.min(250, Number(params.heightCm)));
+  const id = await db.heightLogs.add({
+    date: params.date,
+    heightCm: Number(safeHeight.toFixed(1)),
+    timeOfDay: params.timeOfDay,
+    note: params.note?.trim() || '',
+    createdAt: Date.now(),
+  });
+  await db.profile.update('me', {
+    heightCm: Number(safeHeight.toFixed(1)),
+    updatedAt: Date.now(),
+  });
+  return id;
+}
+
+export async function addStarterLifeList(): Promise<number> {
+  const existing = await db.lifeList.count();
+  if (existing > 0) return 0;
+  const today = toLocalDateKey();
+  const starters: Array<Omit<LifeListItem, 'id'>> = [
+    {
+      title: 'Measure height cleanly (wall, barefoot, morning)',
+      timeframe: 'this_month',
+      dueDate: addDays(today, 7),
+      done: false,
+      createdAt: Date.now(),
+    },
+    {
+      title: 'Haircut trim / barber shape check',
+      timeframe: 'this_month',
+      dueDate: addDays(today, 21),
+      done: false,
+      createdAt: Date.now() + 1,
+    },
+    {
+      title: 'Dentist hygiene checkup',
+      timeframe: 'three_months',
+      dueDate: addDays(today, 60),
+      done: false,
+      createdAt: Date.now() + 2,
+    },
+    {
+      title: 'Skin check (or dermatologist if stubborn acne)',
+      timeframe: 'three_months',
+      dueDate: addDays(today, 45),
+      done: false,
+      createdAt: Date.now() + 3,
+    },
+    {
+      title: 'Annual health check with a doctor (labs only if advised)',
+      timeframe: 'one_year',
+      dueDate: addDays(today, 180),
+      done: false,
+      createdAt: Date.now() + 4,
+    },
+  ];
+  await db.lifeList.bulkAdd(starters);
+  return starters.length;
+}
+
+export async function addLifeGoal(goal: {
+  title: string;
+  focusArea: LifeGoal['focusArea'];
+  targetLabel: string;
+  horizon?: GoalHorizon;
+}): Promise<number> {
+  return db.goals.add({
+    title: goal.title.trim(),
+    focusArea: goal.focusArea,
+    targetLabel: goal.targetLabel.trim(),
+    horizon: goal.horizon ?? 'three_months',
+    progressPct: 0,
+    milestones: [
+      { id: `m1-${Date.now()}`, horizon: 'this_week', label: 'Start 3 consistent days', done: false },
+      { id: `m2-${Date.now()}`, horizon: 'this_month', label: 'Finish first 3 weeks', done: false },
+      { id: `m3-${Date.now()}`, horizon: 'three_months', label: 'Compare real photos & logs', done: false },
+      { id: `m4-${Date.now()}`, horizon: 'one_year', label: 'Keep steady long-term habit', done: false },
+    ],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
   });
 }
 
 export async function addProtocolToPlan(protocolId: string, sourceFocusArea?: string): Promise<boolean> {
   const def = PROTOCOL_MAP[protocolId];
   if (!def) return false;
-  const existing = await db.protocolTasks.filter((t) => t.protocolId === protocolId).first();
+  const existing = await db.protocolTasks
+    .filter((t) => t.protocolId === protocolId && !t.scheduledDate)
+    .first();
   if (existing) {
     await db.protocolTasks.update(existing.id, {
       enabled: true,
@@ -547,6 +901,9 @@ export async function addProtocolToPlan(protocolId: string, sourceFocusArea?: st
     evidence: def.evidence,
     why: def.why,
     safetyNote: def.safetyNote,
+    isAdvancedOptional: def.isAdvancedOptional,
+    exerciseSlug: def.exerciseSlug,
+    watchQuery: def.watchQuery,
     isCustom: false,
     enabled: true,
     sortOrder: count,
@@ -582,7 +939,7 @@ export async function toggleTaskCompletion(dateKey: string, task: ActiveProtocol
 export async function recalculateXpAndBadges(): Promise<XpState> {
   const [completions, tasks, scans, workouts, skinEntries, prevXp] = await Promise.all([
     db.taskCompletions.toArray(),
-    db.protocolTasks.filter((t) => t.enabled).toArray(),
+    db.protocolTasks.filter((t) => t.enabled && !t.scheduledDate).toArray(),
     db.scans.toArray(),
     db.workouts.toArray(),
     db.skinEntries.toArray(),
@@ -601,7 +958,6 @@ export async function recalculateXpAndBadges(): Promise<XpState> {
     byDate.set(c.date, arr);
   }
 
-  // Day counts as complete at >= 70% of today's tasks. XP rewards consistency only.
   const enabledCount = Math.max(1, tasks.length);
   let consistencyDayBonus = 0;
   const completeDates = new Set<string>();
@@ -612,7 +968,6 @@ export async function recalculateXpAndBadges(): Promise<XpState> {
     }
   });
 
-  // Compute current streak (allowing 1 freeze per week automatically if 1-day gap occurred)
   const today = toLocalDateKey();
   const currentWeek = getIsoWeekKey(today);
   let freezesRemaining = prevXp?.lastFreezeWeek === currentWeek ? prevXp.streakFreezesRemaining : 1;
@@ -637,7 +992,6 @@ export async function recalculateXpAndBadges(): Promise<XpState> {
   const longestStreak = Math.max(prevXp?.longestStreak ?? 0, streak);
   const totalXp = totalTaskXp + consistencyDayBonus;
 
-  // Level calculation: xp needed for level L -> L+1 = 100 * L^1.3
   let level = 1;
   let remaining = totalXp;
   while (remaining >= xpRequiredForLevel(level)) {
@@ -645,7 +999,6 @@ export async function recalculateXpAndBadges(): Promise<XpState> {
     level++;
   }
 
-  // Unlock real milestone badges
   const prevMap = new Map((prevXp?.unlockedBadges ?? []).map((b) => [b.id, b]));
   const checks: Record<string, boolean> = {
     'first-log': completions.length > 0 || workouts.length > 0 || skinEntries.length > 0,
@@ -758,10 +1111,137 @@ export async function deleteMealScanEntry(entry: MealScanEntry): Promise<void> {
   }
 }
 
-export async function exportAllDataJson(): Promise<string> {
+export async function repeatYesterdaysMeals(todayKey: string): Promise<number> {
+  const yesterdayKey = addDays(todayKey, -1);
+  const yesterdays = await db.mealScans.where('date').equals(yesterdayKey).toArray();
+  if (yesterdays.length === 0) return 0;
+
+  const now = Date.now();
+  let addedCal = 0;
+  let addedPro = 0;
+
+  for (let i = 0; i < yesterdays.length; i++) {
+    const src = yesterdays[i];
+    const clonedItems = src.items.map((it, idx) => ({
+      ...it,
+      id: `repeat-${now}-${i}-${idx}`,
+    }));
+    await db.mealScans.add({
+      ...src,
+      id: undefined,
+      date: todayKey,
+      timestamp: now + i,
+      items: clonedItems,
+    });
+    addedCal += src.totalCalories;
+    addedPro += src.totalProteinG;
+  }
+
+  const log = await getOrCreateDailyLog(todayKey);
+  await db.dailyLogs.update(todayKey, {
+    calories: Math.max(0, Math.round((log.calories || 0) + addedCal)),
+    proteinG: Math.max(0, Math.round((log.proteinG || 0) + addedPro)),
+    updatedAt: Date.now(),
+  });
+  return yesterdays.length;
+}
+
+export async function toggleGrowthCheckoff(
+  dateKey: string,
+  habitId: string,
+  xpReward = 15
+): Promise<boolean> {
+  const id = `${dateKey}::${habitId}`;
+  const existing = await db.growthCheckoffs.get(id);
+  if (existing) {
+    await db.growthCheckoffs.delete(id);
+    return false;
+  }
+  await db.growthCheckoffs.put({
+    id,
+    date: dateKey,
+    habitId,
+    xpEarned: xpReward,
+    completedAt: Date.now(),
+  });
+  return true;
+}
+
+export async function toggleGrowthProgramDay(
+  programId: GrowthProgramProgress['id'],
+  dayNumber: number
+): Promise<number[]> {
+  const existing = await db.growthPrograms.get(programId);
+  const current = existing?.completedDays ?? [];
+  const next = current.includes(dayNumber)
+    ? current.filter((d) => d !== dayNumber)
+    : [...current, dayNumber].sort((a, b) => a - b);
+  await db.growthPrograms.put({
+    id: programId,
+    completedDays: next,
+    updatedAt: Date.now(),
+  });
+  return next;
+}
+
+export interface BackupPreview {
+  version: number;
+  exportedAt: string;
+  counts: Record<string, number>;
+  totalRecords: number;
+  includesQuitHabits: boolean;
+}
+
+export function previewBackupJson(jsonString: string): BackupPreview {
+  const parsed = JSON.parse(jsonString);
+  if (!parsed?.ascendBackup || !parsed?.data || typeof parsed.data !== 'object') {
+    throw new Error('This file does not look like an ASCEND backup.');
+  }
+  const d = parsed.data as Record<string, unknown>;
+  const counts: Record<string, number> = {};
+  let totalRecords = 0;
+  for (const [k, v] of Object.entries(d)) {
+    if (Array.isArray(v)) {
+      counts[k] = v.length;
+      totalRecords += v.length;
+    }
+  }
+  return {
+    version: Number(parsed.version) || 1,
+    exportedAt: typeof parsed.exportedAt === 'string' ? parsed.exportedAt : 'Unknown',
+    counts,
+    totalRecords,
+    includesQuitHabits: (counts.quitItems ?? 0) > 0,
+  };
+}
+
+export async function getStorageUsageEstimate(): Promise<{
+  usageBytes: number | null;
+  quotaBytes: number | null;
+  usageMbLabel: string;
+}> {
+  try {
+    if (navigator.storage?.estimate) {
+      const est = await navigator.storage.estimate();
+      const usageBytes = est.usage ?? null;
+      const quotaBytes = est.quota ?? null;
+      const usageMbLabel =
+        usageBytes !== null ? `${(usageBytes / (1024 * 1024)).toFixed(2)} MB` : 'Unknown';
+      return { usageBytes, quotaBytes, usageMbLabel };
+    }
+  } catch {
+    // ignore
+  }
+  return { usageBytes: null, quotaBytes: null, usageMbLabel: 'Unavailable' };
+}
+
+export async function exportAllDataJson(includeQuitHabits = true): Promise<string> {
+  const today = toLocalDateKey();
+  await db.settings.update('app', { lastBackupDate: today }).catch(() => {});
+
   const payload = {
     ascendBackup: true,
-    version: 1,
+    version: 3,
     exportedAt: new Date().toISOString(),
     data: {
       profile: await db.profile.toArray(),
@@ -780,6 +1260,14 @@ export async function exportAllDataJson(): Promise<string> {
       xpState: await db.xpState.toArray(),
       mealScans: await db.mealScans.toArray(),
       puffinessLogs: await db.puffinessLogs.toArray(),
+      goals: await db.goals.toArray(),
+      lifeList: await db.lifeList.toArray(),
+      heightLogs: await db.heightLogs.toArray(),
+      quitItems: includeQuitHabits ? await db.quitItems.toArray() : [],
+      quitSlips: includeQuitHabits ? await db.quitSlips.toArray() : [],
+      exerciseLogs: await db.exerciseLogs.toArray(),
+      growthCheckoffs: await db.growthCheckoffs.toArray(),
+      growthPrograms: await db.growthPrograms.toArray(),
     },
   };
   return JSON.stringify(payload, null, 2);
@@ -788,7 +1276,7 @@ export async function exportAllDataJson(): Promise<string> {
 export async function importAllDataJson(jsonString: string): Promise<void> {
   const parsed = JSON.parse(jsonString);
   if (!parsed?.ascendBackup || !parsed?.data) {
-    throw new Error('File is not a valid ASCEND backup.');
+    throw new Error('This file does not look like an ASCEND backup.');
   }
   const d = parsed.data;
   await db.transaction(
@@ -810,6 +1298,14 @@ export async function importAllDataJson(jsonString: string): Promise<void> {
       db.xpState,
       db.mealScans,
       db.puffinessLogs,
+      db.goals,
+      db.lifeList,
+      db.heightLogs,
+      db.quitItems,
+      db.quitSlips,
+      db.exerciseLogs,
+      db.growthCheckoffs,
+      db.growthPrograms,
     ],
     async () => {
       await Promise.all([
@@ -829,6 +1325,14 @@ export async function importAllDataJson(jsonString: string): Promise<void> {
         db.xpState.clear(),
         db.mealScans.clear(),
         db.puffinessLogs.clear(),
+        db.goals.clear(),
+        db.lifeList.clear(),
+        db.heightLogs.clear(),
+        db.quitItems.clear(),
+        db.quitSlips.clear(),
+        db.exerciseLogs.clear(),
+        db.growthCheckoffs.clear(),
+        db.growthPrograms.clear(),
       ]);
 
       if (Array.isArray(d.profile) && d.profile.length) await db.profile.bulkPut(d.profile);
@@ -847,6 +1351,14 @@ export async function importAllDataJson(jsonString: string): Promise<void> {
       if (Array.isArray(d.xpState) && d.xpState.length) await db.xpState.bulkPut(d.xpState);
       if (Array.isArray(d.mealScans) && d.mealScans.length) await db.mealScans.bulkPut(d.mealScans);
       if (Array.isArray(d.puffinessLogs) && d.puffinessLogs.length) await db.puffinessLogs.bulkPut(d.puffinessLogs);
+      if (Array.isArray(d.goals) && d.goals.length) await db.goals.bulkPut(d.goals);
+      if (Array.isArray(d.lifeList) && d.lifeList.length) await db.lifeList.bulkPut(d.lifeList);
+      if (Array.isArray(d.heightLogs) && d.heightLogs.length) await db.heightLogs.bulkPut(d.heightLogs);
+      if (Array.isArray(d.quitItems) && d.quitItems.length) await db.quitItems.bulkPut(d.quitItems);
+      if (Array.isArray(d.quitSlips) && d.quitSlips.length) await db.quitSlips.bulkPut(d.quitSlips);
+      if (Array.isArray(d.exerciseLogs) && d.exerciseLogs.length) await db.exerciseLogs.bulkPut(d.exerciseLogs);
+      if (Array.isArray(d.growthCheckoffs) && d.growthCheckoffs.length) await db.growthCheckoffs.bulkPut(d.growthCheckoffs);
+      if (Array.isArray(d.growthPrograms) && d.growthPrograms.length) await db.growthPrograms.bulkPut(d.growthPrograms);
     }
   );
   await ensureDatabaseReady();
@@ -872,6 +1384,14 @@ export async function wipeAllData(): Promise<void> {
     db.xpState.clear(),
     db.mealScans.clear(),
     db.puffinessLogs.clear(),
+    db.goals.clear(),
+    db.lifeList.clear(),
+    db.heightLogs.clear(),
+    db.quitItems.clear(),
+    db.quitSlips.clear(),
+    db.exerciseLogs.clear(),
+    db.growthCheckoffs.clear(),
+    db.growthPrograms.clear(),
   ]);
   await ensureDatabaseReady();
 }

@@ -25,11 +25,13 @@ import {
 import type { ExtendedReportPillar, FaceScanResult, LandmarksOverlayGuides } from '../../types';
 import { useToast } from '../ui/ToastProvider';
 import { ThirdsCanvasOverlay } from './ThirdsCanvasOverlay';
+import { TierLadderCard } from './TierLadderCard';
 
 interface FacialAestheticsReportProps {
   activeScan: FaceScanResult;
   scans: FaceScanResult[];
   slangTierNames?: boolean;
+  includeSkinScore?: boolean;
   onSelectScan: (scanId: number) => void;
   onStartNewScan: () => void;
   onAddSidePhotos?: (scan: FaceScanResult) => void;
@@ -39,6 +41,7 @@ export const FacialAestheticsReport: React.FC<FacialAestheticsReportProps> = ({
   activeScan,
   scans,
   slangTierNames = true,
+  includeSkinScore = true,
   onSelectScan,
   onStartNewScan,
   onAddSidePhotos,
@@ -81,7 +84,7 @@ export const FacialAestheticsReport: React.FC<FacialAestheticsReportProps> = ({
       ? activeScan.profile90Thumbnail || activeScan.frontThumbnail
       : activeScan.frontThumbnail;
 
-  const pillars: ExtendedReportPillar[] = useMemo(() => {
+  const rawPillars: ExtendedReportPillar[] = useMemo(() => {
     if (activeScan.extendedPillars && activeScan.extendedPillars.length > 0) {
       return activeScan.extendedPillars;
     }
@@ -162,6 +165,32 @@ export const FacialAestheticsReport: React.FC<FacialAestheticsReportProps> = ({
       },
     ];
   }, [activeScan]);
+
+  const pillars: ExtendedReportPillar[] = useMemo(() => {
+    const lowLight = (activeScan.lightingScore ?? 100) < 55;
+    return rawPillars.map((p) => {
+      if (p.key !== 'skin') return p;
+      if (!includeSkinScore) {
+        return {
+          ...p,
+          score: null,
+          displayScore: 'Off in Settings',
+          descriptor: 'Skin scoring is turned off in Settings -> Privacy & Scan preferences.',
+          confidence: 'low',
+          approximate: true,
+        };
+      }
+      if (lowLight) {
+        return {
+          ...p,
+          confidence: 'low',
+          approximate: true,
+          descriptor: `Low light — skin estimate has low confidence (${p.descriptor})`,
+        };
+      }
+      return p;
+    });
+  }, [rawPillars, includeSkinScore, activeScan.lightingScore]);
 
   const featureChips = useMemo(() => {
     if (activeScan.featureChips) return activeScan.featureChips;
@@ -579,6 +608,9 @@ export const FacialAestheticsReport: React.FC<FacialAestheticsReportProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Interactive 6-Rung PSL Tier Ladder */}
+      <TierLadderCard score={activeScan.pslEstimate} slangTierNames={slangTierNames} />
 
       {/* Metrics List (Core + Extended Pillars, /100 Estimate or "Not measurable" + Learn More) */}
       <div className="ascend-card p-4 sm:p-5 space-y-3">

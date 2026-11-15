@@ -82,6 +82,40 @@ export function calculateUSNavyBodyFat(params: {
   };
 }
 
+export function calculateNavyBodyFat(
+  sex: UserProfile['sex'],
+  heightCm: number,
+  waistCm: number,
+  neckCm: number,
+  hipCm?: number
+): number | null {
+  const res = calculateUSNavyBodyFat({ sex, heightCm, waistCm, neckCm, hipCm });
+  return res ? res.bodyFatPct : null;
+}
+
+export function kgToLbs(kg: number): number {
+  return Number((kg * 2.20462).toFixed(1));
+}
+
+export function lbsToKg(lbs: number): number {
+  return Number((lbs / 2.20462).toFixed(1));
+}
+
+export function cmToInches(cm: number): number {
+  return Number((cm / 2.54).toFixed(1));
+}
+
+export function cmToFtIn(cm: number): { feet: number; inches: number } {
+  const totalInches = Math.round(cm / 2.54);
+  const feet = Math.floor(totalInches / 12);
+  const inches = totalInches % 12;
+  return { feet, inches };
+}
+
+export function ftInToCm(feet: number, inches: number): number {
+  return Number((((feet * 12) + inches) * 2.54).toFixed(1));
+}
+
 export function calculateEstimated1RM(weightKg: number, reps: number): number {
   if (weightKg <= 0 || reps <= 0) return 0;
   if (reps === 1) return Math.round(weightKg * 10) / 10;

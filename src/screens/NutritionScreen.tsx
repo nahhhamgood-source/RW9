@@ -22,24 +22,39 @@ import {
 import {
   deleteMealScanEntry,
   getOrCreateDailyLog,
+  isAgeUnknown,
+  isUnder18OrGrowing,
+  saveAndVerifyProfile,
   saveMealScanEntry,
   updateMealScanEntry,
   db,
 } from '../db/database';
+import { en } from '../i18n/en';
+import { apiRequest, hasOnlineConsent } from '../lib/api';
 import { toLocalDateKey } from '../lib/date';
 import {
   computeDailyNutritionTargets,
   computeDebloatImpact,
   prepareMealImageAssets,
+  resolveSafeDietGoal,
   scaleFoodItemWeight,
   sumMealItems,
 } from '../lib/nutrition';
+import { OnlineConsentModal } from '../components/modals/OnlineConsentModal';
 import { CircularRing } from '../components/ui/ProgressRings';
 import { useToast } from '../components/ui/ToastProvider';
-import type { DailyLog, MealFoodItem, MealScanEntry, UserProfile } from '../types';
+import type {
+  AppSettings,
+  DailyLog,
+  DietGoalMode,
+  MealFoodItem,
+  MealScanEntry,
+  UserProfile,
+} from '../types';
 
 interface NutritionScreenProps {
   profile: UserProfile;
+  settings: AppSettings;
   dailyLogs: DailyLog[];
   mealScans: MealScanEntry[];
 }
@@ -61,21 +76,52 @@ interface PendingAiEstimate {
 
 export const NutritionScreen: React.FC<NutritionScreenProps> = ({
   profile,
+  settings,
   dailyLogs,
   mealScans,
 }) => {
   const { showToast } = useToast();
   const todayKey = toLocalDateKey();
 
-  const [goalMode, setGoalMode] = useState<'cut' | 'maintain' | 'lean_gain'>('cut');
+  const hideCut = isUnder18OrGrowing(profile);
+  const { goal: safeGoalMode, cutLocked, lockReason } = useMemo(
+    () => resolveSafeDietGoal(profile),
+    [profile]
+  );
   const [mealNote, setMealNote] = useState('');
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [pendingEstimate, setPendingEstimate] = useState<PendingAiEstimate | null>(null);
+  const [consentOpen, setConsentOpen] = useState(false);
+  const pendingPhotoSourceRef = useRef<File | string | null>(null);
   const lastImageSourceRef = useRef<File | string | null>(null);
   const [activeMealId, setActiveMealId] = useState<number | null>(null);
   const [expandedTimelineId, setExpandedTimelineId] = useState<number | null>(null);
+
+  const handleSelectGoalMode = async (nextMode: DietGoalMode) => {
+    const resolved = resolveSafeDietGoal(profile, nextMode);
+    if (nextMode === 'cut' && resolved.cutLocked) {
+      showToast(
+        resolved.lockReason === 'underweight'
+          ? 'Cut goal locked while BMI is under 18.5.'
+          : isAgeUnknown(profile)
+          ? en.diet.under18Lock
+          : en.diet.under18Maintain,
+        'warning'
+      );
+      return;
+    }
+    const nextTargets = computeDailyNutritionTargets(profile, resolved.goal);
+    await saveAndVerifyProfile({
+      ...profile,
+      dietGoal: resolved.goal,
+      calorieGoal: nextTargets.calories,
+      proteinTargetG: nextTargets.proteinG,
+      waterTargetMl: nextTargets.debloatWaterMl,
+    });
+    showToast(`Diet goal set to ${resolved.goal === 'cut' ? en.diet.loseFat : resolved.goal === 'lean_gain' ? en.diet.buildMuscle : en.diet.staySame}`);
+  };
 
   // Live Camera Modal state
   const [cameraOpen, setCameraOpen] = useState(false);
@@ -97,8 +143,8 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
   const [manualSugar, setManualSugar] = useState('3');
 
   const targets = useMemo(
-    () => computeDailyNutritionTargets(profile, goalMode),
-    [profile, goalMode]
+    () => computeDailyNutritionTargets(profile, safeGoalMode),
+    [profile, safeGoalMode]
   );
 
   const todayLog = useMemo(
@@ -216,76 +262,39 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
     setCameraError(null);
   };
 
-  const runVisionAnalysis = async (source: File | string) => {
+  const runVisionAnalysis = async (source: File | string, bypassConsentCheck = false) => {
+    if (!bypassConsentCheck && !hasOnlineConsent(settings, 'food')) {
+      pendingPhotoSourceRef.current = source;
+      setConsentOpen(true);
+      return;
+    }
+
     lastImageSourceRef.current = source;
     setScanError(null);
     setPendingEstimate(null);
     setAnalyzing(true);
-
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 45000);
 
     try {
       const { apiBase64, mimeType, previewDataUrl, thumbnailDataUrl } =
         await prepareMealImageAssets(source);
       setPreviewUrl(previewDataUrl);
 
-      const res = await fetch('/api/analyze-food', {
+      const res = await apiRequest<Record<string, unknown>>('/api/analyze-food', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        cache: 'no-store',
-        body: JSON.stringify({
+        timeoutMs: 45_000,
+        body: {
           imageBase64: apiBase64,
           mimeType,
           context: mealNote.trim() || undefined,
-        }),
-        signal: controller.signal,
+        },
       });
 
-      const contentType = res.headers.get('content-type') || '';
-      if (!contentType.toLowerCase().includes('application/json')) {
-        const rawPreview = (await res.text().catch(() => '')).trim().slice(0, 120);
-        if (contentType.toLowerCase().includes('text/html')) {
-          setScanError(
-            `Food scan endpoint returned HTML instead of API JSON (HTTP ${res.status}). Redeploy or hard-refresh once if an older build/service worker is cached.`
-          );
-        } else {
-          setScanError(
-            `Server returned HTTP ${res.status} (${contentType || 'non-JSON'})${rawPreview ? `: ${rawPreview}` : ''}`
-          );
-        }
+      if (!res.ok) {
+        setScanError(res.detail || res.error || 'Food scan failed.');
         return;
       }
 
-      let body: {
-        ok?: boolean;
-        data?: Record<string, unknown>;
-        error?: string;
-        detail?: string;
-        code?: string;
-      } | null = null;
-      try {
-        body = (await res.json()) as {
-          ok?: boolean;
-          data?: Record<string, unknown>;
-          error?: string;
-          detail?: string;
-          code?: string;
-        };
-      } catch (parseErr) {
-        const msg = parseErr instanceof Error ? parseErr.message : 'Invalid JSON';
-        setScanError(`Failed to parse server response (HTTP ${res.status}): ${msg}`);
-        return;
-      }
-
-      if (!res.ok || !body?.ok || !body?.data) {
-        const errTitle = body?.error || `Food scan failed (HTTP ${res.status}).`;
-        const errDetail = body?.detail && body.detail !== errTitle ? ` — ${body.detail}` : '';
-        setScanError(`${errTitle}${errDetail}`);
-        return;
-      }
-
-      const d = body.data;
+      const d = res.data;
       const confidence = Math.max(0, Math.min(1, Number(d.confidence ?? 0.6)));
       const rawItems = Array.isArray(d.items) ? d.items : [];
       const parsedItems: MealFoodItem[] = rawItems.map((it: Record<string, unknown>, idx: number) => {
@@ -321,14 +330,9 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
       });
       showToast('AI estimate ready — review & edit before saving', 'info');
     } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        setScanError('Food scan request timed out after 45s. Please retry or use Manual Quick-Add.');
-      } else {
-        const msg = err instanceof Error ? err.message : 'Network error';
-        setScanError(`Food scan request failed: ${msg}`);
-      }
+      const msg = err instanceof Error ? err.message : 'Network error';
+      setScanError(`Food scan request failed: ${msg}`);
     } finally {
-      window.clearTimeout(timeoutId);
       setAnalyzing(false);
     }
   };
@@ -527,25 +531,48 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
 
         <div className="flex items-center gap-1 p-1 rounded-2xl bg-slate-200/80 dark:bg-white/[0.05] border border-slate-200 dark:border-white/10 shrink-0">
           {([
-            { id: 'cut', label: 'Debloat Cut' },
-            { id: 'maintain', label: 'Maintain' },
-            { id: 'lean_gain', label: 'Lean Gain' },
-          ] as const).map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              onClick={() => setGoalMode(m.id)}
-              className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold transition whitespace-nowrap min-h-[34px] ${
-                goalMode === m.id
-                  ? 'bg-white dark:bg-[#132018] text-slate-900 dark:text-[var(--accent)] shadow-sm border border-transparent dark:border-emerald-500/30'
-                  : 'text-slate-500 dark:text-slate-400'
-              }`}
-            >
-              {m.label}
-            </button>
-          ))}
+            { id: 'cut', label: en.diet.loseFat },
+            { id: 'maintain', label: en.diet.staySame },
+            { id: 'lean_gain', label: en.diet.buildMuscle },
+          ] as const).map((m) => {
+            const locked = m.id === 'cut' && cutLocked;
+            return (
+              <button
+                key={m.id}
+                type="button"
+                disabled={locked}
+                title={
+                  locked
+                    ? lockReason === 'underweight'
+                      ? 'Cut locked under BMI 18.5'
+                      : en.diet.under18Lock
+                    : undefined
+                }
+                onClick={() => handleSelectGoalMode(m.id)}
+                className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold transition whitespace-nowrap min-h-[36px] ${
+                  locked
+                    ? 'opacity-45 cursor-not-allowed text-slate-400'
+                    : safeGoalMode === m.id
+                    ? 'bg-white dark:bg-[#132018] text-slate-900 dark:text-[var(--accent)] shadow-sm border border-transparent dark:border-emerald-500/30'
+                    : 'text-slate-500 dark:text-slate-400'
+                }`}
+              >
+                {m.label}{locked ? ' (locked)' : ''}
+              </button>
+            );
+          })}
         </div>
       </div>
+
+      {cutLocked && (
+        <div className="p-3 rounded-2xl bg-sky-500/10 border border-sky-500/25 text-xs text-sky-700 dark:text-sky-300">
+          {lockReason === 'underweight'
+            ? 'Cut targets are hidden while BMI is below 18.5 — stay on Stay the same or Build muscle.'
+            : isAgeUnknown(profile)
+            ? en.diet.under18Lock
+            : en.diet.under18Maintain}
+        </div>
+      )}
 
       {/* Top Vault: Glowing Calorie Ring + Macro Bars + 4L Debloat Hydration Quick-Tap */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
@@ -1515,6 +1542,25 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
           </div>
         </div>
       )}
+
+      <OnlineConsentModal
+        open={consentOpen}
+        featureName="AI Food Scan"
+        settings={settings}
+        onAccept={() => {
+          setConsentOpen(false);
+          const src = pendingPhotoSourceRef.current;
+          pendingPhotoSourceRef.current = null;
+          if (src) {
+            runVisionAnalysis(src, true);
+          }
+        }}
+        onDecline={() => {
+          setConsentOpen(false);
+          pendingPhotoSourceRef.current = null;
+          setScanError('AI meal scan stayed offline. Use Manual Quick-Add instead.');
+        }}
+      />
     </div>
   );
 };

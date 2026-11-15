@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Search, ShieldCheck, Stethoscope, ChevronDown, ChevronUp } from 'lucide-react';
 import {
   ACADEMY_GUIDES,
+  ACADEMY_META,
   GLOSSARY_TERMS,
   MEDICAL_INFO_CARDS,
   MYTHS_WALL,
@@ -271,6 +272,13 @@ export const AcademyScreen: React.FC = () => {
           </div>
         </div>
       )}
+
+      <div className="ascend-card p-4 text-[11px] text-slate-500 dark:text-slate-400 space-y-1">
+        <p className="font-semibold text-slate-700 dark:text-slate-200">
+          Last reviewed: {ACADEMY_META.lastReviewed} · Educational content only
+        </p>
+        <p>References: {ACADEMY_META.sources.join(' · ')}</p>
+      </div>
     </div>
   );
 };

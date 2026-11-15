@@ -1,5 +1,7 @@
-import { calculateMifflinStJeor } from './fitness';
-import type { DebloatStatus, MealFoodItem, UserProfile } from '../types';
+import { calculateMifflinStJeor, computeBmi } from './fitness';
+import { addDays, toLocalDateKey } from './date';
+import { isUnder18OrGrowing } from '../db/database';
+import type { BodyMetricEntry, DebloatStatus, DietGoalMode, MealFoodItem, UserProfile } from '../types';
 
 export interface DailyNutritionTargets {
   calories: number;
@@ -10,6 +12,167 @@ export interface DailyNutritionTargets {
   sodiumLimitMg: number;
   addedSugarLimitG: number;
   formulaLabel: string;
+}
+
+export function resolveSafeDietGoal(
+  profile: UserProfile,
+  requestedGoal?: DietGoalMode
+): {
+  goal: DietGoalMode;
+  cutLocked: boolean;
+  lockReason: 'under18' | 'underweight' | null;
+} {
+  const underage = isUnder18OrGrowing(profile);
+  const bmi = computeBmi(profile.weightKg, profile.heightCm);
+  const underweight = bmi > 0 && bmi < 18.5;
+  const candidate = requestedGoal ?? profile.dietGoal ?? 'maintain';
+
+  if (underage) {
+    return {
+      goal: candidate === 'cut' ? 'maintain' : candidate,
+      cutLocked: true,
+      lockReason: 'under18',
+    };
+  }
+  if (underweight) {
+    return {
+      goal: candidate === 'cut' ? 'maintain' : candidate,
+      cutLocked: true,
+      lockReason: 'underweight',
+    };
+  }
+  return { goal: candidate, cutLocked: false, lockReason: null };
+}
+
+export interface WeeklyWeightAdjustment {
+  status: 'insufficient_data' | 'on_track' | 'nudge_down' | 'nudge_up';
+  headline: string;
+  detail: string;
+  deltaCalories: number;
+  suggestedCalorieGoal: number | null;
+  week1AvgKg: number | null;
+  week2AvgKg: number | null;
+}
+
+/**
+ * Checks the last two consecutive 7-day weight averages (Days -13..-7 vs Days -6..0)
+ * against the user's current diet goal. Never projects or fabricates numbers.
+ */
+export function evaluateWeeklyWeightAdjustment(
+  profile: UserProfile,
+  bodyMetrics: BodyMetricEntry[],
+  todayKey: string = toLocalDateKey()
+): WeeklyWeightAdjustment {
+  const { goal, cutLocked } = resolveSafeDietGoal(profile);
+  const safeFloor = profile.sex === 'female' ? 1300 : 1500;
+  const currentTarget = profile.calorieGoal || computeDailyNutritionTargets(profile, goal).calories;
+
+  const w1Start = addDays(todayKey, -13);
+  const w1End = addDays(todayKey, -7);
+  const w2Start = addDays(todayKey, -6);
+
+  const w1Weights = bodyMetrics
+    .filter((m) => m.weightKg > 20 && m.date >= w1Start && m.date <= w1End)
+    .map((m) => m.weightKg);
+  const w2Weights = bodyMetrics
+    .filter((m) => m.weightKg > 20 && m.date >= w2Start && m.date <= todayKey)
+    .map((m) => m.weightKg);
+
+  if (w1Weights.length < 2 || w2Weights.length < 2) {
+    return {
+      status: 'insufficient_data',
+      headline: 'Log weight 2+ times per week for 2 weeks',
+      detail: `Need at least 2 logged weights in both the prior week (${w1Weights.length}/2) and this week (${w2Weights.length}/2) before suggesting any calorie change.`,
+      deltaCalories: 0,
+      suggestedCalorieGoal: null,
+      week1AvgKg: w1Weights.length ? Number((w1Weights.reduce((a, b) => a + b, 0) / w1Weights.length).toFixed(1)) : null,
+      week2AvgKg: w2Weights.length ? Number((w2Weights.reduce((a, b) => a + b, 0) / w2Weights.length).toFixed(1)) : null,
+    };
+  }
+
+  const avg1 = Number((w1Weights.reduce((a, b) => a + b, 0) / w1Weights.length).toFixed(1));
+  const avg2 = Number((w2Weights.reduce((a, b) => a + b, 0) / w2Weights.length).toFixed(1));
+  const diffKg = Number((avg2 - avg1).toFixed(2));
+
+  if (goal === 'cut' && !cutLocked) {
+    if (diffKg > -0.1) {
+      const nextTarget = Math.max(safeFloor, currentTarget - 120);
+      const delta = nextTarget - currentTarget;
+      return {
+        status: delta < 0 ? 'nudge_down' : 'on_track',
+        headline:
+          delta < 0
+            ? `7-day avg stayed flat (${avg1} → ${avg2} kg): trim 120 kcal`
+            : `7-day avg (${avg1} → ${avg2} kg) is at safe calorie floor`,
+        detail:
+          delta < 0
+            ? `Gentle tweak from ${currentTarget} to ${nextTarget} kcal (or add 2,000 daily steps) without dropping below your ${safeFloor} kcal floor.`
+            : `Your calorie target is already at the ${safeFloor} kcal safe floor — focus on daily steps and hydration instead of cutting food further.`,
+        deltaCalories: delta,
+        suggestedCalorieGoal: nextTarget,
+        week1AvgKg: avg1,
+        week2AvgKg: avg2,
+      };
+    }
+    if (diffKg < -0.9) {
+      const nextTarget = currentTarget + 150;
+      return {
+        status: 'nudge_up',
+        headline: `Dropping fast (${avg1} → ${avg2} kg): add +150 kcal`,
+        detail: `To protect muscle and energy, raise daily target gently from ${currentTarget} to ${nextTarget} kcal.`,
+        deltaCalories: 150,
+        suggestedCalorieGoal: nextTarget,
+        week1AvgKg: avg1,
+        week2AvgKg: avg2,
+      };
+    }
+    return {
+      status: 'on_track',
+      headline: `Steady fat-loss pace (${avg1} → ${avg2} kg)`,
+      detail: `Your 7-day average moved ${diffKg} kg cleanly — keep your current ${currentTarget} kcal plan.`,
+      deltaCalories: 0,
+      suggestedCalorieGoal: currentTarget,
+      week1AvgKg: avg1,
+      week2AvgKg: avg2,
+    };
+  }
+
+  if (goal === 'lean_gain') {
+    if (diffKg < 0.05) {
+      const nextTarget = currentTarget + 130;
+      return {
+        status: 'nudge_up',
+        headline: `7-day avg flat (${avg1} → ${avg2} kg): add +130 kcal`,
+        detail: `For steady muscle gain without extra fat, raise your target from ${currentTarget} to ${nextTarget} kcal.`,
+        deltaCalories: 130,
+        suggestedCalorieGoal: nextTarget,
+        week1AvgKg: avg1,
+        week2AvgKg: avg2,
+      };
+    }
+    if (diffKg > 0.55) {
+      const nextTarget = Math.max(safeFloor, currentTarget - 110);
+      return {
+        status: 'nudge_down',
+        headline: `Gaining quickly (${avg1} → ${avg2} kg): trim 110 kcal`,
+        detail: `Adjust slightly from ${currentTarget} to ${nextTarget} kcal to keep gains lean.`,
+        deltaCalories: nextTarget - currentTarget,
+        suggestedCalorieGoal: nextTarget,
+        week1AvgKg: avg1,
+        week2AvgKg: avg2,
+      };
+    }
+  }
+
+  return {
+    status: 'on_track',
+    headline: `Weight steady (${avg1} → ${avg2} kg)`,
+    detail: `Your 7-day average changed by ${diffKg >= 0 ? '+' : ''}${diffKg} kg — keep steady around ${currentTarget} kcal.`,
+    deltaCalories: 0,
+    suggestedCalorieGoal: currentTarget,
+    week1AvgKg: avg1,
+    week2AvgKg: avg2,
+  };
 }
 
 export function computeDailyNutritionTargets(

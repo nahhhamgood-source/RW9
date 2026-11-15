@@ -27,6 +27,7 @@ import {
   EXPRESSION_BLENDSHAPE_GROUPS,
   getScannerState,
   initFaceLandmarker,
+  MultipleFacesError,
   snapshotToQualityResult,
   subscribeScannerStatus,
   type QualityCheckResult,
@@ -761,15 +762,23 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
         overlay.height = targetH;
       }
 
-      const quality = evaluateLandmarksQuality(
-        detected.sampleCanvas,
-        detected.landmarks,
-        currentStep.key as ScanAngleStep,
-        detected.matrixData,
-        detected.blendshapes
-      );
+      const quality = detected.multipleFaces
+        ? ({
+            ...evaluateLandmarksQuality(detected.sampleCanvas, null, currentStep.key as ScanAngleStep),
+            level: 'BLOCK',
+            passed: false,
+            primaryInstruction: 'Multiple faces detected — scan only your own face',
+            reasons: ['Multiple faces detected — scan only your own face'],
+          } satisfies QualityCheckResult)
+        : evaluateLandmarksQuality(
+            detected.sampleCanvas,
+            detected.landmarks,
+            currentStep.key as ScanAngleStep,
+            detected.matrixData,
+            detected.blendshapes
+          );
 
-      if (detected.landmarks && detected.landmarks.length >= 468) {
+      if (!detected.multipleFaces && detected.landmarks && detected.landmarks.length >= 468) {
         latestLiveRef.current = {
           stepKey: currentStep.key,
           landmarks: detected.landmarks,
@@ -785,7 +794,7 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
       const octx = overlay.getContext('2d');
       if (octx) {
         octx.clearRect(0, 0, overlay.width, overlay.height);
-        if (detected.landmarks && detected.landmarks.length >= 468) {
+        if (!detected.multipleFaces && detected.landmarks && detected.landmarks.length >= 468) {
           drawBiometricMeshOverlay(
             octx,
             overlay.width,
@@ -797,8 +806,20 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
       }
     };
 
+    const handleVisibility = () => {
+      if (document.hidden) {
+        cancelAnimationFrame(rafId);
+      } else {
+        cancelAnimationFrame(rafId);
+        rafId = requestAnimationFrame(loop);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
     rafId = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(rafId);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      cancelAnimationFrame(rafId);
+    };
   }, [
     state.phase,
     state.busy,
@@ -872,7 +893,10 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
           note = 'Face not detected on this photo, retake or continue with lower accuracy';
           quality = buildFallbackQuality(stillCanvas, currentStep.key as ScanAngleStep);
         }
-      } catch {
+      } catch (detectErr) {
+        if (detectErr instanceof MultipleFacesError) {
+          throw detectErr;
+        }
         if (hasFreshLiveLandmarks && liveSnapshot) {
           quality = evaluateLandmarksQuality(
             stillCanvas,
@@ -952,7 +976,7 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
     }
   };
 
-  const handleUploadPhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleUploadPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file || busyRef.current || state.busy) return;
@@ -962,6 +986,117 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
     setShowHelpSheet(false);
     busyRef.current = true;
     dispatch({ type: 'CAPTURE_START' });
+
+    const processCanvas = async (canvas: HTMLCanvasElement) => {
+      try {
+        let quality: QualityCheckResult;
+        let captureStatus: 'captured' | 'captured, landmarks missing' = 'captured';
+        let note: string | undefined;
+
+        try {
+          const detectedQuality = await withTimeout(
+            analyzeFrameWithLandmarker(canvas, currentStep.key as ScanAngleStep),
+            CAPTURE_TIMEOUT_MS,
+            'Photo detection timed out after 4s.'
+          );
+          if (detectedQuality.landmarks && detectedQuality.landmarks.length >= 468) {
+            quality = detectedQuality;
+          } else {
+            captureStatus = 'captured, landmarks missing';
+            note = 'Face not detected on this photo, retake or continue with lower accuracy';
+            quality = buildFallbackQuality(canvas, currentStep.key as ScanAngleStep);
+          }
+        } catch (detectErr) {
+          if (detectErr instanceof MultipleFacesError) {
+            throw detectErr;
+          }
+          captureStatus = 'captured, landmarks missing';
+          note = 'Face not detected on this photo, retake or continue with lower accuracy';
+          quality = buildFallbackQuality(canvas, currentStep.key as ScanAngleStep);
+        }
+
+        if (quality.expressionGate === 'BLOCK') {
+          const cueLabel = quality.expressionCue ? ` (${quality.expressionCue})` : '';
+          const rejectReason = `Neutral face please: mouth closed, relax your forehead${cueLabel}`;
+          const previewUrl = buildMeshPreviewUrl(canvas, quality);
+          if (!mountedRef.current) return;
+          setRejectedStill({
+            previewUrl,
+            reason: rejectReason,
+            expressionScore: quality.expressionScore,
+            cue: quality.expressionCue,
+            isMirrored: false,
+          });
+          dispatch({ type: 'CAPTURE_FAILED', reason: rejectReason });
+          showToast(rejectReason, 'warning');
+          return;
+        }
+
+        if (quality.level === 'BLOCK') {
+          quality = {
+            ...quality,
+            level: 'WARN',
+            passed: true,
+            warnDomains: Array.from(new Set([...quality.warnDomains, 'pose'])),
+            primaryInstruction: quality.primaryInstruction || 'Captured with pose warning',
+          };
+        }
+
+        const previewUrl = buildMeshPreviewUrl(canvas, quality);
+        const imageData = canvasToCompactDataUrl(canvas);
+        if (!mountedRef.current) return;
+        dispatch({
+          type: 'CAPTURE_SUCCESS',
+          imageData,
+          canvas,
+          landmarks: quality.landmarks,
+          confidence:
+            captureStatus === 'captured, landmarks missing'
+              ? 'low'
+              : quality.level === 'WARN'
+              ? 'medium'
+              : 'high',
+          quality,
+          previewUrl,
+          captureStatus,
+          isMirrored: false,
+          note:
+            note ??
+            (quality.expressionGate === 'WARN'
+              ? `Relax your face a little${quality.expressionCue ? ` — ${quality.expressionCue}` : ''}`
+              : undefined),
+        });
+      } catch (err) {
+        if (!mountedRef.current) return;
+        const reason = err instanceof Error ? err.message : 'Unable to inspect uploaded image.';
+        dispatch({ type: 'CAPTURE_FAILED', reason });
+        showToast(reason, 'warning');
+      } finally {
+        busyRef.current = false;
+      }
+    };
+
+    try {
+      if (typeof createImageBitmap === 'function') {
+        const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+        const maxDim = 960;
+        const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+        canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          bitmap.close?.();
+          throw new Error('Unable to draw uploaded image.');
+        }
+        ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        bitmap.close?.();
+        await processCanvas(canvas);
+        return;
+      }
+    } catch {
+      // Fallback to FileReader + Image if createImageBitmap fails on older browser
+    }
 
     const reader = new FileReader();
     reader.onerror = () => {
@@ -979,98 +1114,19 @@ export const GuidedFaceScanner: React.FC<GuidedFaceScannerProps> = ({
         showToast(reason, 'warning');
       };
       img.onload = async () => {
-        try {
-          const maxDim = 960;
-          const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
-          const canvas = document.createElement('canvas');
-          canvas.width = Math.max(1, Math.round(img.width * scale));
-          canvas.height = Math.max(1, Math.round(img.height * scale));
-          const ctx = canvas.getContext('2d');
-          if (!ctx) throw new Error('Unable to draw uploaded image.');
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-          let quality: QualityCheckResult;
-          let captureStatus: 'captured' | 'captured, landmarks missing' = 'captured';
-          let note: string | undefined;
-
-          try {
-            const detectedQuality = await withTimeout(
-              analyzeFrameWithLandmarker(canvas, currentStep.key as ScanAngleStep),
-              CAPTURE_TIMEOUT_MS,
-              'Photo detection timed out after 4s.'
-            );
-            if (detectedQuality.landmarks && detectedQuality.landmarks.length >= 468) {
-              quality = detectedQuality;
-            } else {
-              captureStatus = 'captured, landmarks missing';
-              note = 'Face not detected on this photo, retake or continue with lower accuracy';
-              quality = buildFallbackQuality(canvas, currentStep.key as ScanAngleStep);
-            }
-          } catch {
-            captureStatus = 'captured, landmarks missing';
-            note = 'Face not detected on this photo, retake or continue with lower accuracy';
-            quality = buildFallbackQuality(canvas, currentStep.key as ScanAngleStep);
-          }
-
-          if (quality.expressionGate === 'BLOCK') {
-            const cueLabel = quality.expressionCue ? ` (${quality.expressionCue})` : '';
-            const rejectReason = `Neutral face please: mouth closed, relax your forehead${cueLabel}`;
-            const previewUrl = buildMeshPreviewUrl(canvas, quality);
-            if (!mountedRef.current) return;
-            setRejectedStill({
-              previewUrl,
-              reason: rejectReason,
-              expressionScore: quality.expressionScore,
-              cue: quality.expressionCue,
-              isMirrored: false,
-            });
-            dispatch({ type: 'CAPTURE_FAILED', reason: rejectReason });
-            showToast(rejectReason, 'warning');
-            return;
-          }
-
-          if (quality.level === 'BLOCK') {
-            quality = {
-              ...quality,
-              level: 'WARN',
-              passed: true,
-              warnDomains: Array.from(new Set([...quality.warnDomains, 'pose'])),
-              primaryInstruction: quality.primaryInstruction || 'Captured with pose warning',
-            };
-          }
-
-          const previewUrl = buildMeshPreviewUrl(canvas, quality);
-          const imageData = canvasToCompactDataUrl(canvas);
-          if (!mountedRef.current) return;
-          dispatch({
-            type: 'CAPTURE_SUCCESS',
-            imageData,
-            canvas,
-            landmarks: quality.landmarks,
-            confidence:
-              captureStatus === 'captured, landmarks missing'
-                ? 'low'
-                : quality.level === 'WARN'
-                ? 'medium'
-                : 'high',
-            quality,
-            previewUrl,
-            captureStatus,
-            isMirrored: false,
-            note:
-              note ??
-              (quality.expressionGate === 'WARN'
-                ? `Relax your face a little${quality.expressionCue ? ` — ${quality.expressionCue}` : ''}`
-                : undefined),
-          });
-        } catch (err) {
-          if (!mountedRef.current) return;
-          const reason = err instanceof Error ? err.message : 'Unable to inspect uploaded image.';
-          dispatch({ type: 'CAPTURE_FAILED', reason });
-          showToast(reason, 'warning');
-        } finally {
+        const maxDim = 960;
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
           busyRef.current = false;
+          dispatch({ type: 'CAPTURE_FAILED', reason: 'Unable to draw uploaded image.' });
+          return;
         }
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        await processCanvas(canvas);
       };
       img.src = String(reader.result);
     };
