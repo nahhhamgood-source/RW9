@@ -1,10 +1,12 @@
-import type { AppSettings, DailyLog } from '../types';
+import { addDays } from './date';
+import type { AppSettings, DailyLog, ExerciseSessionLog, ToneMode } from '../types';
 
 export interface DueReminder {
   id: string;
   title: string;
   body: string;
   time: string;
+  kind?: 'mewing' | 'neck_set';
   category: 'routine' | 'hydration' | 'meals' | 'exercise' | 'sleep' | 'checkin' | 'prayer' | 'study';
 }
 
@@ -24,6 +26,115 @@ interface SnoozeStore {
 }
 
 const SNOOZE_KEY = 'ascend_reminder_state_v1';
+
+export const MEWING_LINES: Record<ToneMode, string[]> = {
+  normal: [
+    'Quick tongue check: tongue up, lips closed, breathe through your nose.',
+    'Rest the full tongue lightly on the roof of your mouth, teeth slightly apart.',
+    'Reset your jaw: lips sealed, soft inhale through your nose, zero clenching.',
+    'Gentle palate rest check — keep your face relaxed and shoulders dropped.',
+    'Quiet nasal-breathing check: tongue resting up, jaw loose and comfortable.',
+    'Two seconds of awareness: head stacked over shoulders, tongue resting gently up.',
+    'Unclench your back teeth, close your lips lightly, and breathe smoothly.',
+    'Easy posture check: tongue gently up on the palate, neck tall and relaxed.',
+  ],
+  chill: [
+    'Tongue check, lock in.',
+    'Quick reset: tongue up, lips shut, chill nasal breath.',
+    'Unclench the jaw — light palate rest, smooth vibes.',
+    'Reset check: tongue on the roof, shoulders loose, breathe easy.',
+    'Lowkey posture win: teeth apart, lips closed, nasal flow.',
+    'Tiny reset, big habits — tongue up, zero tension.',
+    'Check the stack: chin neutral, tongue rested up, easy breathing.',
+    '3-second form check: lips closed, jaw relaxed, keep rolling.',
+  ],
+  serious: [
+    'Palate check: tongue lightly elevated, teeth slightly parted, nasal breath.',
+    'Postural alignment check: seal lips cleanly and release masseter tension.',
+    'Baseline check: full tongue contact on palate without pushing front teeth.',
+    'Maintain quiet nasal breathing and neutral cervical posture.',
+    'Relax the jaw, keep molars slightly separated, keep tongue resting high.',
+    'Check form: upright head position, calm facial muscles, nasal airflow.',
+    'Submental posture reset: light upward palate rest, zero forced clenching.',
+    'Brief mid-day form check: tongue up, shoulders level, steady breathing.',
+  ],
+};
+
+export const NECK_SET_LINES: Record<ToneMode, string[]> = {
+  normal: [
+    'Neck set time. 2 minutes, easy effort.',
+    'Time for your neck set: chin tucks, light neck curls, and forehead press.',
+    '2-minute frame check: glide the chin back smoothly and move with calm control.',
+    'Quick posture boost — easy chin tucks and light hand-resisted neck work.',
+    'Stand tall and give your neck 2 quiet minutes — zero heavy loading.',
+    'Easy neck set ready: smooth reps, relaxed jaw, steady breathing.',
+    'Short neck & chin-tuck break — feel clean length along the back of your neck.',
+    'Knock out your 2-minute neck set whenever you have a spare moment.',
+  ],
+  chill: [
+    "Neck set? 2 mins, let's go.",
+    '2-minute neck set — chin tucks and light reps, super clean.',
+    'Quick neck work: smooth chin tucks, forehead press, zero ego.',
+    'Time for a fast neck & posture tune-up — takes 2 mins.',
+    'Chin tucks + light neck curls — easy W for your side profile.',
+    'Short neck set on deck — keep it smooth, never rush.',
+    '2 minutes for a stronger frame — neck set when you are ready.',
+    'Easy effort, clean reps — wrap up your neck set.',
+  ],
+  serious: [
+    'Daily neck set: controlled chin tucks, light neck curls, forehead press.',
+    '2-minute cervical session: prioritize posture form and zero joint strain.',
+    'Complete your scheduled neck set with light controlled resistance.',
+    'Execute slow chin tucks and balanced isometric holds — stop on discomfort.',
+    'Cervical strength check: 2 minutes of steady postural repetitions.',
+    'Perform your daily neck set at comfortable effort with relaxed jaw.',
+    'Posture & neck session ready — slow tempo, controlled range.',
+    'Finish your 1x daily neck set cleanly; bodyweight or light hand support only.',
+  ],
+};
+
+export function getFriendlyReminderLine(
+  kind: 'mewing' | 'neck_set',
+  tone: ToneMode = 'normal',
+  userName?: string,
+  dateKey: string = '2026-01-01',
+  slotIndex: number = 0
+): string {
+  const pool = kind === 'mewing' ? MEWING_LINES[tone] : NECK_SET_LINES[tone];
+  const dateSeed = dateKey.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+  const line = pool[(dateSeed + slotIndex) % pool.length];
+  const cleanName = (userName ?? '').trim();
+  if (!cleanName) return line;
+  return `${cleanName}, ${line.charAt(0).toLowerCase()}${line.slice(1)}`;
+}
+
+export function computeNeckSetStreak(
+  exerciseLogs: ExerciseSessionLog[],
+  todayKey: string
+): number {
+  const dates = new Set(
+    exerciseLogs.filter((l) => l.programId === 'reminder_neck_set').map((l) => l.date)
+  );
+  if (dates.size === 0) return 0;
+  let cursor = dates.has(todayKey) ? todayKey : addDays(todayKey, -1);
+  let streak = 0;
+  for (let i = 0; i < 365; i++) {
+    if (!dates.has(cursor)) break;
+    streak++;
+    cursor = addDays(cursor, -1);
+  }
+  return streak;
+}
+
+export function computeMewingWeeklyCount(
+  exerciseLogs: ExerciseSessionLog[],
+  todayKey: string
+): number {
+  const weekStart = addDays(todayKey, -6);
+  return exerciseLogs.filter(
+    (l) => l.programId === 'reminder_mewing' && l.date >= weekStart && l.date <= todayKey
+  ).length;
+}
 
 interface CapacitorLocalNotificationsPlugin {
   requestPermissions?: () => Promise<{ display: string }>;
@@ -46,26 +157,35 @@ function getCapacitorLocalNotifications(): CapacitorLocalNotificationsPlugin | n
   return w.Capacitor?.Plugins?.LocalNotifications ?? null;
 }
 
-export function getReminderDeliveryInfo(): ReminderDeliveryInfo {
+export function isCapacitorNativeAlertsAvailable(): boolean {
+  return Boolean(getCapacitorLocalNotifications()?.schedule);
+}
+
+export function getReminderDeliveryInfo(serverPushConfigured?: boolean | null): ReminderDeliveryInfo {
   const cap = getCapacitorLocalNotifications();
   if (cap?.schedule) {
     return {
       mode: 'capacitor',
-      label: 'Capacitor Native Local Alerts',
-      detail: 'Scheduled directly through Android/iOS native notification system — works offline.',
+      label: 'Android APK Native Local Alerts',
+      detail: 'Most reliable: runs offline directly through Capacitor Local Notifications with no server needed.',
     };
   }
-  if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+  if (
+    serverPushConfigured &&
+    typeof window !== 'undefined' &&
+    'Notification' in window &&
+    Notification.permission === 'granted'
+  ) {
     return {
       mode: 'web_push',
-      label: 'Browser Notification + In-App Banners',
-      detail: 'OS alerts allowed while browser/PWA is active; export .ics calendar for guaranteed lock-screen chimes.',
+      label: 'Web Push Enabled (Best-Effort)',
+      detail: 'Works on installed Android Chrome (and iPhone only after Add to Home Screen). Delivery is not guaranteed and Vercel Hobby cron runs at most once a day.',
     };
   }
   return {
     mode: 'in_app_ics',
-    label: 'In-App Banners + Calendar (.ics)',
-    detail: 'Always works offline with zero permissions. Export the .ics file to sync alarms with Apple/Google Calendar.',
+    label: 'In-App Banner + Calendar (.ics) Fallback',
+    detail: 'Push is not set up. Use the Android app or the calendar file.',
   };
 }
 
@@ -151,7 +271,6 @@ export function isWithinQuietHours(nowMin: number, startStr?: string, endStr?: s
   if (start < end) {
     return nowMin >= start && nowMin < end;
   }
-  // Overnight quiet hours e.g. 23:00 to 07:00
   return nowMin >= start || nowMin < end;
 }
 
@@ -159,8 +278,13 @@ export async function syncLocalNotifications(settings: AppSettings): Promise<voi
   const cap = getCapacitorLocalNotifications();
   if (!cap?.schedule) return;
 
+  const showDetails = Boolean(settings.reminders.showDetailsInNotifications);
+  const safeTitle = (detailTitle: string) => (showDetails ? detailTitle : 'Quick check-in');
+  const safeBody = (detailBody: string) =>
+    showDetails ? detailBody : 'Open ASCEND for your check-in.';
+
   try {
-    const ids = [101, 102, 103, 104, 105, 106, 107];
+    const ids = [101, 102, 103, 104, 105, 106, 107, 108, 109, 110];
     if (cap.cancel) {
       await cap.cancel({ notifications: ids.map((id) => ({ id })) });
     }
@@ -171,51 +295,76 @@ export async function syncLocalNotifications(settings: AppSettings): Promise<voi
       title: string;
       body: string;
       schedule: { on: { hour: number; minute: number }; repeats: boolean };
-    }> = [
+    }> = [];
+
+    if (settings.reminders.mewingCheckEnabled !== false) {
+      const mewingTimes = (settings.tongueReminderTimes ?? ['11:00', '15:30', '20:00'])
+        .filter(Boolean)
+        .slice(0, 3);
+      mewingTimes.forEach((time, idx) => {
+        notifications.push({
+          id: 107 + idx,
+          title: safeTitle('ASCEND: Mewing check'),
+          body: safeBody('Tongue up on the palate, lips closed, teeth apart, nasal breath.'),
+          schedule: { on: parseHm(time), repeats: true },
+        });
+      });
+    }
+
+    if (settings.reminders.neckSetEnabled !== false) {
+      notifications.push({
+        id: 110,
+        title: safeTitle('ASCEND: Neck set'),
+        body: safeBody('2 minutes: chin tucks, light neck curls, forehead press.'),
+        schedule: { on: parseHm(settings.reminders.neckSetTime ?? '19:30'), repeats: true },
+      });
+    }
+
+    notifications.push(
       {
         id: 101,
-        title: 'ASCEND Morning Routine',
-        body: 'Cleanse, hydrate, and start your daily check-in.',
+        title: safeTitle('ASCEND Morning Routine'),
+        body: safeBody('Cleanse, hydrate, and start your daily check-in.'),
         schedule: { on: parseHm(settings.reminders.morning), repeats: true },
       },
       {
         id: 102,
-        title: 'SPF Check',
-        body: 'Reapply SPF 30–50 if spending time outdoors.',
+        title: safeTitle('SPF Check'),
+        body: safeBody('Reapply SPF 30–50 if spending time outdoors.'),
         schedule: { on: parseHm(settings.reminders.spf), repeats: true },
       },
       {
         id: 103,
-        title: 'Movement Window',
-        body: 'Log your workout, steps, or face/posture exercises.',
+        title: safeTitle('Movement Window'),
+        body: safeBody('Log your workout, steps, or face/posture exercises.'),
         schedule: { on: parseHm(settings.reminders.workout), repeats: true },
       },
       {
         id: 104,
-        title: 'Sleep Wind-Down',
-        body: 'Dim screens and wind down for recovery.',
+        title: safeTitle('Sleep Wind-Down'),
+        body: safeBody('Dim screens and wind down for recovery.'),
         schedule: { on: parseHm(settings.reminders.sleep), repeats: true },
-      },
-    ];
+      }
+    );
 
     if (settings.reminders.exerciseReminder && settings.reminders.exerciseTime) {
       notifications.push({
         id: 105,
-        title: 'Daily Check-In: Face & Posture',
-        body: '3-minute gentle jawline release and posture reset.',
+        title: safeTitle('Face & Posture'),
+        body: safeBody('3-minute gentle jawline release and posture reset.'),
         schedule: { on: parseHm(settings.reminders.exerciseTime), repeats: true },
       });
     }
     if (settings.reminders.studyReminderEnabled && settings.reminders.studyReminderTime) {
       notifications.push({
         id: 106,
-        title: 'Focus Block',
-        body: 'Short focused session ready in Plan.',
+        title: safeTitle('Focus Block'),
+        body: safeBody('Short focused session ready in Plan.'),
         schedule: { on: parseHm(settings.reminders.studyReminderTime), repeats: true },
       });
     }
 
-    const capLimit = Math.max(1, Math.min(8, settings.reminders.maxPerDay ?? 6));
+    const capLimit = Math.max(1, Math.min(6, settings.reminders.maxPerDay ?? 6));
     await cap.schedule({ notifications: notifications.slice(0, capLimit) });
   } catch {
     // Graceful fallback to in-app reminders
@@ -230,6 +379,7 @@ export function getInAppDueReminders(
     todayLog?: DailyLog;
     waterTargetMl?: number;
     todayMealsCount?: number;
+    userName?: string;
   }
 ): DueReminder[] {
   if (!settings.reminders.enabled) return [];
@@ -246,6 +396,18 @@ export function getInAppDueReminders(
     return [];
   }
 
+  if (
+    settings.trainingWindowStart &&
+    settings.trainingWindowEnd &&
+    isWithinQuietHours(nowMin, settings.trainingWindowStart, settings.trainingWindowEnd)
+  ) {
+    return [];
+  }
+
+  const isRelaxedFriday = Boolean(settings.relaxedFridayMode && now.getDay() === 5);
+  const tone = settings.tone ?? 'normal';
+  const userName = adaptiveContext?.userName;
+
   const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
   const snoozeState = typeof window !== 'undefined'
     ? readReminderSnoozeState(todayKey)
@@ -253,11 +415,47 @@ export function getInAppDueReminders(
   const due: DueReminder[] = [];
 
   const pushIfActive = (item: DueReminder) => {
+    if (
+      isRelaxedFriday &&
+      ['water', 'posture-break', 'study'].includes(item.id)
+    ) {
+      return;
+    }
     if (snoozeState.doneIds.includes(item.id) || snoozeState.laterIds.includes(item.id)) return;
     const until = snoozeState.snoozedUntil[item.id];
     if (until && Date.now() < until) return;
     due.push(item);
   };
+
+  if (settings.reminders.mewingCheckEnabled !== false) {
+    const tongueTimes = (settings.tongueReminderTimes ?? ['11:00', '15:30', '20:00']).filter(Boolean);
+    tongueTimes.forEach((t, idx) => {
+      if (hhmm >= t) {
+        pushIfActive({
+          id: `tongue-${idx}`,
+          kind: 'mewing',
+          title: 'Mewing check',
+          body: getFriendlyReminderLine('mewing', tone, userName, todayKey, idx),
+          time: t,
+          category: 'checkin',
+        });
+      }
+    });
+  }
+
+  if (settings.reminders.neckSetEnabled !== false) {
+    const neckTime = settings.reminders.neckSetTime ?? '19:30';
+    if (hhmm >= neckTime && hhmm < '23:00') {
+      pushIfActive({
+        id: 'neck-set',
+        kind: 'neck_set',
+        title: 'Neck set',
+        body: getFriendlyReminderLine('neck_set', tone, userName, todayKey, 0),
+        time: neckTime,
+        category: 'exercise',
+      });
+    }
+  }
 
   if (hhmm >= settings.reminders.morning && hhmm < '12:00') {
     pushIfActive({
@@ -279,7 +477,6 @@ export function getInAppDueReminders(
     });
   }
 
-  // Adaptive water check: skip if target already hit
   const waterTarget = adaptiveContext?.waterTargetMl ?? 3000;
   const waterDone = (adaptiveContext?.todayLog?.waterMl ?? 0) >= waterTarget * 0.85;
   if (settings.reminders.waterReminder && !waterDone && hhmm >= '09:00' && hhmm < '21:00') {
@@ -292,7 +489,6 @@ export function getInAppDueReminders(
     });
   }
 
-  // Adaptive meal reminder: skip if 3+ meals already logged today
   const mealsCount = adaptiveContext?.todayMealsCount ?? 0;
   if (settings.reminders.mealLogReminder && mealsCount < 3) {
     const lunch = settings.reminders.lunchTime ?? '13:30';
@@ -388,19 +584,6 @@ export function getInAppDueReminders(
     }
   }
 
-  const tongueTimes = (settings.tongueReminderTimes ?? []).filter(Boolean);
-  tongueTimes.forEach((t, idx) => {
-    if (hhmm >= t) {
-      pushIfActive({
-        id: `tongue-${idx}`,
-        title: 'Daily Check-In: Gentle Posture',
-        body: 'Lips closed, light palate rest, teeth apart, zero clenching.',
-        time: t,
-        category: 'checkin',
-      });
-    }
-  });
-
   if (settings.reminders.weeklyPhotoEnabled !== false && lastScanDate) {
     const diffMs = new Date(todayKey).getTime() - new Date(lastScanDate).getTime();
     const diffDays = Math.round(diffMs / 86400000);
@@ -415,14 +598,15 @@ export function getInAppDueReminders(
     }
   }
 
-  const maxCap = Math.max(1, Math.min(12, settings.reminders.maxPerDay ?? 6));
+  const maxCap = Math.max(1, Math.min(6, settings.reminders.maxPerDay ?? 6));
   return due.slice(0, maxCap);
 }
 
 /**
  * Generates an RFC 5545 .ics calendar file containing recurring daily events
  * with 5-minute alarms so reminders ring reliably on iOS/Android calendars offline.
- * Never includes any private Quit habit names.
+ * Keeps external summaries private-safe by default ("Quick check-in" / "Gentle Posture Check-In")
+ * unless showDetailsInNotifications is enabled, and never writes Quit habit topics.
  */
 export function generateRemindersIcs(settings: AppSettings): string {
   const now = new Date();
@@ -430,43 +614,73 @@ export function generateRemindersIcs(settings: AppSettings): string {
   const m = String(now.getMonth() + 1).padStart(2, '0');
   const d = String(now.getDate()).padStart(2, '0');
   const dateStamp = `${y}${m}${d}`;
+  const showDetails = Boolean(settings.reminders.showDetailsInNotifications);
 
   const events: Array<{ uid: string; summary: string; desc: string; time: string; freq: 'DAILY' | 'WEEKLY' | 'MONTHLY' }> = [
     {
       uid: 'ascend-morning',
-      summary: 'ASCEND: Morning Routine & Water',
-      desc: 'Cleanse, moisturize, SPF, and drink a glass of water.',
+      summary: showDetails ? 'ASCEND: Morning Routine & Water' : 'ASCEND: Quick check-in (Morning)',
+      desc: showDetails ? 'Cleanse, moisturize, SPF, and drink a glass of water.' : 'Open ASCEND for your daily check-in.',
       time: settings.reminders.morning,
       freq: 'DAILY',
     },
     {
       uid: 'ascend-spf',
-      summary: 'ASCEND: Midday SPF Check',
-      desc: 'Reapply SPF 30-50 if outdoors.',
+      summary: showDetails ? 'ASCEND: Midday SPF Check' : 'ASCEND: Quick check-in (Midday)',
+      desc: showDetails ? 'Reapply SPF 30-50 if outdoors.' : 'Open ASCEND for your daily check-in.',
       time: settings.reminders.spf,
       freq: 'DAILY',
     },
     {
       uid: 'ascend-workout',
-      summary: 'ASCEND: Movement & Training',
-      desc: 'Training session or daily steps.',
+      summary: showDetails ? 'ASCEND: Movement & Training' : 'ASCEND: Quick check-in (Training)',
+      desc: showDetails ? 'Training session or daily steps.' : 'Open ASCEND for your daily check-in.',
       time: settings.reminders.workout,
       freq: 'DAILY',
     },
     {
       uid: 'ascend-sleep',
-      summary: 'ASCEND: Sleep Wind-Down',
-      desc: 'Dim screens for 8h+ recovery.',
+      summary: showDetails ? 'ASCEND: Sleep Wind-Down' : 'ASCEND: Quick check-in (Evening)',
+      desc: showDetails ? 'Dim screens for 8h+ recovery.' : 'Open ASCEND for your daily check-in.',
       time: settings.reminders.sleep,
       freq: 'DAILY',
     },
   ];
 
+  if (settings.reminders.mewingCheckEnabled !== false) {
+    const tongueTimes = (settings.tongueReminderTimes ?? ['11:00', '15:30', '20:00'])
+      .filter(Boolean)
+      .slice(0, 3);
+    tongueTimes.forEach((time, idx) => {
+      events.push({
+        uid: `ascend-posture-check-${idx + 1}`,
+        summary: 'ASCEND: Gentle Posture Check-In',
+        desc: showDetails
+          ? 'Mewing check: tongue on palate, lips closed, teeth slightly apart, nasal breathing.'
+          : 'Quick check-in in ASCEND.',
+        time,
+        freq: 'DAILY',
+      });
+    });
+  }
+
+  if (settings.reminders.neckSetEnabled !== false) {
+    events.push({
+      uid: 'ascend-neck-set',
+      summary: showDetails ? 'ASCEND: Neck set (2 min)' : 'ASCEND: Quick check-in (Neck)',
+      desc: showDetails
+        ? 'Chin tucks, light neck curls, forehead press — easy controlled effort.'
+        : 'Quick check-in in ASCEND.',
+      time: settings.reminders.neckSetTime ?? '19:30',
+      freq: 'DAILY',
+    });
+  }
+
   if (settings.reminders.exerciseReminder && settings.reminders.exerciseTime) {
     events.push({
       uid: 'ascend-face-exercise',
-      summary: 'ASCEND: Daily Check-In (Exercises)',
-      desc: 'Gentle face & posture session.',
+      summary: showDetails ? 'ASCEND: Daily Check-In (Exercises)' : 'ASCEND: Quick check-in',
+      desc: showDetails ? 'Gentle face & posture session.' : 'Open ASCEND for your check-in.',
       time: settings.reminders.exerciseTime,
       freq: 'DAILY',
     });
@@ -474,8 +688,8 @@ export function generateRemindersIcs(settings: AppSettings): string {
   if (settings.reminders.studyReminderEnabled && settings.reminders.studyReminderTime) {
     events.push({
       uid: 'ascend-study',
-      summary: 'ASCEND: Focus Block',
-      desc: 'Dedicated study or skill session.',
+      summary: showDetails ? 'ASCEND: Focus Block' : 'ASCEND: Quick check-in',
+      desc: showDetails ? 'Dedicated study or skill session.' : 'Open ASCEND for your check-in.',
       time: settings.reminders.studyReminderTime,
       freq: 'DAILY',
     });
@@ -496,6 +710,21 @@ export function generateRemindersIcs(settings: AppSettings): string {
       desc: 'Barefoot against wall at morning hour.',
       time: '08:00',
       freq: 'MONTHLY',
+    });
+  }
+
+  if (settings.prayerTrackingEnabled && settings.prayerTimes) {
+    (['fajr', 'dhuhr', 'asr', 'maghrib', 'isha'] as const).forEach((key) => {
+      const t = settings.prayerTimes?.[key];
+      if (t) {
+        events.push({
+          uid: `ascend-prayer-${key}`,
+          summary: `ASCEND: ${key.charAt(0).toUpperCase() + key.slice(1)} Quiet Check-In`,
+          desc: 'Optional quiet reflection check-in.',
+          time: t,
+          freq: 'DAILY',
+        });
+      }
     });
   }
 

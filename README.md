@@ -69,20 +69,27 @@ npx cap open android
 
 Build a signed or debug APK in Android Studio (**Build > Build Bundle(s) / APK(s) > Build APK(s)**). `src/lib/notifications.ts` automatically detects `Capacitor.Plugins.LocalNotifications` inside the APK, falling back cleanly to Web Notifications, in-app due cards, and `.ics` calendar export in the browser.
 
+### Optional: Enabling Android Health Connect in the APK
+In `src/lib/connections.ts`, `HEALTH_CONNECT` is `false` on the web build (because websites cannot read other phone apps). When packaging the Android APK with Capacitor:
+
+1. Install a Capacitor Health Connect plugin (e.g. `capacitor-health-connect` or `@devmaxime/capacitor-health-connect`) and run `npx cap sync android`.
+2. Add Health Connect read permissions to `android/app/src/main/AndroidManifest.xml` (off by default, requested per data type: `READ_STEPS`, `READ_SLEEP`, `READ_WEIGHT`, `READ_EXERCISE`).
+3. Flip `HEALTH_CONNECT = true` in `src/lib/connections.ts` inside your Android APK branch and wire the per-type permission buttons in `src/components/settings/ConnectionsSection.tsx`. All imported metrics remain in local IndexedDB unless you turn on the Online Coach.
+
 ---
 
 ## 5. Phone Manual Test Checklist (Verify on Real Mobile Device)
 
-Automated CLI checks (`tsc --noEmit`, `vitest`, `vite build`) cannot simulate physical phone touch gestures, live camera sensors, or OS permission prompts. Run through this checklist on your phone after deploying:
+Automated CLI checks (`tsc --noEmit`, `vitest`, `vite build`) cannot simulate physical phone touch gestures, live camera sensors, Android Share Target sheets, or OS permission prompts. Run through this checklist on your phone after deploying:
 
 1. **Install & Offline Boot**: Open in mobile Chrome/Safari → tap **Add to Home Screen** → toggle Airplane Mode → reopen app and confirm Plan, Food library, Face Exercises, and Grow load cleanly.
-2. **Online AI Consent & Food Scan**: Open **Food → AI Photo** → confirm the Online AI consent modal appears before any photo leaves the device → test meal scan & `"What should I eat?"` search + editable macro estimate.
-3. **3-Angle Face Scanner & Tier Ladder**: Open **Face → Scanner & Results** → test camera permission, multi-face rejection (point at 2 faces), poor-lighting warning, completed report tier badge (`Chad (Elite)` / `Chadlite` / `HTN` / `True Normie` / `LTN` / `Developing`), 6-rung Tier Ladder, and PNG share card export.
-4. **Under-18 / Unknown-Age Safety**: In **Settings**, set age to `15` (or skip age setup) → confirm **Food** locks `Lose fat` and **Grow** switches cleanly vs setting age to `22` (`Still growing: No`, confirming 99–100% completion and small realistic adult dream-height odds).
-5. **Face Exercises Player**: Open **Face → Face Exercises** → start a routine → check hold timer, rep counter, rest phase, reduced-motion behavior, and YouTube/TikTok watch links.
-6. **No-Guilt Quit List & Privacy**: Open **Health → Quit habits** → add a habit → run the 10-min urge timer → log **I slipped** and verify total **Days in control** does not reset to zero, and confirm counters stay hidden on **More** and share cards.
+2. **Online AI Consent & Food Scan / Share Target**: Open **Food → AI Photo** → confirm the Online AI consent modal appears before any photo leaves the device. After installing PWA on Android Chrome, tap Share on a gallery food photo → choose **ASCEND** → verify it opens Food scan with consent gating.
+3. **3-Angle Face Scanner, Tier Ladder & Your Path**: Open **Face → Scanner & Results** → verify tier badge (`Chad (Elite)` / `Chadlite` / `HTN` / `True Normie` / `LTN` / `Developing`), 6-rung Tier Ladder, **Your Path** top 3 levers + **"Add to Today"**, and **4-week re-scan reminder**.
+4. **Under-18 / Unknown-Age Safety & Fight Camp**: In **Settings**, set age to `15` (or skip age setup) → confirm Fight Camp & `Lose fat` lock with `"Weight for a fight is a coach + doctor call at your age."` vs setting age `>= 18` with Fight Camp goal.
+5. **CSV / JSON Import Preview & Ear-Shoulder Check**: Open **Settings → Connections** → upload a sample CSV/JSON export → test column mapping + preview + confirm. Open **Grow** → test side-photo Ear & Shoulder tap points.
+6. **No-Guilt Quit List & Privacy**: Open **Health → Quit habits** → confirm **Days in control** does not reset on slips and never appears on PNG share cards or Weekly Leader Review cards.
 7. **Reminders & Calendar Export**: Open the bell icon → test **Allow OS Alerts**, **Done / Snooze 30m / Later**, and **Export .ics** into Google/Apple Calendar.
-8. **Self-Check & Backup**: Open **Settings → Diagnostics → Run self-check** (verify DB, Persistent Storage, SW/cache, camera/notification state, MediaPipe files, and `/api/health`) and test exporting + importing a JSON and encrypted backup.
+8. **Self-Check & Backup**: Open **Settings → Diagnostics → Run self-check** and test exporting + importing a JSON and encrypted backup.
 
 ---
 

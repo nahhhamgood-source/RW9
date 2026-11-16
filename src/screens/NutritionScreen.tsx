@@ -22,6 +22,7 @@ import {
 import {
   deleteMealScanEntry,
   getOrCreateDailyLog,
+  isAboutMeItemConfirmed,
   isAgeUnknown,
   isUnder18OrGrowing,
   saveAndVerifyProfile,
@@ -29,6 +30,7 @@ import {
   updateMealScanEntry,
   db,
 } from '../db/database';
+import { formatDisplayNumber } from '../i18n/arabicHints';
 import { en } from '../i18n/en';
 import { apiRequest, hasOnlineConsent } from '../lib/api';
 import { toLocalDateKey } from '../lib/date';
@@ -84,6 +86,11 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
   const todayKey = toLocalDateKey();
 
   const hideCut = isUnder18OrGrowing(profile);
+  const trainingCampConfirmed = isAboutMeItemConfirmed(profile.aboutMe, 'training_camp');
+  const localFoodsConfirmed = isAboutMeItemConfirmed(profile.aboutMe, 'location_foods');
+  const dayMode = settings.dayModeByDate?.[todayKey] ?? 'gym';
+  const arabicDigits = Boolean(settings.arabicIndicDigits);
+
   const { goal: safeGoalMode, cutLocked, lockReason } = useMemo(
     () => resolveSafeDietGoal(profile),
     [profile]
@@ -574,6 +581,36 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
         </div>
       )}
 
+      {(trainingCampConfirmed || localFoodsConfirmed) && (
+        <div className="p-3.5 rounded-2xl bg-[var(--accent-soft)] border border-[var(--accent)]/25 text-xs space-y-1">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="font-bold text-[var(--accent)]">
+              {dayMode === 'sparring'
+                ? 'Sparring day mode'
+                : dayMode === 'mma'
+                ? 'MMA conditioning mode'
+                : dayMode === 'rest'
+                ? 'Rest day mode'
+                : 'Gym day mode'}
+            </span>
+            {trainingCampConfirmed && profile.aboutMe?.weightClassKg && (
+              <span className="font-mono-num text-[11px] font-semibold">
+                Weight class: {formatDisplayNumber(profile.aboutMe.weightClassKg, arabicDigits)} kg
+                {profile.aboutMe?.tournamentDate ? ` · Event ${profile.aboutMe.tournamentDate}` : ''}
+              </span>
+            )}
+          </div>
+          <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+            {trainingCampConfirmed
+              ? 'Safe fight-camp rule: never attempt rapid dehydration or sauna weight cuts — align weight-class plans with your coach and doctor. '
+              : ''}
+            {localFoodsConfirmed && profile.aboutMe?.localFoods?.length
+              ? `Keep home staples balanced (${profile.aboutMe.localFoods.slice(0, 4).join(', ')}) by watching sauces, oils, and evening sodium.`
+              : ''}
+          </p>
+        </div>
+      )}
+
       {/* Top Vault: Glowing Calorie Ring + Macro Bars + 4L Debloat Hydration Quick-Tap */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         {/* Daily Calorie Ring + Macronutrient Progress Card */}
@@ -589,10 +626,10 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
               >
                 <div className="text-center">
                   <span className="font-mono-num text-xl font-bold block leading-none">
-                    {dailyTotals.calories}
+                    {formatDisplayNumber(dailyTotals.calories, arabicDigits)}
                   </span>
                   <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono-num block mt-1">
-                    / {targets.calories} kcal
+                    / {formatDisplayNumber(targets.calories, arabicDigits)} kcal
                   </span>
                 </div>
               </CircularRing>
@@ -605,11 +642,11 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
                     Daily Caloric Vault
                   </p>
                   <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                    Auto-target ({profile.age}y · {profile.heightCm}cm · {profile.weightKg}kg)
+                    Auto-target ({formatDisplayNumber(profile.age, arabicDigits)}y · {formatDisplayNumber(profile.heightCm, arabicDigits)}cm · {formatDisplayNumber(profile.weightKg, arabicDigits)}kg)
                   </p>
                 </div>
                 <span className="px-2.5 py-1 rounded-xl bg-[var(--accent-soft)] border border-[var(--accent)]/25 font-mono-num text-xs font-bold text-[var(--accent)] shrink-0">
-                  {caloriesRemaining} left
+                  {formatDisplayNumber(caloriesRemaining, arabicDigits)} left
                 </span>
               </div>
 
@@ -641,7 +678,7 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
                       <div className="flex items-center justify-between text-xs">
                         <span className="font-semibold">{macro.label}</span>
                         <span className="font-mono-num text-[11px] text-slate-600 dark:text-slate-300">
-                          <strong>{macro.val}g</strong> / {macro.target}g
+                          <strong>{formatDisplayNumber(`${macro.val}g`, arabicDigits)}</strong> / {formatDisplayNumber(`${macro.target}g`, arabicDigits)}
                         </span>
                       </div>
                       <div className="h-2 rounded-full bg-slate-200 dark:bg-black/50 overflow-hidden border border-slate-200/70 dark:border-white/10">
@@ -661,11 +698,11 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
           <div className="pt-3 border-t border-slate-200/70 dark:border-white/10 flex flex-wrap items-center justify-between gap-2 text-xs">
             <div className="flex items-center gap-3 min-w-0">
               <span className="font-mono-num">
-                Sodium: <strong>{dailyTotals.sodiumMg}</strong>/{targets.sodiumLimitMg} mg
+                Sodium: <strong>{formatDisplayNumber(dailyTotals.sodiumMg, arabicDigits)}</strong>/{formatDisplayNumber(targets.sodiumLimitMg, arabicDigits)} mg
               </span>
               <span className="text-slate-300 dark:text-white/20">|</span>
               <span className="font-mono-num">
-                Added Sugar: <strong>{dailyTotals.addedSugarG}</strong>/{targets.addedSugarLimitG} g
+                Added Sugar: <strong>{formatDisplayNumber(dailyTotals.addedSugarG, arabicDigits)}</strong>/{formatDisplayNumber(targets.addedSugarLimitG, arabicDigits)} g
               </span>
             </div>
             <span
@@ -691,10 +728,10 @@ export const NutritionScreen: React.FC<NutritionScreenProps> = ({
               </p>
               <div className="flex items-baseline gap-2 mt-1">
                 <span className="font-mono-num text-2xl font-bold">
-                  {(dailyTotals.waterMl / 1000).toFixed(2)}L
+                  {formatDisplayNumber((dailyTotals.waterMl / 1000).toFixed(2), arabicDigits)}L
                 </span>
                 <span className="font-mono-num text-xs text-slate-500 dark:text-slate-400">
-                  / 4.00L ({waterPct}%)
+                  / {formatDisplayNumber((targets.debloatWaterMl / 1000).toFixed(2), arabicDigits)}L ({formatDisplayNumber(`${waterPct}%`, arabicDigits)})
                 </span>
               </div>
               <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">

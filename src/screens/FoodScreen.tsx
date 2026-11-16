@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronRight,
   Droplets,
+  Flame,
   HelpCircle,
   ImagePlus,
   Loader2,
@@ -25,13 +26,16 @@ import {
   db,
   deleteMealScanEntry,
   getOrCreateDailyLog,
+  isAboutMeItemConfirmed,
   isAgeUnknown,
   isUnder18OrGrowing,
+  logSameAsUsualMeal,
   repeatYesterdaysMeals,
   saveAndVerifyProfile,
   saveMealScanEntry,
 } from '../db/database';
-import { MEAL_LIBRARY, type LibraryMealItem } from '../data/mealLibrary';
+import { MEAL_LIBRARY, evaluateMealFitForToday, type LibraryMealItem } from '../data/mealLibrary';
+import { formatDisplayNumber } from '../i18n/arabicHints';
 import { en, getMealTypeByHour } from '../i18n/en';
 import { addDays, toLocalDateKey } from '../lib/date';
 import { apiRequest, hasOnlineConsent } from '../lib/api';
@@ -66,7 +70,11 @@ interface FoodScreenProps {
   bodyMetrics?: BodyMetricEntry[];
   initialMealType?: MealType;
   initialMode?: 'timeline' | 'scan' | 'quick';
+  initialPrefillNote?: string;
+  initialSharedFile?: File | null;
+  onConsumeSharedInput?: () => void;
   onOpenNutritionVault: () => void;
+  onOpenDiet?: () => void;
   onOpenCoach?: () => void;
 }
 
@@ -113,7 +121,11 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
   bodyMetrics = [],
   initialMealType,
   initialMode,
+  initialPrefillNote,
+  initialSharedFile,
+  onConsumeSharedInput,
   onOpenNutritionVault,
+  onOpenDiet,
   onOpenCoach,
 }) => {
   const { showToast } = useToast();
@@ -126,6 +138,12 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
     [profile]
   );
 
+  const localFoodsConfirmed = isAboutMeItemConfirmed(profile.aboutMe, 'location_foods');
+  const eatingPatternConfirmed = isAboutMeItemConfirmed(profile.aboutMe, 'eating_pattern');
+  const trainingCampConfirmed = isAboutMeItemConfirmed(profile.aboutMe, 'training_camp');
+  const dayMode = settings.dayModeByDate?.[todayKey] ?? 'gym';
+  const arabicDigits = Boolean(settings.arabicIndicDigits);
+
   const [selectedSlot, setSelectedSlot] = useState<MealType>(() => initialMealType ?? getMealTypeByHour());
   const [scanPanelOpen, setScanPanelOpen] = useState(initialMode === 'scan');
   const [quickPanelOpen, setQuickPanelOpen] = useState(initialMode === 'quick');
@@ -134,12 +152,18 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
 
   // "What should I eat?" ~60-meal library filter & edit state
   const [mealSearch, setMealSearch] = useState('');
-  const [staplesOnly, setStaplesOnly] = useState(false);
+  const [staplesOnly, setStaplesOnly] = useState(() => localFoodsConfirmed);
   const [filterByCurrentSlot, setFilterByCurrentSlot] = useState(true);
   const [editingIdea, setEditingIdea] = useState<EditableLibraryMeal | null>(null);
 
+  useEffect(() => {
+    if (localFoodsConfirmed) {
+      setStaplesOnly(true);
+    }
+  }, [localFoodsConfirmed]);
+
   // Vision Scan State
-  const [mealNote, setMealNote] = useState('');
+  const [mealNote, setMealNote] = useState(initialPrefillNote ?? '');
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
@@ -154,11 +178,17 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
   const nativeCameraRef = useRef<HTMLInputElement | null>(null);
   const galleryRef = useRef<HTMLInputElement | null>(null);
 
-  // Quick Add State
+  // Quick Add State (remembers last submitted values)
   const [quickName, setQuickName] = useState('');
-  const [quickCalories, setQuickCalories] = useState('450');
-  const [quickProtein, setQuickProtein] = useState('35');
-  const [quickSodium, setQuickSodium] = useState('450');
+  const [quickCalories, setQuickCalories] = useState(() =>
+    String(settings.quickMealLastInputs?.calories ?? '450')
+  );
+  const [quickProtein, setQuickProtein] = useState(() =>
+    String(settings.quickMealLastInputs?.protein ?? '35')
+  );
+  const [quickSodium, setQuickSodium] = useState(() =>
+    String(settings.quickMealLastInputs?.sodium ?? '450')
+  );
 
   useEffect(() => {
     if (initialMealType) setSelectedSlot(initialMealType);
@@ -173,6 +203,12 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
       setScanPanelOpen(false);
     }
   }, [initialMode]);
+
+  useEffect(() => {
+    if (initialPrefillNote) {
+      setMealNote(initialPrefillNote);
+    }
+  }, [initialPrefillNote]);
 
   const stopCameraStream = () => {
     if (streamRef.current) {
@@ -404,6 +440,15 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
     }
   };
 
+  const handleSameAsUsual = async () => {
+    const logged = await logSameAsUsualMeal(todayKey, selectedSlot);
+    if (!logged) {
+      showToast(`Log your first ${en.meals[selectedSlot].toLowerCase()} meal to unlock 1-tap Same as usual.`, 'info');
+    } else {
+      showToast(`Added "${logged.mealTitle}" (${logged.totalCalories} kcal)`);
+    }
+  };
+
   const handleQuickAddSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const name = quickName.trim() || `${en.meals[selectedSlot]} meal`;
@@ -441,6 +486,14 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
       summaryNote: `${en.meals[selectedSlot]} · Quick add`,
       isManual: true,
     });
+    await db.settings.update('app', {
+      quickMealLastInputs: {
+        name,
+        calories: String(kcal),
+        protein: String(pro),
+        sodium: String(sod),
+      },
+    });
     setQuickName('');
     setQuickPanelOpen(false);
     showToast(`Added "${name}" to ${en.meals[selectedSlot]}`);
@@ -456,8 +509,8 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
     fatsG: number;
     sodiumMg: number;
     addedSugarG: number;
-  }) => {
-    const targetSlot = filterByCurrentSlot ? selectedSlot : meal.slot;
+  }, forcedSlot?: MealType) => {
+    const targetSlot = forcedSlot ?? (filterByCurrentSlot ? selectedSlot : meal.slot);
     const item: MealFoodItem = {
       id: `lib-${Date.now()}`,
       name: meal.title,
@@ -493,6 +546,12 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
     setIdeasOpen(false);
     showToast(`Logged "${item.name}" to ${en.meals[targetSlot]}`);
   };
+
+  const quickEgyptianBreakfasts = useMemo(
+    () =>
+      MEAL_LIBRARY.filter((m) => m.id === 'eg-areesh-pita' || m.id === 'eg-foul-eggs'),
+    []
+  );
 
   const startEditIdea = (item: LibraryMealItem) => {
     setEditingIdea({
@@ -605,6 +664,14 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
       setAnalyzing(false);
     }
   };
+
+  useEffect(() => {
+    if (!initialSharedFile) return;
+    setScanPanelOpen(true);
+    setQuickPanelOpen(false);
+    onConsumeSharedInput?.();
+    runVisionScan(initialSharedFile);
+  }, [initialSharedFile]);
 
   const handleCaptureSnapshot = async () => {
     const video = videoRef.current;
@@ -771,20 +838,87 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
           )}
         </div>
 
+        {/* Daily Nutrition Context: Day Mode + Confirmed About Me */}
+        <div className="p-3 rounded-2xl bg-[var(--accent-soft)] border border-[var(--accent)]/25 space-y-2 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="font-bold text-[var(--accent)]">
+              {dayMode === 'sparring'
+                ? 'Sparring day fuel'
+                : dayMode === 'mma'
+                ? 'MMA conditioning fuel'
+                : dayMode === 'rest'
+                ? 'Rest day fuel'
+                : 'Gym day fuel'}
+            </span>
+            {trainingCampConfirmed && profile.aboutMe?.weightClassKg && (
+              <span className="font-mono-num text-[11px] font-semibold text-slate-700 dark:text-slate-200">
+                Class {formatDisplayNumber(profile.aboutMe.weightClassKg, arabicDigits)} kg
+              </span>
+            )}
+          </div>
+          <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+            {dayMode === 'sparring' || dayMode === 'mma'
+              ? 'Prioritize pre-session carbs, balanced protein across meals, and steady water after training.'
+              : dayMode === 'rest'
+              ? 'Keep protein steady, favor whole home meals, and keep salty snacks gentle for next-morning recovery.'
+              : 'Spread protein across breakfast, lunch, and dinner instead of loading everything late.'}
+            {trainingCampConfirmed
+              ? ' Safe fight-camp rule: never use dehydration or sauna cuts — check weight changes with your coach and doctor.'
+              : ''}
+          </p>
+          {eatingPatternConfirmed && mealsBySlot.breakfast.length === 0 && (
+            <div className="pt-2 border-t border-[var(--accent)]/20 flex flex-wrap items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold text-slate-800 dark:text-slate-100">
+                No breakfast logged yet — add a quick protein base to prevent a heavy late lunch:
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {quickEgyptianBreakfasts.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => handleLogLibraryMeal(item, 'breakfast')}
+                    className="px-2.5 py-1.5 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-[11px] font-bold min-h-[34px]"
+                  >
+                    + {item.id === 'eg-areesh-pita' ? 'Areesh & Pita (29g)' : 'Foul & 2 Eggs (27g)'}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedSlot('breakfast');
+                    setFilterByCurrentSlot(true);
+                    setStaplesOnly(true);
+                    setIdeasOpen(true);
+                  }}
+                  className="px-2.5 py-1.5 rounded-xl bg-white/80 dark:bg-white/10 text-[11px] font-semibold min-h-[34px]"
+                >
+                  More breakfast ideas
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {/* Calories Ring */}
           <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 flex items-center gap-3.5">
             <CircularRing value={caloriePct} size={68} strokeWidth={7} color="var(--accent)">
-              <span className="font-mono-num text-xs font-bold">{caloriePct}%</span>
+              <span className="font-mono-num text-xs font-bold">
+                {formatDisplayNumber(`${caloriePct}%`, arabicDigits)}
+              </span>
             </CircularRing>
             <div className="min-w-0">
               <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">Calories</p>
               <p className="font-mono-num text-lg font-bold">
-                {totals.calories}{' '}
-                <span className="text-xs font-normal text-slate-500">/ {calTarget}</span>
+                {formatDisplayNumber(totals.calories, arabicDigits)}{' '}
+                <span className="text-xs font-normal text-slate-500">
+                  / {formatDisplayNumber(calTarget, arabicDigits)}
+                </span>
               </p>
               <p className="text-xs font-mono-num text-[var(--accent)]">
-                {hideCut ? 'Steady fuel target' : `${caloriesLeft} kcal left`}
+                {hideCut
+                  ? 'Steady fuel target'
+                  : `${formatDisplayNumber(caloriesLeft, arabicDigits)} kcal left`}
               </p>
             </div>
           </div>
@@ -792,16 +926,20 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
           {/* Protein Ring */}
           <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 flex items-center gap-3.5">
             <CircularRing value={proteinPct} size={68} strokeWidth={7} color="#10B981">
-              <span className="font-mono-num text-xs font-bold">{proteinPct}%</span>
+              <span className="font-mono-num text-xs font-bold">
+                {formatDisplayNumber(`${proteinPct}%`, arabicDigits)}
+              </span>
             </CircularRing>
             <div className="min-w-0">
               <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">Protein</p>
               <p className="font-mono-num text-lg font-bold">
-                {totals.proteinG}g{' '}
-                <span className="text-xs font-normal text-slate-500">/ {proteinTarget}g</span>
+                {formatDisplayNumber(`${totals.proteinG}g`, arabicDigits)}{' '}
+                <span className="text-xs font-normal text-slate-500">
+                  / {formatDisplayNumber(`${proteinTarget}g`, arabicDigits)}
+                </span>
               </p>
               <p className="text-xs font-mono-num text-emerald-500">
-                {Math.max(0, Math.round(proteinTarget - totals.proteinG))}g left
+                {formatDisplayNumber(`${Math.max(0, Math.round(proteinTarget - totals.proteinG))}g left`, arabicDigits)}
               </p>
             </div>
           </div>
@@ -813,7 +951,8 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
                 <Droplets className="w-4 h-4" /> Water
               </span>
               <span className="font-mono-num text-xs font-bold">
-                {(totals.waterMl / 1000).toFixed(2)}L / {(waterTarget / 1000).toFixed(1)}L
+                {formatDisplayNumber((totals.waterMl / 1000).toFixed(2), arabicDigits)}L /{' '}
+                {formatDisplayNumber((waterTarget / 1000).toFixed(1), arabicDigits)}L
               </span>
             </div>
             <div className="h-2 rounded-full bg-slate-200 dark:bg-white/10 overflow-hidden">
@@ -830,15 +969,15 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
                   onClick={() => handleAddWater(ml)}
                   className="py-1.5 rounded-xl bg-sky-500/12 text-sky-400 font-mono-num text-xs font-bold min-h-[38px]"
                 >
-                  +{ml}ml
+                  +{formatDisplayNumber(ml, arabicDigits)}ml
                 </button>
               ))}
             </div>
           </div>
         </div>
 
-        {/* 4 Action Buttons: Scan meal · Quick add · What should I eat? · Repeat yesterday */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        {/* Primary Actions: Scan meal · Quick add · Diet · Same as usual · Repeat yesterday · What should I eat? */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
           <button
             type="button"
             onClick={() => {
@@ -859,12 +998,21 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
           >
             <Plus className="w-4 h-4" /> Quick add
           </button>
+          {onOpenDiet && (
+            <button
+              type="button"
+              onClick={onOpenDiet}
+              className="inline-flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-[var(--accent-soft)] border border-[var(--accent)]/30 text-[var(--accent)] text-xs font-bold min-h-[44px]"
+            >
+              <Flame className="w-4 h-4" /> Diet
+            </button>
+          )}
           <button
             type="button"
-            onClick={() => setIdeasOpen((v) => !v)}
+            onClick={handleSameAsUsual}
             className="inline-flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold min-h-[44px]"
           >
-            <Sparkles className="w-4 h-4 text-[var(--accent)]" /> What should I eat?
+            <Check className="w-4 h-4 text-[var(--accent)]" /> Same as usual
           </button>
           <button
             type="button"
@@ -872,6 +1020,13 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
             className="inline-flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold min-h-[44px]"
           >
             <Repeat2 className="w-4 h-4" /> Repeat yesterday
+          </button>
+          <button
+            type="button"
+            onClick={() => setIdeasOpen((v) => !v)}
+            className="inline-flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold min-h-[44px]"
+          >
+            <Sparkles className="w-4 h-4 text-[var(--accent)]" /> What to eat?
           </button>
         </div>
 
@@ -1051,53 +1206,85 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
             </p>
           ) : (
             <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
-              {mealSuggestions.allMatching.map((pick, idx) => (
-                <div
-                  key={pick.id}
-                  className="p-3 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
-                >
-                  <div className="min-w-0 flex items-start gap-2.5">
-                    <span className="text-xl leading-none mt-0.5 shrink-0" aria-hidden="true">
-                      {pick.icon}
-                    </span>
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <p className="text-sm font-bold">{pick.title}</p>
-                        {idx < 3 && (
-                          <span className="px-1.5 py-0.5 rounded-md bg-[var(--accent-soft)] text-[var(--accent)] text-[10px] font-bold">
-                            Best match
+              {mealSuggestions.allMatching.map((pick, idx) => {
+                const fitTag = !hideCut
+                  ? evaluateMealFitForToday(pick.calories, caloriesLeft)
+                  : null;
+                return (
+                  <div
+                    key={pick.id}
+                    className="p-3 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+                  >
+                    <div className="min-w-0 flex items-start gap-2.5">
+                      <span className="text-xl leading-none mt-0.5 shrink-0" aria-hidden="true">
+                        {pick.icon}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <p className="text-sm font-bold">{pick.title}</p>
+                          {idx < 3 && (
+                            <span className="px-1.5 py-0.5 rounded-md bg-[var(--accent-soft)] text-[var(--accent)] text-[10px] font-bold">
+                              Best match
+                            </span>
+                          )}
+                          {pick.isStaple && (
+                            <span className="px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 text-[10px] font-bold">
+                              Staple
+                            </span>
+                          )}
+                          {pick.isStreetFood && (
+                            <span className="px-1.5 py-0.5 rounded-md bg-sky-500/15 text-sky-600 dark:text-sky-300 text-[10px] font-bold">
+                              Street food
+                            </span>
+                          )}
+                          {fitTag && (
+                            <span
+                              className={`px-1.5 py-0.5 rounded-md text-[10px] font-bold ${
+                                fitTag === 'Fits today'
+                                  ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300'
+                                  : fitTag === 'Split or swap lighter'
+                                  ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                                  : 'bg-slate-200 dark:bg-white/10 text-slate-600 dark:text-slate-300'
+                              }`}
+                            >
+                              Fits today? {fitTag}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs font-mono-num text-[var(--accent)] mt-0.5">
+                          {pick.calorieRange ? `${pick.calorieRange} kcal` : `~${pick.calories} kcal`} ·{' '}
+                          {pick.proteinG}g protein · {pick.grams}g · {pick.prepMin}m ·{' '}
+                          <span className="font-sans text-[11px] text-slate-500 dark:text-slate-400">
+                            {en.streetFood.estimateBadge}
                           </span>
-                        )}
-                        {pick.isStaple && (
-                          <span className="px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 text-[10px] font-bold">
-                            Staple
-                          </span>
+                        </p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{pick.why}</p>
+                        {pick.lighterSwap && (
+                          <p className="text-[11px] text-emerald-600 dark:text-emerald-300 mt-0.5">
+                            <strong>{en.streetFood.swapLabel}:</strong> {pick.lighterSwap}
+                          </p>
                         )}
                       </div>
-                      <p className="text-xs font-mono-num text-[var(--accent)] mt-0.5">
-                        ~{pick.calories} kcal · {pick.proteinG}g protein · {pick.grams}g · {pick.prepMin}m (estimate)
-                      </p>
-                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{pick.why}</p>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => startEditIdea(pick)}
+                        className="px-3 py-2 rounded-xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-semibold min-h-[44px]"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleLogLibraryMeal(pick)}
+                        className="px-3.5 py-2 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-bold min-h-[44px]"
+                      >
+                        + Log
+                      </button>
                     </div>
                   </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => startEditIdea(pick)}
-                      className="px-2.5 py-2 rounded-xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-semibold min-h-[38px]"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleLogLibraryMeal(pick)}
-                      className="px-3 py-2 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-bold min-h-[38px]"
-                    >
-                      + Log
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </section>
@@ -1277,6 +1464,21 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
               <X className="w-4 h-4" />
             </button>
           </div>
+          {settings.quickMealLastInputs?.name && !quickName && (
+            <button
+              type="button"
+              onClick={() => {
+                setQuickName(settings.quickMealLastInputs?.name ?? '');
+                setQuickCalories(String(settings.quickMealLastInputs?.calories ?? '450'));
+                setQuickProtein(String(settings.quickMealLastInputs?.protein ?? '35'));
+                setQuickSodium(String(settings.quickMealLastInputs?.sodium ?? '450'));
+              }}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-white/5 text-xs font-semibold min-h-[36px]"
+            >
+              <Repeat2 className="w-3.5 h-3.5 text-[var(--accent)]" />
+              Fill last: {settings.quickMealLastInputs.name} ({settings.quickMealLastInputs.calories} kcal)
+            </button>
+          )}
           <input
             type="text"
             value={quickName}

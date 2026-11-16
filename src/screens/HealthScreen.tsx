@@ -156,6 +156,12 @@ export const HealthScreen: React.FC<HealthScreenProps> = ({
             scans={scans}
             workouts={workouts}
             slangTierNames={settings.slangTierNames ?? true}
+            lastWeeklyReviewDate={settings.lastWeeklyReviewDate}
+            onMarkWeeklyReviewed={async () => {
+              const { db } = await import('../db/database');
+              const { toLocalDateKey } = await import('../lib/date');
+              await db.settings.update('app', { lastWeeklyReviewDate: toLocalDateKey() });
+            }}
             onOpenQuickLog={(t) => onOpenQuickLog(t === 'skin' ? 'photo' : t)}
             onOpenOnboarding={onOpenOnboarding}
             onNavigate={onNavigate}

@@ -50,6 +50,9 @@ import type {
   UserProfile,
 } from '../types';
 import { useToast } from '../components/ui/ToastProvider';
+import { AboutMeSection } from '../components/settings/AboutMeSection';
+import { ConnectionsSection } from '../components/settings/ConnectionsSection';
+import { PrivacyInventorySection } from '../components/settings/PrivacyInventorySection';
 
 const FOCUS_AREA_OPTIONS: Array<{ id: FocusAreaId; label: string }> = [
   { id: 'face', label: 'Face' },
@@ -415,6 +418,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         {/* Appearance & Profile */}
         <div className="lg:col-span-6 space-y-4">
+          <AboutMeSection profile={profile} />
+
           <div className="ascend-card p-4 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="font-display text-base font-bold">Appearance &amp; Units</h2>
@@ -655,6 +660,72 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                 }`}
               >
                 {settings.dayStartsAt4am ? '4 AM' : '12 AM'}
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 pt-2 border-t border-slate-200 dark:border-white/10">
+              <div>
+                <span className="text-xs font-medium block">Arabic hint under key labels</span>
+                <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Shows friendly Egyptian Arabic glosses under key actions
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  updateSettings({ arabicHintsEnabled: !settings.arabicHintsEnabled })
+                }
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold border shrink-0 min-h-[40px] transition ${
+                  settings.arabicHintsEnabled
+                    ? 'bg-[var(--accent-soft)] text-[var(--accent)] border-[var(--accent)]/35'
+                    : 'bg-slate-100 dark:bg-white/5 border-transparent'
+                }`}
+              >
+                {settings.arabicHintsEnabled ? 'On' : 'Off'}
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 pt-2 border-t border-slate-200 dark:border-white/10">
+              <div>
+                <span className="text-xs font-medium block">Arabic-Indic numbers (٠١٢٣)</span>
+                <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Optional display digits for daily targets &amp; summaries
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  updateSettings({ arabicIndicDigits: !settings.arabicIndicDigits })
+                }
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold border shrink-0 min-h-[40px] transition ${
+                  settings.arabicIndicDigits
+                    ? 'bg-[var(--accent-soft)] text-[var(--accent)] border-[var(--accent)]/35'
+                    : 'bg-slate-100 dark:bg-white/5 border-transparent'
+                }`}
+              >
+                {settings.arabicIndicDigits ? '١٢٣' : '123'}
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 pt-2 border-t border-slate-200 dark:border-white/10">
+              <div>
+                <span className="text-xs font-medium block">Friday &amp; holiday relaxed mode</span>
+                <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Lightens Friday&apos;s daily stack gently when on
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  updateSettings({ relaxedFridayMode: !settings.relaxedFridayMode })
+                }
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold border shrink-0 min-h-[40px] transition ${
+                  settings.relaxedFridayMode
+                    ? 'bg-[var(--accent-soft)] text-[var(--accent)] border-[var(--accent)]/35'
+                    : 'bg-slate-100 dark:bg-white/5 border-transparent'
+                }`}
+              >
+                {settings.relaxedFridayMode ? 'On' : 'Off'}
               </button>
             </div>
 
@@ -996,6 +1067,66 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               </div>
             </div>
 
+            <div className="pt-2 border-t border-slate-200 dark:border-white/10 space-y-2 text-xs">
+              <span className="block font-medium">
+                Training window &amp; quiet hours (non-urgent alerts stay muted)
+              </span>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                    Training start
+                  </label>
+                  <input
+                    type="time"
+                    value={settings.trainingWindowStart ?? '18:00'}
+                    onChange={(e) => updateSettings({ trainingWindowStart: e.target.value })}
+                    className="w-full px-2.5 py-1.5 rounded-xl bg-slate-100 dark:bg-white/5 font-mono-num"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                    Training end
+                  </label>
+                  <input
+                    type="time"
+                    value={settings.trainingWindowEnd ?? '20:00'}
+                    onChange={(e) => updateSettings({ trainingWindowEnd: e.target.value })}
+                    className="w-full px-2.5 py-1.5 rounded-xl bg-slate-100 dark:bg-white/5 font-mono-num"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                    Quiet hours start
+                  </label>
+                  <input
+                    type="time"
+                    value={settings.reminders.quietHoursStart ?? '23:00'}
+                    onChange={(e) =>
+                      updateSettings({
+                        reminders: { ...settings.reminders, quietHoursStart: e.target.value },
+                      })
+                    }
+                    className="w-full px-2.5 py-1.5 rounded-xl bg-slate-100 dark:bg-white/5 font-mono-num"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                    Quiet hours end
+                  </label>
+                  <input
+                    type="time"
+                    value={settings.reminders.quietHoursEnd ?? '07:00'}
+                    onChange={(e) =>
+                      updateSettings({
+                        reminders: { ...settings.reminders, quietHoursEnd: e.target.value },
+                      })
+                    }
+                    className="w-full px-2.5 py-1.5 rounded-xl bg-slate-100 dark:bg-white/5 font-mono-num"
+                  />
+                </div>
+              </div>
+            </div>
+
             {!isInstalled && (isInstallable || isIOS) && (
               <div className="pt-2 border-t border-slate-200 dark:border-white/10">
                 <button
@@ -1013,6 +1144,9 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
         {/* Backup, PIN, Storage & Danger Zone */}
         <div className="lg:col-span-6 space-y-4">
+          <ConnectionsSection />
+          <PrivacyInventorySection settings={settings} />
+
           <div className="ascend-card p-4 space-y-3">
             <div className="flex items-center justify-between gap-2">
               <h2 className="font-display text-base font-bold">Backup &amp; Restore</h2>

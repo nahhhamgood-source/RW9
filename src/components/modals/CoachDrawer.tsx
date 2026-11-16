@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import {
   addProtocolToPlan,
+  isAboutMeItemConfirmed,
   isUnder18OrGrowing,
   saveMealScanEntry,
 } from '../../db/database';
@@ -21,6 +22,7 @@ import { answerCoachQuery, type CoachContext } from '../../lib/coach';
 import { toLocalDateKey } from '../../lib/date';
 import { getPslTierMeta } from '../../lib/faceMetricsConstants';
 import { computeDebloatImpact } from '../../lib/nutrition';
+import { detectUserPatterns } from '../../lib/patterns';
 import { OnlineConsentModal } from './OnlineConsentModal';
 import { useToast } from '../ui/ToastProvider';
 import type { AppSettings, MealFoodItem } from '../../types';
@@ -45,29 +47,71 @@ interface UnifiedCoachReply {
 }
 
 const PRESET_PROMPTS = [
-  'Why is my face puffy?',
   'What should I do today?',
+  'Egyptian breakfast & lunch swaps',
+  'Why is my face puffy?',
   'Fix my skin',
   'Explain my scan',
-  'What haircut suits me?',
+  "I'm having a rough day",
   'Ask about height',
-  'Analyze my month',
 ];
 
-function buildContextSummary(ctx: CoachContext): string {
+/**
+ * Builds a compact, numbers + confirmed About-me summary ONLY.
+ * Never includes photos, face thumbnails, or private Quit habit names.
+ */
+function buildContextSummary(ctx: CoachContext, settings: AppSettings): string {
   const today = toLocalDateKey();
   const todayLog = ctx.dailyLogs.find((l) => l.date === today);
   const doneIds = new Set(ctx.completions.filter((c) => c.date === today).map((c) => c.taskId));
   const pendingCount = ctx.tasks.filter((t) => t.enabled && !doneIds.has(t.id)).length;
   const latestScan = ctx.scans[0];
   const tier = latestScan ? getPslTierMeta(latestScan.pslEstimate, true).displayLabel : 'No scan';
+  const about = ctx.profile.aboutMe;
+  const isRoughDay = Boolean(settings.roughDayDates?.includes(today));
+  const dayMode = settings.dayModeByDate?.[today] ?? 'gym';
 
-  return [
-    `Age=${ctx.profile.age || 'unset'}, Height=${ctx.profile.heightCm}cm, Weight=${ctx.profile.weightKg}kg, Goal=${ctx.profile.dietGoal ?? 'maintain'}`,
-    `Today water=${todayLog?.waterMl ?? 0}/${ctx.profile.waterTargetMl}ml, calories=${todayLog?.calories ?? 0}/${ctx.profile.calorieGoal}, protein=${todayLog?.proteinG ?? 0}/${ctx.profile.proteinTargetG}g`,
+  const lines: string[] = [
+    `Age=${ctx.profile.ageExplicitlySet ? ctx.profile.age : 'unset (teen safety active)'}, Height=${ctx.profile.heightCm}cm, Weight=${ctx.profile.weightKg}kg, Goal=${ctx.profile.dietGoal ?? 'maintain'}`,
+    `Today mode=${dayMode}${isRoughDay ? ' (ROUGH DAY MODE)' : ''}, water=${todayLog?.waterMl ?? 0}/${ctx.profile.waterTargetMl}ml, calories=${todayLog?.calories ?? 0}/${ctx.profile.calorieGoal}, protein=${todayLog?.proteinG ?? 0}/${ctx.profile.proteinTargetG}g, sleep=${todayLog?.sleepHours ?? 0}h`,
     `Tasks remaining today=${pendingCount}, Skin=${ctx.profile.skinType}, Hair=${ctx.profile.hairType}`,
     `Latest face scan: ${latestScan ? `${latestScan.pslEstimate}/8 (${tier}, ${latestScan.faceShape})` : 'none'}`,
-  ].join('\n');
+  ];
+
+  if (about) {
+    if (isAboutMeItemConfirmed(about, 'location_foods')) {
+      lines.push(`Region=${about.countryRegion}; Everyday foods=${about.localFoods.slice(0, 8).join(', ')}`);
+    }
+    if (isAboutMeItemConfirmed(about, 'training_camp')) {
+      lines.push(
+        `Training=${about.trainingDisciplines.join('+')}${about.weightClassKg ? `, WeightClass=${about.weightClassKg}kg` : ''}${about.tournamentDate ? `, Tournament=${about.tournamentDate}` : ''}`
+      );
+    }
+    if (isAboutMeItemConfirmed(about, 'eating_pattern') && about.eatingPattern) {
+      lines.push(`Eating note=${about.eatingPattern}`);
+    }
+    if (isAboutMeItemConfirmed(about, 'support_style') && about.supportStyle) {
+      lines.push(`Support preference=${about.supportStyle}`);
+    }
+  }
+
+  const patterns = detectUserPatterns({
+    todayKey: today,
+    profile: ctx.profile,
+    dailyLogs: ctx.dailyLogs,
+    mealScans: ctx.mealScans ?? [],
+    workouts: ctx.workouts,
+    bodyMetrics: ctx.bodyMetrics ?? [],
+    tasks: ctx.tasks,
+    completions: ctx.completions,
+    dismissedIds: settings.dismissedPatternIds ?? [],
+    maxCards: 2,
+  });
+  if (patterns.cards.length > 0) {
+    lines.push(`Detected log patterns: ${patterns.cards.map((c) => c.headline).join(' | ')}`);
+  }
+
+  return lines.join('\n');
 }
 
 function toOfflineReply(query: string, ctx: CoachContext): UnifiedCoachReply {
@@ -109,7 +153,6 @@ export const CoachDrawer: React.FC<CoachDrawerProps> = ({
     setQuery(clean);
     setShowMore(false);
 
-    // Always immediately update with fast offline answer while checking online if enabled
     const offlineFallback = toOfflineReply(clean, context);
     setReply(offlineFallback);
 
@@ -124,7 +167,7 @@ export const CoachDrawer: React.FC<CoachDrawerProps> = ({
       const res = await askOnlineCoach({
         message: clean,
         history,
-        contextSummary: buildContextSummary(context),
+        contextSummary: buildContextSummary(context, settings),
         isUnder18: isUnder18OrGrowing(context.profile),
       });
 
@@ -248,7 +291,7 @@ export const CoachDrawer: React.FC<CoachDrawerProps> = ({
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 {onlineAllowed
-                  ? 'Uses Gemini when online + brief summary; falls back offline anytime.'
+                  ? 'This sends a short summary (no photos) to the coach. Turn off in Settings.'
                   : 'Running offline on your local logs. Optional Online AI Coach is off.'}
               </p>
             </div>
@@ -265,7 +308,7 @@ export const CoachDrawer: React.FC<CoachDrawerProps> = ({
           {!onlineAllowed && (
             <div className="p-2.5 rounded-2xl bg-[var(--accent-soft)] border border-[var(--accent)]/30 flex items-center justify-between gap-2 text-xs">
               <span className="text-slate-700 dark:text-slate-200">
-                Want custom Q&amp;A powered by Gemini?
+                Want personalized AI Q&amp;A? This sends a short summary (no photos) to the coach. Turn off in Settings.
               </span>
               <button
                 type="button"
@@ -376,7 +419,7 @@ export const CoachDrawer: React.FC<CoachDrawerProps> = ({
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Ask about skin, bloat, scan, meals, height..."
+              placeholder="Ask about skin, food swaps, scan, height, or rough day..."
               className="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-base sm:text-sm min-h-[44px]"
             />
             <button

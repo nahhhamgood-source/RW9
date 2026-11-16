@@ -101,7 +101,7 @@ export const TierLadderCard: React.FC<TierLadderCardProps> = ({
       {showGuide && (
         <div className="p-3 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 text-xs space-y-2">
           <div>
-            <p className="font-bold text-emerald-600 dark:text-emerald-300">What realistically improves it:</p>
+            <p className="font-bold text-emerald-600 dark:text-emerald-300">What moves you up realistically:</p>
             <ul className="mt-1 space-y-0.5 text-slate-600 dark:text-slate-300 list-disc pl-4">
               {WHAT_MOVES_PSL.realisticLevers.map((item) => (
                 <li key={item}>{item}</li>

@@ -1,19 +1,24 @@
 import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  Bell,
   Camera,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
   Crown,
   Download,
+  Dumbbell,
   Info,
   Plus,
   RotateCcw,
   ScanFace,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
+  Utensils,
 } from 'lucide-react';
+import { GLOSSARY_TERMS } from '../../data/academy';
 import { HAIRCUT_BY_FACE_SHAPE } from '../../data/care';
 import { addProtocolToPlan, db } from '../../db/database';
 import {
@@ -22,7 +27,13 @@ import {
   PSL_SCALE_GUIDE,
   WHAT_MOVES_PSL,
 } from '../../lib/faceMetricsConstants';
-import type { ExtendedReportPillar, FaceScanResult, LandmarksOverlayGuides } from '../../types';
+import type {
+  AppSettings,
+  ExtendedReportPillar,
+  FaceScanResult,
+  LandmarksOverlayGuides,
+  UserProfile,
+} from '../../types';
 import { useToast } from '../ui/ToastProvider';
 import { ThirdsCanvasOverlay } from './ThirdsCanvasOverlay';
 import { TierLadderCard } from './TierLadderCard';
@@ -30,26 +41,37 @@ import { TierLadderCard } from './TierLadderCard';
 interface FacialAestheticsReportProps {
   activeScan: FaceScanResult;
   scans: FaceScanResult[];
+  profile?: UserProfile;
   slangTierNames?: boolean;
   includeSkinScore?: boolean;
   onSelectScan: (scanId: number) => void;
   onStartNewScan: () => void;
   onAddSidePhotos?: (scan: FaceScanResult) => void;
+  onOpenExercises?: () => void;
+  onOpenDebloatFood?: () => void;
+  onOpenCompare?: () => void;
 }
 
 export const FacialAestheticsReport: React.FC<FacialAestheticsReportProps> = ({
   activeScan,
   scans,
+  profile,
   slangTierNames = true,
   includeSkinScore = true,
   onSelectScan,
   onStartNewScan,
   onAddSidePhotos,
+  onOpenExercises,
+  onOpenDebloatFood,
+  onOpenCompare,
 }) => {
   const { showToast } = useToast();
   const [previewAngle, setPreviewAngle] = useState<'front' | 'left' | 'right' | 'profile90'>('front');
   const [expandedPillar, setExpandedPillar] = useState<string | null>(null);
   const [planAdded, setPlanAdded] = useState(false);
+  const [pathAddedIds, setPathAddedIds] = useState<string[]>([]);
+  const [rescanSet, setRescanSet] = useState(false);
+  const [showGlossary, setShowGlossary] = useState(false);
 
   const tierMeta = useMemo(
     () => getPslTierMeta(activeScan.pslEstimate, slangTierNames),
@@ -253,6 +275,90 @@ export const FacialAestheticsReport: React.FC<FacialAestheticsReportProps> = ({
         : 'Protocol updated with focus recommendations'
     );
   };
+
+  const handleAddPathLever = async (protocolId: string, label: string) => {
+    await addProtocolToPlan(protocolId, label);
+    setPathAddedIds((prev) => (prev.includes(protocolId) ? prev : [...prev, protocolId]));
+    showToast(`Added "${label}" to Today`);
+  };
+
+  const handleSchedule4WeekRescan = async () => {
+    const currentSettings: AppSettings | undefined = await db.settings.get('app');
+    if (currentSettings) {
+      await db.settings.update('app', {
+        reminders: {
+          ...currentSettings.reminders,
+          enabled: true,
+          rescanDays: 28,
+        },
+      });
+    }
+    setRescanSet(true);
+    showToast('4-week (28 day) rescan reminder saved');
+  };
+
+  const under18OrUnknown = !profile || !profile.ageExplicitlySet || profile.age < 18 || profile.stillGrowing === 'yes';
+
+  const priorScan = useMemo(() => {
+    const others = scans.filter((s) => s.id !== activeScan.id && !s.isImplausible);
+    return others[0] ?? null;
+  }, [scans, activeScan.id]);
+
+  const realDeltaRows = useMemo(() => {
+    if (!priorScan) return [];
+    const rows: Array<{ label: string; prev: number; next: number; unit: string; delta: number }> = [];
+    rows.push({
+      label: 'Overall estimate',
+      prev: priorScan.pslEstimate,
+      next: activeScan.pslEstimate,
+      unit: '/8',
+      delta: Number((activeScan.pslEstimate - priorScan.pslEstimate).toFixed(1)),
+    });
+    rows.push({
+      label: 'Symmetry score',
+      prev: priorScan.subScores.symmetry,
+      next: activeScan.subScores.symmetry,
+      unit: '/100',
+      delta: Math.round(activeScan.subScores.symmetry - priorScan.subScores.symmetry),
+    });
+    rows.push({
+      label: 'Skin tone score',
+      prev: priorScan.subScores.skin,
+      next: activeScan.subScores.skin,
+      unit: '/100',
+      delta: Math.round(activeScan.subScores.skin - priorScan.subScores.skin),
+    });
+    for (const m of activeScan.measurements) {
+      if (m.value === null) continue;
+      const prevM = priorScan.measurements.find((pm) => pm.key === m.key && pm.value !== null);
+      if (prevM && prevM.value !== null) {
+        rows.push({
+          label: m.label,
+          prev: prevM.value,
+          next: m.value,
+          unit: m.unit,
+          delta: Number((m.value - prevM.value).toFixed(1)),
+        });
+      }
+    }
+    return rows.slice(0, 6);
+  }, [priorScan, activeScan]);
+
+  const vocabTerms = useMemo(() => {
+    const want = [
+      'PSL',
+      'Canthal tilt',
+      'Gonial angle',
+      'Mewing',
+      'CCW rotation',
+      'Temporalis training',
+      'Hunter Eyes',
+      'Mogging',
+    ];
+    return want
+      .map((name) => GLOSSARY_TERMS.find((t) => t.term.toLowerCase() === name.toLowerCase()))
+      .filter((x): x is (typeof GLOSSARY_TERMS)[number] => Boolean(x));
+  }, []);
 
   const handleSaveReportAsImage = () => {
     const canvas = document.createElement('canvas');
@@ -612,6 +718,167 @@ export const FacialAestheticsReport: React.FC<FacialAestheticsReportProps> = ({
       {/* Interactive 6-Rung PSL Tier Ladder */}
       <TierLadderCard score={activeScan.pslEstimate} slangTierNames={slangTierNames} />
 
+      {/* YOUR PATH — Never a dead end after any scan */}
+      <div className="ascend-card p-4 sm:p-5 space-y-3.5 border-[var(--accent)]/30">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-wider text-[var(--accent)]">
+              Your Path (Top 3 Real Levers)
+            </p>
+            <h3 className="font-display text-base sm:text-lg font-bold">
+              What actually improves your look from here
+            </h3>
+          </div>
+          <button
+            type="button"
+            onClick={handleSchedule4WeekRescan}
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold min-h-[44px] border transition ${
+              rescanSet
+                ? 'bg-emerald-500/15 border-emerald-500/35 text-emerald-500'
+                : 'bg-slate-100 dark:bg-white/5 border-slate-200 dark:border-white/10'
+            }`}
+          >
+            <Bell className="w-3.5 h-3.5 text-[var(--accent)]" />
+            {rescanSet ? '4-week reminder on' : 'Remind me to re-scan in 4 weeks'}
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+          {/* Lever 1: Leanness / jawline fat */}
+          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 flex flex-col justify-between gap-2.5">
+            <div className="space-y-1">
+              <p className="font-bold text-sm text-[var(--accent)]">1. Leanness &amp; Jaw Clarity</p>
+              <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                {profile?.aboutMe?.targetWeightKg
+                  ? `Ties straight to your ${profile.aboutMe.targetWeightKg} kg target & diet plan.`
+                  : 'Getting leaner shows the lower jaw clearly — spot-fat-loss does not exist.'}{' '}
+                Steady water + low evening salt reduce morning bloat without dehydration.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                handleAddPathLever(
+                  under18OrUnknown ? 'body-10min-walk' : 'body-protein-check',
+                  'Leanness & Protein'
+                )
+              }
+              className={`w-full py-2.5 px-3 rounded-xl text-xs font-bold min-h-[44px] ${
+                pathAddedIds.includes(under18OrUnknown ? 'body-10min-walk' : 'body-protein-check')
+                  ? 'bg-emerald-500/20 text-emerald-500'
+                  : 'bg-[var(--accent)] text-[var(--accent-contrast)]'
+              }`}
+            >
+              {pathAddedIds.includes(under18OrUnknown ? 'body-10min-walk' : 'body-protein-check')
+                ? 'Added to Today'
+                : 'Add to Today'}
+            </button>
+          </div>
+
+          {/* Lever 2: Neck & posture */}
+          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 flex flex-col justify-between gap-2.5">
+            <div className="space-y-1">
+              <p className="font-bold text-sm text-[var(--accent)]">2. Neck &amp; Posture Stack</p>
+              <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                Neck curls, chin tucks, tongue posture, and forehead press at 30–50% effort (stop on pain; no neck weights under 18). Trains muscle &amp; posture, never bone or hyoid.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                handleAddPathLever(
+                  under18OrUnknown ? 'body-posture-reset' : 'body-neck-set',
+                  'Neck & Posture'
+                )
+              }
+              className={`w-full py-2.5 px-3 rounded-xl text-xs font-bold min-h-[44px] ${
+                pathAddedIds.includes(under18OrUnknown ? 'body-posture-reset' : 'body-neck-set')
+                  ? 'bg-emerald-500/20 text-emerald-500'
+                  : 'bg-[var(--accent)] text-[var(--accent-contrast)]'
+              }`}
+            >
+              {pathAddedIds.includes(under18OrUnknown ? 'body-posture-reset' : 'body-neck-set')
+                ? 'Added to Today'
+                : 'Add to Today'}
+            </button>
+          </div>
+
+          {/* Lever 3: Skin / hair / grooming / sleep */}
+          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 flex flex-col justify-between gap-2.5">
+            <div className="space-y-1">
+              <p className="font-bold text-sm text-[var(--accent)]">3. Skin, Hair &amp; Sleep</p>
+              <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                Highest-evidence daily glow-up: gentle cleanser + moisturizer + SPF, {haircutGuide.cuts[0]?.name ?? 'clean haircut'} for your {activeScan.faceShape} shape, and 7.5–8h sleep.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => handleAddPathLever('face-spf-daily', 'Daily SPF & Skin')}
+              className={`w-full py-2.5 px-3 rounded-xl text-xs font-bold min-h-[44px] ${
+                pathAddedIds.includes('face-spf-daily')
+                  ? 'bg-emerald-500/20 text-emerald-500'
+                  : 'bg-[var(--accent)] text-[var(--accent-contrast)]'
+              }`}
+            >
+              {pathAddedIds.includes('face-spf-daily') ? 'Added to Today' : 'Add to Today'}
+            </button>
+          </div>
+        </div>
+
+        {/* Direct jumps to Face Exercises, Debloat Food, and See the change */}
+        <div className="flex flex-wrap gap-2 pt-1">
+          {onOpenExercises && (
+            <button
+              type="button"
+              onClick={onOpenExercises}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold min-h-[44px]"
+            >
+              <Dumbbell className="w-3.5 h-3.5 text-[var(--accent)]" /> Open Face Exercises
+            </button>
+          )}
+          {onOpenDebloatFood && (
+            <button
+              type="button"
+              onClick={onOpenDebloatFood}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold min-h-[44px]"
+            >
+              <Utensils className="w-3.5 h-3.5 text-sky-400" /> Debloat &amp; Food Habits
+            </button>
+          )}
+          {onOpenCompare && (
+            <button
+              type="button"
+              onClick={onOpenCompare}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-bold min-h-[44px]"
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5 text-emerald-400" /> See the change (Before / After)
+            </button>
+          )}
+        </div>
+
+        {/* Real measured changes vs previous scan */}
+        {realDeltaRows.length > 0 && priorScan && (
+          <div className="p-3 rounded-2xl bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 space-y-2 text-xs">
+            <p className="font-bold">
+              Measured changes vs {priorScan.date} (real numbers only — use identical daylight &amp; eye level):
+            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {realDeltaRows.map((row) => (
+                <div key={row.label} className="p-2 rounded-xl bg-white dark:bg-white/[0.03] border border-slate-200/70 dark:border-white/10">
+                  <p className="text-[10.5px] text-slate-500 dark:text-slate-400 truncate">{row.label}</p>
+                  <p className="font-mono-num text-xs font-bold">
+                    {row.prev} → {row.next}{row.unit}{' '}
+                    <span className={row.delta >= 0 ? 'text-emerald-500' : 'text-amber-500'}>
+                      ({row.delta > 0 ? `+${row.delta}` : row.delta})
+                    </span>
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Metrics List (Core + Extended Pillars, /100 Estimate or "Not measurable" + Learn More) */}
       <div className="ascend-card p-4 sm:p-5 space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -879,6 +1146,34 @@ export const FacialAestheticsReport: React.FC<FacialAestheticsReportProps> = ({
               <li>Face soft window daylight evenly; avoid harsh overhead shadows or dim yellow indoor bulbs.</li>
               <li>No beauty filters, neutral relaxed mouth, hair pulled back off your forehead.</li>
             </ul>
+
+            <div className="pt-2 border-t border-slate-200 dark:border-white/10">
+              <button
+                type="button"
+                onClick={() => setShowGlossary((v) => !v)}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 dark:bg-white/5 text-xs font-semibold min-h-[44px]"
+              >
+                <Info className="w-3.5 h-3.5 text-[var(--accent)]" />
+                What&apos;s this? (PSL, CCW rotation, Mewing, Canthal Tilt)
+                {showGlossary ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              </button>
+              {showGlossary && (
+                <div className="mt-2 space-y-1.5">
+                  {vocabTerms.map((g) => (
+                    <div
+                      key={g.term}
+                      className="p-2.5 rounded-xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 text-[11px]"
+                    >
+                      <p className="font-bold text-[var(--accent)]">{g.term}</p>
+                      <p className="text-slate-600 dark:text-slate-300">{g.meaning}</p>
+                      <p className="text-slate-500 dark:text-slate-400 mt-0.5">
+                        <strong>Honest take:</strong> {g.honestTake}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
           <p className="text-[11px] text-slate-500 dark:text-slate-400 pt-3 border-t border-slate-200 dark:border-white/10">
             Scan #{activeScan.id ?? 1} · {activeScan.date} · {PSL_HONEST_DISCLAIMER}

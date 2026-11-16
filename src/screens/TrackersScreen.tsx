@@ -12,7 +12,13 @@ import {
   Check,
   Utensils,
 } from 'lucide-react';
-import { db, getOrCreateDailyLog, isUnder18OrGrowing, recalculateXpAndBadges } from '../db/database';
+import {
+  db,
+  getOrCreateDailyLog,
+  isAboutMeItemConfirmed,
+  isUnder18OrGrowing,
+  recalculateXpAndBadges,
+} from '../db/database';
 import { toLocalDateKey } from '../lib/date';
 import {
   calculateEstimated1RM,
@@ -98,6 +104,7 @@ export const TrackersScreen: React.FC<TrackersScreenProps> = ({
 
   const hideCut = isUnder18OrGrowing(profile);
   const safeGoalMode = hideCut && goalMode === 'cut' ? 'maintain' : goalMode;
+  const fightCampConfirmed = isAboutMeItemConfirmed(profile.aboutMe, 'training_camp');
 
   const calorieCalc = useMemo(
     () =>
@@ -245,6 +252,21 @@ export const TrackersScreen: React.FC<TrackersScreenProps> = ({
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
           <form onSubmit={handleSaveBody} className="lg:col-span-6 ascend-card p-4 space-y-4">
             <h2 className="font-display text-base font-bold">Body Composition &amp; Targets</h2>
+            {fightCampConfirmed && (
+              <div className="p-3 rounded-2xl bg-[var(--accent-soft)] border border-[var(--accent)]/30 text-xs space-y-1">
+                <p className="font-bold text-[var(--accent)]">
+                  Fight Camp Weight Check
+                  {profile.aboutMe?.weightClassKg ? ` · ${profile.aboutMe.weightClassKg} kg class` : ''}
+                </p>
+                <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                  {profile.aboutMe?.targetWeightKg
+                    ? `Current: ${profile.weightKg} kg → Target: ${profile.aboutMe.targetWeightKg} kg.`
+                    : `Current logged weight: ${profile.weightKg} kg.`}
+                  {profile.aboutMe?.tournamentDate ? ` Tournament: ${profile.aboutMe.tournamentDate}.` : ''}{' '}
+                  Safe rule: never use dehydration or sauna cuts; let your coach and doctor set class timing.
+                </p>
+              </div>
+            )}
             <div className="grid grid-cols-3 gap-2.5">
               <div>
                 <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Weight (kg)</label>
@@ -518,6 +540,49 @@ export const TrackersScreen: React.FC<TrackersScreenProps> = ({
                 onChange={(e) => setWorkoutName(e.target.value)}
                 className="font-display text-base font-bold bg-transparent border-b border-slate-300 dark:border-white/20 focus:outline-none pb-1"
               />
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  {
+                    label: 'Gym Strength',
+                    title: 'Gym Strength A',
+                    items: [
+                      { name: 'Bench Press / Push-Up', sets: [{ reps: 8, weightKg: 60, completed: false }] },
+                      { name: 'Lat Pulldown / Pull-Up', sets: [{ reps: 10, weightKg: 55, completed: false }] },
+                      { name: 'Goblet Squat', sets: [{ reps: 10, weightKg: 28, completed: false }] },
+                    ],
+                  },
+                  {
+                    label: 'MMA Conditioning',
+                    title: 'MMA / Bag & Conditioning',
+                    items: [
+                      { name: 'Shadowboxing / Bag Rounds', sets: [{ reps: 5, weightKg: 0, completed: false }] },
+                      { name: 'Sprawl & Scramble Intervals', sets: [{ reps: 10, weightKg: 0, completed: false }] },
+                      { name: 'Neck & Grip Isometrics', sets: [{ reps: 12, weightKg: 10, completed: false }] },
+                    ],
+                  },
+                  {
+                    label: 'Light Recovery',
+                    title: 'Sparring Recovery & Mobility',
+                    items: [
+                      { name: '10-Min Brisk Walk', sets: [{ reps: 1, weightKg: 0, completed: false }] },
+                      { name: 'Shoulder & Hip Mobility Flow', sets: [{ reps: 10, weightKg: 0, completed: false }] },
+                    ],
+                  },
+                ].map((tpl) => (
+                  <button
+                    key={tpl.label}
+                    type="button"
+                    onClick={() => {
+                      setWorkoutName(tpl.title);
+                      setExercises(tpl.items);
+                      showToast(`Loaded ${tpl.label} template`);
+                    }}
+                    className="px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-white/5 hover:bg-[var(--accent-soft)] text-[11px] font-semibold"
+                  >
+                    {tpl.label}
+                  </button>
+                ))}
+              </div>
               <div className="flex items-center gap-2">
                 <Timer className="w-4 h-4 text-[var(--accent)]" />
                 {restSeconds !== null ? (

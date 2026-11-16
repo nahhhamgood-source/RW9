@@ -1,9 +1,11 @@
 import React, { Suspense, lazy, useEffect, useState } from 'react';
-import { Crown, ScanFace, Sparkles, Dumbbell } from 'lucide-react';
+import { BookOpen, Crown, Dumbbell, ScanFace, ShieldAlert, Sparkles } from 'lucide-react';
 import { CareScreen } from './CareScreen';
+import { AcademyScreen } from './AcademyScreen';
 import { ScreenSkeleton } from '../components/ui/Skeletons';
 import { TierLadderCard } from '../components/psl/TierLadderCard';
 import { FaceExercisesPanel } from '../components/exercises/FaceExercisesPanel';
+import { CCW_TEMPORALIS_INFO_CARD } from '../data/academy';
 import { getPslTierMeta } from '../lib/faceMetricsConstants';
 import { en } from '../i18n/en';
 import type {
@@ -35,6 +37,7 @@ interface FaceHubScreenProps {
   initialTab?: string;
   onBackToPlan: () => void;
   onAskCoach?: () => void;
+  onOpenDebloatFood?: () => void;
 }
 
 export const FaceHubScreen: React.FC<FaceHubScreenProps> = ({
@@ -50,16 +53,20 @@ export const FaceHubScreen: React.FC<FaceHubScreenProps> = ({
   initialTab,
   onBackToPlan,
   onAskCoach,
+  onOpenDebloatFood,
 }) => {
-  const resolveTab = (t?: string): 'scanner' | 'care' | 'exercises' => {
+  const resolveTab = (t?: string): 'scanner' | 'care' | 'exercises' | 'learn' => {
     if (t === 'care' || t === 'skin' || t === 'hair' || t === 'style' || t === 'lean_face') {
       return 'care';
     }
     if (t === 'exercises') return 'exercises';
+    if (t === 'learn') return 'learn';
     return 'scanner';
   };
 
-  const [tab, setTab] = useState<'scanner' | 'care' | 'exercises'>(() => resolveTab(initialTab));
+  const [tab, setTab] = useState<'scanner' | 'care' | 'exercises' | 'learn'>(() =>
+    resolveTab(initialTab)
+  );
   const [showLadder, setShowLadder] = useState(false);
 
   useEffect(() => {
@@ -135,12 +142,13 @@ export const FaceHubScreen: React.FC<FaceHubScreenProps> = ({
       <div
         role="tablist"
         aria-label="Face hub sections"
-        className="grid grid-cols-3 gap-1.5 p-1 rounded-2xl bg-slate-200/80 dark:bg-white/[0.05] border border-slate-200 dark:border-white/10"
+        className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-1 rounded-2xl bg-slate-200/80 dark:bg-white/[0.05] border border-slate-200 dark:border-white/10"
       >
         {([
           { id: 'scanner', label: en.faceHub.scanner, icon: <ScanFace className="w-4 h-4" /> },
           { id: 'care', label: en.faceHub.care, icon: <Sparkles className="w-4 h-4" /> },
           { id: 'exercises', label: en.faceHub.exercises, icon: <Dumbbell className="w-4 h-4" /> },
+          { id: 'learn', label: en.faceHub.learn, icon: <BookOpen className="w-4 h-4" /> },
         ] as const).map((item) => {
           const active = tab === item.id;
           return (
@@ -165,7 +173,14 @@ export const FaceHubScreen: React.FC<FaceHubScreenProps> = ({
 
       {tab === 'scanner' && (
         <Suspense fallback={<ScreenSkeleton />}>
-          <PslLabScreen scans={scans} settings={settings} onBack={onBackToPlan} />
+          <PslLabScreen
+            scans={scans}
+            settings={settings}
+            profile={profile}
+            onBack={onBackToPlan}
+            onOpenExercises={() => setTab('exercises')}
+            onOpenDebloatFood={onOpenDebloatFood}
+          />
         </Suspense>
       )}
 
@@ -185,6 +200,50 @@ export const FaceHubScreen: React.FC<FaceHubScreenProps> = ({
 
       {tab === 'exercises' && (
         <FaceExercisesPanel profile={profile} settings={settings} />
+      )}
+
+      {tab === 'learn' && (
+        <div className="space-y-4">
+          {/* Info card only — never a daily task, exercise, timer, or reminder */}
+          <article className="ascend-card p-4 border-amber-500/35 bg-amber-500/5 space-y-3 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0" />
+                <h2 className="font-display text-base font-bold">{CCW_TEMPORALIS_INFO_CARD.title}</h2>
+              </div>
+              <span className="text-[11px] font-bold text-rose-500 dark:text-rose-400">
+                {CCW_TEMPORALIS_INFO_CARD.tag}
+              </span>
+            </div>
+            <p className="text-[11px] font-semibold text-amber-700 dark:text-amber-300">
+              {CCW_TEMPORALIS_INFO_CARD.infoOnlyLabel}
+            </p>
+            <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+              <strong>What the slides claim:</strong> {CCW_TEMPORALIS_INFO_CARD.claim}
+            </p>
+            <p className="text-slate-700 dark:text-slate-200 leading-relaxed">
+              <strong>Honest take:</strong> {CCW_TEMPORALIS_INFO_CARD.honestTake}
+            </p>
+            <p className="text-amber-800 dark:text-amber-200 leading-relaxed">
+              <strong>Risks:</strong> {CCW_TEMPORALIS_INFO_CARD.risks}
+            </p>
+            <div className="pt-2 border-t border-slate-200 dark:border-white/10 space-y-1.5">
+              <p className="font-semibold">What helps instead:</p>
+              <ul className="space-y-1 text-slate-600 dark:text-slate-300">
+                {CCW_TEMPORALIS_INFO_CARD.alternatives.map((alt) => (
+                  <li key={alt.label} className="flex items-center justify-between gap-2">
+                    <span>• {alt.label}</span>
+                    <span className="text-[11px] font-bold text-[var(--accent)] shrink-0">
+                      {alt.evidence}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </article>
+
+          <AcademyScreen />
+        </div>
       )}
 
       <p className="text-center text-xs text-slate-500 dark:text-slate-400 pt-1">

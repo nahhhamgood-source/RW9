@@ -1,19 +1,14 @@
 import React, { useState } from 'react';
-import { X, ArrowRight, Check, Zap } from 'lucide-react';
+import { ArrowRight, Check, HelpCircle, X } from 'lucide-react';
 import {
   db,
   isUnder18OrGrowing,
   regenerateProtocolFromProfile,
   saveAndVerifyProfile,
 } from '../../db/database';
+import { addDays, toLocalDateKey } from '../../lib/date';
 import { calculateMifflinStJeor } from '../../lib/fitness';
-import type {
-  FocusAreaId,
-  SkinType,
-  StillGrowingStatus,
-  ToneMode,
-  UserProfile,
-} from '../../types';
+import type { MainGoalMode, ToneMode, UserProfile, WeighInRule } from '../../types';
 import { useToast } from '../ui/ToastProvider';
 
 interface OnboardingModalProps {
@@ -22,36 +17,46 @@ interface OnboardingModalProps {
   onClose: () => void;
 }
 
-const FOCUS_OPTIONS: Array<{ id: FocusAreaId; label: string; sub: string }> = [
-  { id: 'face', label: 'Face & Skin', sub: 'Clear skin, de-puff, jawline tone' },
-  { id: 'body', label: 'Body & Height', sub: 'Posture, sleep, workouts, nutrition' },
-  { id: 'mind', label: 'Mind & Focus', sub: 'Study, coding, calm habits' },
-];
-
 export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   profile,
   currentTone = 'normal',
   onClose,
 }) => {
   const { showToast } = useToast();
-  const [mode, setMode] = useState<'quickstart' | 'guided'>('quickstart');
-  const [step, setStep] = useState(0); // 0..4 max 5 simple screens in guided mode
+  const [step, setStep] = useState(0);
   const [tone, setTone] = useState<ToneMode>(currentTone);
-  const [form, setForm] = useState<UserProfile>({
-    ...profile,
-    focusAreas: profile.focusAreas?.length ? profile.focusAreas : ['face', 'body'],
-    stillGrowing: profile.stillGrowing ?? (profile.age < 18 ? 'yes' : 'unsure'),
-  });
+  const [notSureNote, setNotSureNote] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const toggleFocus = (id: FocusAreaId) => {
-    setForm((prev) => {
-      const current = prev.focusAreas ?? ['face', 'body'];
-      const exists = current.includes(id);
-      if (exists && current.length <= 1) return prev;
-      const next = exists ? current.filter((x) => x !== id) : [...current, id];
-      return { ...prev, focusAreas: next };
-    });
+  const [form, setForm] = useState<UserProfile>({
+    ...profile,
+    mainGoalMode: profile.mainGoalMode ?? 'both',
+    gymDaysPerWeek: profile.gymDaysPerWeek ?? 3,
+    mmaDaysPerWeek: profile.mmaDaysPerWeek ?? 2,
+    usualWakeTime: profile.usualWakeTime ?? '07:00',
+    usualBedtime: profile.usualBedtime ?? '23:00',
+    weighInRule: profile.weighInRule ?? 'not_sure',
+    focusAreas: profile.focusAreas?.length ? profile.focusAreas : ['face', 'body'],
+    stillGrowing: profile.stillGrowing ?? (profile.age < 18 ? 'yes' : 'no'),
+  });
+
+  const [tournamentDate, setTournamentDate] = useState(
+    profile.aboutMe?.tournamentDate ?? addDays(toLocalDateKey(), 42)
+  );
+  const [targetWeightKg, setTargetWeightKg] = useState(
+    String(profile.aboutMe?.targetWeightKg ?? Math.max(52, Math.round((profile.weightKg || 74) - 2)))
+  );
+
+  const ageBlocked = isUnder18OrGrowing(form);
+  const showFightCampStep =
+    !ageBlocked && (form.mainGoalMode === 'fight_camp' || form.mainGoalMode === 'both');
+  const totalSteps = showFightCampStep ? 6 : 5;
+
+  const advance = () => {
+    setNotSureNote(null);
+    if (step < totalSteps - 1) {
+      setStep((s) => s + 1);
+    }
   };
 
   const skipSetup = async () => {
@@ -60,80 +65,165 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
       const skipped: UserProfile = {
         ...profile,
         id: 'me',
+        ageExplicitlySet: profile.ageExplicitlySet ?? false,
         onboardingDone: true,
         onboardingComplete: true,
         onboardingSkipped: true,
         updatedAt: Date.now(),
       };
       await saveAndVerifyProfile(skipped);
-      showToast('Ready to go — edit anytime in your profile', 'info');
+      showToast('Ready — edit details anytime in Settings', 'info');
       onClose();
     } catch {
-      showToast('Could not save setup right now.', 'warning', {
-        actionLabel: 'Retry',
-        onAction: () => void skipSetup(),
-      });
+      showToast('Could not save setup right now.', 'warning');
     } finally {
       setSaving(false);
     }
   };
 
-  const finishSetup = async () => {
+  const finishSetup = async (overrideProfile?: Partial<UserProfile>) => {
     setSaving(true);
     try {
-      const isGuidedAgeConfirmed = mode === 'guided' || profile.ageExplicitlySet === true;
-      const formWithAgeFlag: UserProfile = {
+      const merged: UserProfile = {
         ...form,
-        ageExplicitlySet: isGuidedAgeConfirmed,
-        onboardingSkipped: false,
+        ...overrideProfile,
       };
-      const growingOrMinor = isUnder18OrGrowing(formWithAgeFlag);
+      const growingOrMinor = isUnder18OrGrowing(merged);
       const goalMode = growingOrMinor
         ? 'maintain'
-        : form.goals.includes('body_fat')
+        : merged.mainGoalMode === 'fight_camp'
         ? 'cut'
-        : form.goals.includes('training')
-        ? 'lean_gain'
+        : merged.mainGoalMode === 'both'
+        ? 'cut'
         : 'maintain';
 
+      const totalWorkouts = Math.min(
+        7,
+        (merged.gymDaysPerWeek ?? 3) + (merged.mmaDaysPerWeek ?? 2)
+      );
+      const activityLevel: UserProfile['activityLevel'] =
+        totalWorkouts >= 5 ? 'active' : totalWorkouts >= 3 ? 'moderate' : 'light';
+
       const calc = calculateMifflinStJeor({
-        sex: form.sex,
-        weightKg: Math.max(30, form.weightKg || 70),
-        heightCm: Math.max(100, form.heightCm || 175),
-        age: Math.max(10, Math.min(99, form.age || 20)),
-        activityLevel: form.activityLevel || 'moderate',
+        sex: merged.sex,
+        weightKg: Math.max(35, merged.weightKg || 74),
+        heightCm: Math.max(120, merged.heightCm || 178),
+        age: Math.max(10, Math.min(99, merged.age || 20)),
+        activityLevel,
         goalMode,
       });
 
+      const targetKgNum = Number(targetWeightKg);
+      const hasValidTarget = Number.isFinite(targetKgNum) && targetKgNum > 35;
+
       const updated: UserProfile = {
-        ...formWithAgeFlag,
+        ...merged,
         id: 'me',
-        goals: growingOrMinor ? form.goals.filter((g) => g !== 'body_fat') : form.goals,
-        dietGoal: growingOrMinor ? 'maintain' : form.dietGoal ?? goalMode,
+        workoutDaysPerWeek: totalWorkouts,
+        activityLevel,
+        dietGoal: growingOrMinor ? 'maintain' : goalMode,
+        focusAreas:
+          merged.mainGoalMode === 'fight_camp'
+            ? ['body', 'face']
+            : merged.mainGoalMode === 'look_better'
+            ? ['face', 'body']
+            : ['face', 'body'],
         calorieGoal: calc.recommendedCalories,
         proteinTargetG: calc.proteinGrams,
         waterTargetMl: calc.waterMl,
+        aboutMe: {
+          ...(merged.aboutMe ?? {
+            countryRegion: 'Egypt',
+            localFoods: [],
+            trainingDisciplines: [],
+            tournamentUpcoming: false,
+            tournamentDate: null,
+            weightClassKg: null,
+            currentWeightKg: merged.weightKg,
+            targetWeightKg: null,
+            eatingPattern: '',
+            identityFocus: '',
+            supportStyle: '',
+            statuses: {},
+            deletedKeys: [],
+          }),
+          currentWeightKg: merged.weightKg,
+          tournamentUpcoming: !growingOrMinor && merged.mainGoalMode !== 'look_better',
+          tournamentDate: !growingOrMinor && merged.mainGoalMode !== 'look_better' ? tournamentDate || null : null,
+          targetWeightKg: !growingOrMinor && merged.mainGoalMode !== 'look_better' && hasValidTarget ? targetKgNum : null,
+          weightClassKg: !growingOrMinor && merged.mainGoalMode !== 'look_better' && hasValidTarget ? targetKgNum : null,
+          statuses: {
+            ...(merged.aboutMe?.statuses ?? {}),
+            training_camp: merged.mainGoalMode !== 'look_better' ? 'confirmed' : 'suggested',
+          },
+          updatedAt: Date.now(),
+        },
         onboardingDone: true,
         onboardingComplete: true,
         onboardingSkipped: false,
         updatedAt: Date.now(),
       };
+
       await db.settings.update('app', { tone }).catch(() => {});
       const verified = await saveAndVerifyProfile(updated);
       await regenerateProtocolFromProfile(verified);
-      showToast('Your plan is ready');
+      showToast('Autopilot ready');
       onClose();
     } catch {
-      showToast('Could not save your setup right now.', 'warning', {
-        actionLabel: 'Retry',
-        onAction: () => void finishSetup(),
-      });
+      showToast('Could not save your setup right now.', 'warning');
     } finally {
       setSaving(false);
     }
   };
 
-  const totalGuidedSteps = 5;
+  const applyNotSureForStep = () => {
+    if (step === 0) {
+      setForm((prev) => ({
+        ...prev,
+        age: 17,
+        ageExplicitlySet: false,
+        stillGrowing: 'unsure',
+      }));
+      setNotSureNote('Picked default: safe growing mode (weight-cut locked until age set).');
+      setTimeout(() => advance(), 350);
+    } else if (step === 1) {
+      setForm((prev) => ({ ...prev, heightCm: 176, weightKg: 74 }));
+      setNotSureNote('Picked default: 176 cm · 74 kg (editable anytime).');
+      setTimeout(() => advance(), 350);
+    } else if (step === 2) {
+      setForm((prev) => ({ ...prev, mainGoalMode: 'look_better' }));
+      setNotSureNote('Picked default: Look better & steady habits.');
+      setTimeout(() => advance(), 350);
+    } else if (step === 3) {
+      setForm((prev) => ({ ...prev, gymDaysPerWeek: 3, mmaDaysPerWeek: 2 }));
+      setNotSureNote('Picked default: 3 gym days · 2 MMA days per week.');
+      setTimeout(() => advance(), 350);
+    } else if (step === 4) {
+      setForm((prev) => ({ ...prev, usualWakeTime: '07:00', usualBedtime: '23:00' }));
+      if (showFightCampStep) {
+        setNotSureNote('Picked default: Wake 07:00 · Sleep 23:00.');
+        setTimeout(() => advance(), 350);
+      } else {
+        void finishSetup({ usualWakeTime: '07:00', usualBedtime: '23:00' });
+      }
+    } else if (step === 5) {
+      const defDate = addDays(toLocalDateKey(), 42);
+      const defKg = String(Math.max(52, Math.round((form.weightKg || 74) - 2)));
+      setTournamentDate(defDate);
+      setTargetWeightKg(defKg);
+      setForm((prev) => ({ ...prev, weighInRule: 'not_sure' }));
+      void finishSetup({ weighInRule: 'not_sure' });
+    }
+  };
+
+  const stepTitles = [
+    'How old are you?',
+    'Height & current weight',
+    'What is your main goal?',
+    'Training days per week',
+    'Wake & sleep times',
+    'Fight camp details',
+  ];
 
   return (
     <div
@@ -144,25 +234,13 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
         }
       }}
     >
-      <div className="w-full max-w-md rounded-[26px] bg-white dark:bg-[#0C121E]/95 dark:backdrop-blur-2xl border border-slate-200 dark:border-sky-400/20 p-5 max-h-[90dvh] overflow-y-auto overscroll-y-contain shadow-2xl space-y-4">
+      <div className="w-full max-w-md rounded-[26px] bg-white dark:bg-[#0C121E]/95 border border-slate-200 dark:border-sky-400/20 p-5 max-h-[90dvh] overflow-y-auto shadow-2xl space-y-4">
         <div className="flex items-center justify-between gap-2">
           <div>
             <p className="text-xs font-semibold text-[var(--accent)]">
-              {mode === 'quickstart' ? 'Quick start · 20 seconds' : `Step ${step + 1} of ${totalGuidedSteps}`}
+              Quick setup · Question {step + 1} of {totalSteps}
             </p>
-            <h2 className="font-display text-xl font-bold mt-0.5">
-              {mode === 'quickstart'
-                ? 'Set up your daily plan'
-                : step === 0
-                ? 'What is your name & age?'
-                : step === 1
-                ? 'Height & weight'
-                : step === 2
-                ? 'What is your main focus?'
-                : step === 3
-                ? 'Minutes per day'
-                : 'Skin & coach vibe'}
-            </h2>
+            <h2 className="font-display text-xl font-bold mt-0.5">{stepTitles[step]}</h2>
           </div>
 
           <div className="flex items-center gap-1.5">
@@ -187,371 +265,293 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
           </div>
         </div>
 
-        {/* Mode switcher: 2-question Quick start vs 5-question Guided */}
-        <div className="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-slate-100 dark:bg-white/5">
-          <button
-            type="button"
-            onClick={() => setMode('quickstart')}
-            className={`py-2 px-3 rounded-xl text-xs font-semibold min-h-[40px] flex items-center justify-center gap-1.5 transition ${
-              mode === 'quickstart'
-                ? 'bg-white dark:bg-[#131C2E] text-slate-900 dark:text-white shadow-sm'
-                : 'text-slate-500 dark:text-slate-400'
-            }`}
-          >
-            <Zap className="w-3.5 h-3.5 text-[var(--accent)]" /> Quick start (2 Qs)
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode('guided')}
-            className={`py-2 px-3 rounded-xl text-xs font-semibold min-h-[40px] transition ${
-              mode === 'guided'
-                ? 'bg-white dark:bg-[#131C2E] text-slate-900 dark:text-white shadow-sm'
-                : 'text-slate-500 dark:text-slate-400'
-            }`}
-          >
-            Guided (5 steps)
-          </button>
+        <div className="flex gap-1.5">
+          {Array.from({ length: totalSteps }).map((_, i) => (
+            <div
+              key={i}
+              className={`h-1.5 flex-1 rounded-full ${
+                i <= step ? 'bg-[var(--accent)]' : 'bg-slate-200 dark:bg-white/10'
+              }`}
+            />
+          ))}
         </div>
 
-        {mode === 'quickstart' ? (
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <label className="block text-sm font-semibold">1. Pick your focus areas</label>
-              <div className="space-y-2">
-                {FOCUS_OPTIONS.map((f) => {
-                  const active = (form.focusAreas ?? []).includes(f.id);
-                  return (
-                    <button
-                      key={f.id}
-                      type="button"
-                      onClick={() => toggleFocus(f.id)}
-                      className={`w-full p-3.5 rounded-2xl text-left border min-h-[54px] flex items-center justify-between gap-3 transition ${
-                        active
-                          ? 'bg-[var(--accent-soft)] border-[var(--accent)] text-slate-900 dark:text-white'
-                          : 'bg-slate-50 dark:bg-white/[0.03] border-slate-200 dark:border-white/10'
-                      }`}
-                    >
-                      <div>
-                        <p className="text-sm font-bold">{f.label}</p>
-                        <p className="text-xs text-slate-500 dark:text-slate-400">{f.sub}</p>
-                      </div>
-                      <span
-                        className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${
-                          active
-                            ? 'bg-[var(--accent)] text-[var(--accent-contrast)]'
-                            : 'border border-slate-300 dark:border-white/25'
-                        }`}
-                      >
-                        {active && <Check className="w-3.5 h-3.5" strokeWidth={3} />}
-                      </span>
-                    </button>
-                  );
-                })}
+        {/* Question 1: Age */}
+        {step === 0 && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Age</label>
+                <input
+                  type="number"
+                  min={10}
+                  max={99}
+                  value={form.age}
+                  onChange={(e) => {
+                    const age = Number(e.target.value);
+                    setForm({
+                      ...form,
+                      age,
+                      ageExplicitlySet: true,
+                      stillGrowing: age < 18 ? 'yes' : 'no',
+                    });
+                  }}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-base min-h-[44px]"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Name (optional)</label>
+                <input
+                  type="text"
+                  placeholder="First name"
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-base min-h-[44px]"
+                />
               </div>
             </div>
+            {form.age < 18 && (
+              <p className="p-3 rounded-xl bg-sky-500/10 border border-sky-500/25 text-xs text-slate-600 dark:text-slate-300">
+                Weight-cut tools stay off under 18. Nutrition and training stay full access.
+              </p>
+            )}
+          </div>
+        )}
 
-            <div className="space-y-2">
-              <label className="block text-sm font-semibold">2. Time per day</label>
+        {/* Question 2: Height + weight */}
+        {step === 1 && (
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Height (cm)</label>
+              <input
+                type="number"
+                min={100}
+                max={240}
+                value={form.heightCm}
+                onChange={(e) => setForm({ ...form, heightCm: Number(e.target.value) })}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-base min-h-[44px]"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Weight (kg)</label>
+              <input
+                type="number"
+                min={30}
+                max={240}
+                step="0.5"
+                value={form.weightKg}
+                onChange={(e) => setForm({ ...form, weightKg: Number(e.target.value) })}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-base min-h-[44px]"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Question 3: Main goal */}
+        {step === 2 && (
+          <div className="space-y-2">
+            {(
+              [
+                { id: 'fight_camp', title: 'Fight camp', desc: 'Safe pace to tournament date & training fuel' },
+                { id: 'look_better', title: 'Look better', desc: 'Face scan path, skincare, posture, leanness' },
+                { id: 'both', title: 'Both', desc: 'Fight camp + daily face, skin & habit stack' },
+              ] as Array<{ id: MainGoalMode; title: string; desc: string }>
+            ).map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setForm({ ...form, mainGoalMode: opt.id })}
+                className={`w-full p-3.5 rounded-2xl text-left border min-h-[54px] flex items-center justify-between gap-3 ${
+                  form.mainGoalMode === opt.id
+                    ? 'bg-[var(--accent-soft)] border-[var(--accent)]'
+                    : 'bg-slate-50 dark:bg-white/[0.03] border-slate-200 dark:border-white/10'
+                }`}
+              >
+                <div>
+                  <p className="text-sm font-bold">{opt.title}</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">{opt.desc}</p>
+                </div>
+                {form.mainGoalMode === opt.id && <Check className="w-4 h-4 text-[var(--accent)] shrink-0" />}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Question 4: Training days per week (gym, MMA) */}
+        {step === 3 && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Gym days / week</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={7}
+                  value={form.gymDaysPerWeek ?? 3}
+                  onChange={(e) => setForm({ ...form, gymDaysPerWeek: Math.max(0, Math.min(7, Number(e.target.value))) })}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-base min-h-[44px]"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">MMA days / week</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={7}
+                  value={form.mmaDaysPerWeek ?? 2}
+                  onChange={(e) => setForm({ ...form, mmaDaysPerWeek: Math.max(0, Math.min(7, Number(e.target.value))) })}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-base min-h-[44px]"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1.5">Coach vibe</label>
               <div className="grid grid-cols-3 gap-2">
-                {([15, 30, 60] as const).map((min) => (
+                {(['normal', 'chill', 'serious'] as const).map((t) => (
                   <button
-                    key={min}
+                    key={t}
                     type="button"
-                    onClick={() => setForm({ ...form, dailyTimeBudgetMin: min })}
-                    className={`py-3 rounded-2xl text-sm font-semibold min-h-[48px] transition ${
-                      form.dailyTimeBudgetMin === min
-                        ? 'bg-[var(--accent)] text-[var(--accent-contrast)]'
-                        : 'bg-slate-100 dark:bg-white/5'
+                    onClick={() => setTone(t)}
+                    className={`py-2.5 rounded-xl text-xs font-bold capitalize min-h-[44px] ${
+                      tone === t ? 'bg-[var(--accent)] text-[var(--accent-contrast)]' : 'bg-slate-100 dark:bg-white/5'
                     }`}
                   >
-                    {min} min
+                    {t}
                   </button>
                 ))}
               </div>
             </div>
-
-            <button
-              type="button"
-              disabled={saving}
-              onClick={finishSetup}
-              className="w-full py-3.5 rounded-2xl bg-[var(--accent)] text-[var(--accent-contrast)] text-sm font-bold min-h-[48px] flex items-center justify-center gap-2 disabled:opacity-60"
-            >
-              <Check className="w-4 h-4" />
-              {saving ? 'Building...' : 'Build my plan'}
-            </button>
           </div>
-        ) : (
-          <div className="space-y-4">
-            <div className="flex gap-1.5">
-              {Array.from({ length: totalGuidedSteps }).map((_, i) => (
-                <div
-                  key={i}
-                  className={`h-1.5 flex-1 rounded-full ${
-                    i <= step ? 'bg-[var(--accent)]' : 'bg-slate-200 dark:bg-white/10'
-                  }`}
-                />
-              ))}
+        )}
+
+        {/* Question 5: Wake and sleep times */}
+        {step === 4 && (
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Wake time</label>
+              <input
+                type="time"
+                value={form.usualWakeTime ?? '07:00'}
+                onChange={(e) => setForm({ ...form, usualWakeTime: e.target.value })}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-base min-h-[44px]"
+              />
             </div>
-
-            {step === 0 && (
-              <div className="space-y-3">
-                <div>
-                  <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">
-                    First name (optional)
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="Your first name"
-                    value={form.name}
-                    onChange={(e) => setForm({ ...form, name: e.target.value })}
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-base min-h-[44px]"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">
-                      Age
-                    </label>
-                    <input
-                      type="number"
-                      min={10}
-                      max={99}
-                      value={form.age}
-                      onChange={(e) => {
-                        const age = Number(e.target.value);
-                        setForm({
-                          ...form,
-                          age,
-                          stillGrowing: age < 18 ? 'yes' : form.stillGrowing,
-                        });
-                      }}
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-base min-h-[44px]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">
-                      Sex
-                    </label>
-                    <select
-                      value={form.sex}
-                      onChange={(e) =>
-                        setForm({ ...form, sex: e.target.value as UserProfile['sex'] })
-                      }
-                      className="w-full px-3 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-base min-h-[44px]"
-                    >
-                      <option value="male">Male</option>
-                      <option value="female">Female</option>
-                      <option value="other">Other</option>
-                    </select>
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1.5">
-                    Do you think you are still growing?
-                  </label>
-                  <div className="grid grid-cols-3 gap-2">
-                    {([
-                      { id: 'yes', label: 'Yes' },
-                      { id: 'no', label: 'No' },
-                      { id: 'unsure', label: 'Not sure' },
-                    ] as Array<{ id: StillGrowingStatus; label: string }>).map((opt) => (
-                      <button
-                        key={opt.id}
-                        type="button"
-                        onClick={() => setForm({ ...form, stillGrowing: opt.id })}
-                        className={`py-2.5 rounded-xl text-xs font-semibold min-h-[44px] ${
-                          form.stillGrowing === opt.id
-                            ? 'bg-[var(--accent)] text-[var(--accent-contrast)]'
-                            : 'bg-slate-100 dark:bg-white/5'
-                        }`}
-                      >
-                        {opt.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {step === 1 && (
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">
-                    Height (cm)
-                  </label>
-                  <input
-                    type="number"
-                    min={90}
-                    max={240}
-                    value={form.heightCm}
-                    onChange={(e) => setForm({ ...form, heightCm: Number(e.target.value) })}
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-base min-h-[44px]"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">
-                    Weight (kg)
-                  </label>
-                  <input
-                    type="number"
-                    min={25}
-                    max={250}
-                    step="0.5"
-                    value={form.weightKg}
-                    onChange={(e) => setForm({ ...form, weightKg: Number(e.target.value) })}
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-base min-h-[44px]"
-                  />
-                </div>
-                {isUnder18OrGrowing(form) && (
-                  <p className="col-span-2 p-3 rounded-2xl bg-sky-500/10 border border-sky-500/25 text-xs text-slate-600 dark:text-slate-300">
-                    Since you are under 18 or still growing, we hide weight-loss deficits and focus on food fuel, sleep, and activity.
-                  </p>
-                )}
-              </div>
-            )}
-
-            {step === 2 && (
-              <div className="space-y-2">
-                {FOCUS_OPTIONS.map((f) => {
-                  const active = (form.focusAreas ?? []).includes(f.id);
-                  return (
-                    <button
-                      key={f.id}
-                      type="button"
-                      onClick={() => toggleFocus(f.id)}
-                      className={`w-full p-3.5 rounded-2xl text-left border min-h-[54px] flex items-center justify-between gap-3 ${
-                        active
-                          ? 'bg-[var(--accent-soft)] border-[var(--accent)]'
-                          : 'bg-slate-50 dark:bg-white/[0.03] border-slate-200 dark:border-white/10'
-                      }`}
-                    >
-                      <div>
-                        <p className="text-sm font-bold">{f.label}</p>
-                        <p className="text-xs text-slate-500 dark:text-slate-400">{f.sub}</p>
-                      </div>
-                      {active && <Check className="w-4 h-4 text-[var(--accent)]" />}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-
-            {step === 3 && (
-              <div className="space-y-3">
-                <div className="grid grid-cols-2 gap-2.5">
-                  {([
-                    { min: 15, desc: '5 quick essentials' },
-                    { min: 30, desc: 'Balanced daily habits' },
-                    { min: 60, desc: 'Full skin + gym + mind' },
-                    { min: 90, desc: 'Deep focus mode' },
-                  ] as const).map((opt) => (
-                    <button
-                      key={opt.min}
-                      type="button"
-                      onClick={() => setForm({ ...form, dailyTimeBudgetMin: opt.min })}
-                      className={`p-3.5 rounded-2xl text-left border min-h-[64px] ${
-                        form.dailyTimeBudgetMin === opt.min
-                          ? 'bg-[var(--accent-soft)] border-[var(--accent)]'
-                          : 'bg-slate-50 dark:bg-white/[0.03] border-slate-200 dark:border-white/10'
-                      }`}
-                    >
-                      <p className="font-mono-num text-base font-bold">{opt.min} min/day</p>
-                      <p className="text-xs text-slate-500 dark:text-slate-400">{opt.desc}</p>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {step === 4 && (
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1.5">
-                    App voice tone
-                  </label>
-                  <div className="grid grid-cols-3 gap-2">
-                    {([
-                      { id: 'normal', title: 'Normal', desc: 'Clear & short' },
-                      { id: 'chill', title: 'Chill', desc: 'Friendly' },
-                      { id: 'serious', title: 'Serious', desc: 'Direct' },
-                    ] as const).map((opt) => (
-                      <button
-                        key={opt.id}
-                        type="button"
-                        onClick={() => setTone(opt.id)}
-                        className={`p-3 rounded-2xl text-left border min-h-[54px] ${
-                          tone === opt.id
-                            ? 'bg-[var(--accent-soft)] border-[var(--accent)]'
-                            : 'bg-slate-50 dark:bg-white/[0.03] border-slate-200 dark:border-white/10'
-                        }`}
-                      >
-                        <p className="text-sm font-bold">{opt.title}</p>
-                        <p className="text-[11px] text-slate-500 dark:text-slate-400">{opt.desc}</p>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1.5">
-                    Skin type (optional)
-                  </label>
-                  <div className="flex flex-wrap gap-1.5">
-                    {(['normal', 'oily', 'dry', 'combination', 'sensitive'] as SkinType[]).map((st) => (
-                      <button
-                        key={st}
-                        type="button"
-                        onClick={() => setForm({ ...form, skinType: st })}
-                        className={`px-3 py-2 rounded-xl text-xs font-semibold capitalize min-h-[40px] ${
-                          form.skinType === st
-                            ? 'bg-[var(--accent)] text-[var(--accent-contrast)]'
-                            : 'bg-slate-100 dark:bg-white/5'
-                        }`}
-                      >
-                        {st}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div className="flex items-center justify-between gap-3 pt-3 border-t border-slate-200 dark:border-white/10">
-              {step > 0 ? (
-                <button
-                  type="button"
-                  onClick={() => setStep(step - 1)}
-                  className="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 text-sm font-semibold min-h-[44px]"
-                >
-                  Back
-                </button>
-              ) : (
-                <div />
-              )}
-
-              {step < totalGuidedSteps - 1 ? (
-                <button
-                  type="button"
-                  onClick={() => setStep(step + 1)}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-[var(--accent)] text-[var(--accent-contrast)] text-sm font-semibold min-h-[44px]"
-                >
-                  Next
-                  <ArrowRight className="w-4 h-4" />
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  disabled={saving}
-                  onClick={finishSetup}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-[var(--accent)] text-[var(--accent-contrast)] text-sm font-semibold min-h-[44px] disabled:opacity-60"
-                >
-                  <Check className="w-4 h-4" />
-                  {saving ? 'Saving...' : 'Finish & start'}
-                </button>
-              )}
+            <div>
+              <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Sleep time</label>
+              <input
+                type="time"
+                value={form.usualBedtime ?? '23:00'}
+                onChange={(e) => setForm({ ...form, usualBedtime: e.target.value })}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-base min-h-[44px]"
+              />
             </div>
           </div>
         )}
+
+        {/* Question 6: Conditional Fight camp details */}
+        {step === 5 && showFightCampStep && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Tournament date</label>
+                <input
+                  type="date"
+                  value={tournamentDate}
+                  onChange={(e) => setTournamentDate(e.target.value)}
+                  className="w-full px-3 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-base min-h-[44px]"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">Target / class (kg)</label>
+                <input
+                  type="number"
+                  step="0.5"
+                  min={40}
+                  max={180}
+                  value={targetWeightKg}
+                  onChange={(e) => setTargetWeightKg(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-base min-h-[44px]"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1.5">
+                Do you know the weigh-in rule?
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                {(
+                  [
+                    { id: 'same_day', label: 'Same-day' },
+                    { id: 'day_before', label: 'Day-before' },
+                    { id: 'not_sure', label: 'Not sure' },
+                  ] as Array<{ id: WeighInRule; label: string }>
+                ).map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setForm({ ...form, weighInRule: opt.id })}
+                    className={`py-2.5 px-2 rounded-xl text-xs font-semibold min-h-[44px] ${
+                      form.weighInRule === opt.id
+                        ? 'bg-[var(--accent)] text-[var(--accent-contrast)]'
+                        : 'bg-slate-100 dark:bg-white/5'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {notSureNote && (
+          <p className="p-2.5 rounded-xl bg-[var(--accent-soft)] text-xs font-semibold text-[var(--accent)]">
+            {notSureNote}
+          </p>
+        )}
+
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-200 dark:border-white/10">
+          <button
+            type="button"
+            disabled={saving}
+            onClick={applyNotSureForStep}
+            className="px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 text-xs font-semibold min-h-[44px] inline-flex items-center gap-1.5"
+          >
+            <HelpCircle className="w-3.5 h-3.5 text-[var(--accent)]" /> Not sure
+          </button>
+
+          <div className="flex items-center gap-2">
+            {step > 0 && (
+              <button
+                type="button"
+                onClick={() => setStep((s) => Math.max(0, s - 1))}
+                className="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 text-sm font-semibold min-h-[44px]"
+              >
+                Back
+              </button>
+            )}
+
+            {step < totalSteps - 1 ? (
+              <button
+                type="button"
+                onClick={advance}
+                className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-2xl bg-[var(--accent)] text-[var(--accent-contrast)] text-sm font-bold min-h-[44px]"
+              >
+                Next <ArrowRight className="w-4 h-4" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => void finishSetup()}
+                className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-2xl bg-[var(--accent)] text-[var(--accent-contrast)] text-sm font-bold min-h-[44px] disabled:opacity-60"
+              >
+                <Check className="w-4 h-4" />
+                {saving ? 'Saving...' : 'Start plan'}
+              </button>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

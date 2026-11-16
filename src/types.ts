@@ -40,6 +40,38 @@ export type GymLevel = 'beginner' | 'intermediate' | 'advanced';
 
 export type FaceShape = 'oval' | 'square' | 'round' | 'diamond' | 'heart' | 'oblong';
 
+export type TrainingDayType = 'gym' | 'mma' | 'sparring' | 'rest';
+
+export type MainGoalMode = 'fight_camp' | 'look_better' | 'both';
+
+export type WeighInRule = 'same_day' | 'day_before' | 'not_sure';
+
+export type AboutMeItemKey =
+  | 'location_foods'
+  | 'training_camp'
+  | 'eating_pattern'
+  | 'identity_focus'
+  | 'support_style';
+
+export type AboutMeConfirmationStatus = 'suggested' | 'confirmed' | 'edited';
+
+export interface AboutMeProfile {
+  countryRegion: string;
+  localFoods: string[];
+  trainingDisciplines: string[];
+  tournamentUpcoming: boolean;
+  tournamentDate: string | null;
+  weightClassKg: number | null;
+  currentWeightKg: number | null;
+  targetWeightKg: number | null;
+  eatingPattern: string;
+  identityFocus: string;
+  supportStyle: string;
+  statuses: Partial<Record<AboutMeItemKey, AboutMeConfirmationStatus>>;
+  deletedKeys: AboutMeItemKey[];
+  updatedAt?: number;
+}
+
 export interface UserProfile {
   id: 'me';
   name: string;
@@ -64,11 +96,15 @@ export interface UserProfile {
   hairConcerns: string[];
   gymLevel: GymLevel;
   workoutDaysPerWeek: number;
+  gymDaysPerWeek?: number;
+  mmaDaysPerWeek?: number;
   equipment: 'none' | 'home_dumbbells' | 'full_gym';
   targetSleepHours: number;
   sunExposure: 'low' | 'moderate' | 'high';
   goals: string[];
+  mainGoalMode?: MainGoalMode;
   dietGoal?: DietGoalMode;
+  weighInRule?: WeighInRule;
   focusAreas?: FocusAreaId[];
   mindSubGoals?: MindSubGoalId[];
   dailyTimeBudgetMin: 15 | 30 | 60 | 90;
@@ -78,6 +114,7 @@ export interface UserProfile {
   waterTargetMl: number;
   stepTarget?: number;
   detectedFaceShape: FaceShape | null;
+  aboutMe?: AboutMeProfile;
   onboardingDone: boolean;
   onboardingComplete?: boolean;
   onboardingSkipped: boolean;
@@ -108,6 +145,10 @@ export interface ReminderPreferences {
   quietHoursStart?: string;
   quietHoursEnd?: string;
   maxPerDay?: number;
+  mewingCheckEnabled?: boolean;
+  neckSetEnabled?: boolean;
+  neckSetTime?: string;
+  showDetailsInNotifications?: boolean;
 }
 
 export interface AppSettings {
@@ -130,6 +171,18 @@ export interface AppSettings {
   dhikrTaskEnabled?: boolean;
   prayerTimes?: Record<PrayerKey, string>;
   tongueReminderTimes?: string[];
+  arabicHintsEnabled?: boolean;
+  arabicIndicDigits?: boolean;
+  dismissedPatternIds?: string[];
+  trainingWindowStart?: string;
+  trainingWindowEnd?: string;
+  relaxedFridayMode?: boolean;
+  roughDayDates?: string[];
+  dayModeByDate?: Record<string, TrainingDayType>;
+  healthyFrameLastShownDate?: string | null;
+  celebratedMilestones?: string[];
+  lastAutoPlanDate?: string | null;
+  quickMealLastInputs?: { name?: string; calories: string; protein: string; sodium: string };
   pinHash: string | null;
   reminders: ReminderPreferences;
   lastWeeklyReviewDate: string | null;
@@ -242,6 +295,8 @@ export interface DailyLog {
   mewingHours?: number;
   chewingMinutes?: number;
   postureScore?: number;
+  earShoulderAngleDeg?: number | null;
+  postureCheckPhotoDate?: string;
   morningPuffiness?: 'none' | 'mild' | 'noticeable' | null;
   jawDiscomfort?: boolean;
   prayersCompleted?: Partial<Record<PrayerKey, boolean>>;

@@ -4,24 +4,29 @@ import {
   Award,
   Bell,
   BellOff,
+  Camera,
   Check,
   ChevronDown,
   ChevronUp,
   Flame,
   Info,
   MessageCircle,
+  Moon,
   Pencil,
   Play,
   Plus,
+  RotateCcw,
   Ruler,
   ShieldAlert,
   Sparkles,
+  Sun,
   Target,
   Trash2,
   TrendingUp,
 } from 'lucide-react';
 import {
   db,
+  getOrCreateDailyLog,
   recalculateXpAndBadges,
   saveAndVerifyProfile,
   toggleGrowthCheckoff,
@@ -33,6 +38,8 @@ import {
   DAILY_GROWTH_HABITS,
   GROWTH_SUPPLEMENTS_INFO,
   SEVEN_DAY_GROWTH_PROGRAMS,
+  STAND_TALL_FINISHED_BANNER,
+  STAND_TALL_PLAN_ITEMS,
   STAND_TALLER_TIPS,
 } from '../data/growthProgram';
 import {
@@ -50,6 +57,7 @@ import {
 import { ExerciseDemoLinks } from '../components/ui/ExerciseDemoLinks';
 import { useToast } from '../components/ui/ToastProvider';
 import type {
+  DailyLog,
   GrowthCheckoffEntry,
   GrowthProgramProgress,
   HeightLogEntry,
@@ -68,6 +76,7 @@ interface GrowScreenProps {
   heightLogs: HeightLogEntry[];
   growthCheckoffs: GrowthCheckoffEntry[];
   growthPrograms: GrowthProgramProgress[];
+  dailyLogs?: DailyLog[];
   onOpenHeightLog: () => void;
   onAskCoach: () => void;
 }
@@ -101,6 +110,7 @@ export const GrowScreen: React.FC<GrowScreenProps> = ({
   heightLogs,
   growthCheckoffs,
   growthPrograms,
+  dailyLogs = [],
   onOpenHeightLog,
   onAskCoach,
 }) => {
@@ -183,6 +193,18 @@ export const GrowScreen: React.FC<GrowScreenProps> = ({
     dayNumber: number;
   } | null>(null);
 
+  // Posture-from-Photo interactive state (strictly local memory, zero network upload)
+  const [posturePhotoUrl, setPosturePhotoUrl] = useState<string | null>(null);
+  const [earPt, setEarPt] = useState<{ x: number; y: number } | null>(null);
+  const [shoulderPt, setShoulderPt] = useState<{ x: number; y: number } | null>(null);
+  const [manualAngleInput, setManualAngleInput] = useState('');
+
+  useEffect(() => {
+    return () => {
+      if (posturePhotoUrl) URL.revokeObjectURL(posturePhotoUrl);
+    };
+  }, [posturePhotoUrl]);
+
   // Derived Growth Calculations (strictly real logs & approximate WHO 2007 curves)
   const outlook = useMemo(
     () => computeMidParentalOutlook(profile.sex, profile.fatherHeightCm, profile.motherHeightCm),
@@ -214,15 +236,60 @@ export const GrowScreen: React.FC<GrowScreenProps> = ({
     );
   }, [profile.dreamHeightCm, currentHeightCm, outlook, probablyFinishedGrowing]);
 
+  // Morning vs Evening height comparison from real logged readings
+  const morningVsEvening = useMemo(() => {
+    const mornings = sortedLogsDesc.filter((l) => l.timeOfDay === 'morning');
+    const evenings = sortedLogsDesc.filter((l) => l.timeOfDay === 'evening');
+    const latestMorning = mornings[0] ?? null;
+    const latestEvening = evenings[0] ?? null;
+    const diffCm =
+      latestMorning && latestEvening
+        ? Number((latestMorning.heightCm - latestEvening.heightCm).toFixed(1))
+        : null;
+    return { latestMorning, latestEvening, diffCm };
+  }, [sortedLogsDesc]);
+
+  // Computed ear-shoulder angle from tapped points (normalized 0-100 coordinates)
+  const measuredAngleDeg = useMemo(() => {
+    if (earPt && shoulderPt) {
+      const dx = Math.abs(earPt.x - shoulderPt.x);
+      const dy = Math.max(2, Math.abs(shoulderPt.y - earPt.y));
+      return Math.min(45, Math.round((Math.atan2(dx, dy) * 180) / Math.PI));
+    }
+    const parsed = Number(manualAngleInput);
+    if (manualAngleInput.trim() && Number.isFinite(parsed) && parsed >= 0 && parsed <= 45) {
+      return Math.round(parsed);
+    }
+    return null;
+  }, [earPt, shoulderPt, manualAngleInput]);
+
+  const postureHistory = useMemo(
+    () =>
+      dailyLogs
+        .filter((l) => typeof l.earShoulderAngleDeg === 'number')
+        .sort((a, b) => b.date.localeCompare(a.date))
+        .slice(0, 7),
+    [dailyLogs]
+  );
+
   // Daily Growth Checkoffs -> Score % & Streak
   const todayCheckedSet = useMemo(() => {
     return new Set(growthCheckoffs.filter((c) => c.date === todayKey).map((c) => c.habitId));
   }, [growthCheckoffs, todayKey]);
 
+  const activeRoutineIds = useMemo(
+    () =>
+      probablyFinishedGrowing
+        ? STAND_TALL_PLAN_ITEMS.map((item) => item.id)
+        : DAILY_GROWTH_HABITS.map((h) => h.id),
+    [probablyFinishedGrowing]
+  );
+
   const growthHabitsScorePct = useMemo(() => {
-    if (DAILY_GROWTH_HABITS.length === 0) return 0;
-    return Math.round((todayCheckedSet.size / DAILY_GROWTH_HABITS.length) * 100);
-  }, [todayCheckedSet]);
+    if (activeRoutineIds.length === 0) return 0;
+    const doneCount = activeRoutineIds.filter((id) => todayCheckedSet.has(id)).length;
+    return Math.round((doneCount / activeRoutineIds.length) * 100);
+  }, [activeRoutineIds, todayCheckedSet]);
 
   const growthStreakDays = useMemo(() => {
     const datesWithAny = new Set(growthCheckoffs.map((c) => c.date));
@@ -251,6 +318,22 @@ export const GrowScreen: React.FC<GrowScreenProps> = ({
     }
     return map;
   }, [growthPrograms]);
+
+  const handleSavePostureAngle = async () => {
+    if (measuredAngleDeg === null) {
+      showToast('Tap Ear and Shoulder on a side photo (or enter degrees 0–45).', 'warning');
+      return;
+    }
+    const postureScore = Math.max(20, Math.min(100, Math.round(100 - Math.max(0, measuredAngleDeg - 4) * 2.4)));
+    await getOrCreateDailyLog(todayKey);
+    await db.dailyLogs.update(todayKey, {
+      earShoulderAngleDeg: measuredAngleDeg,
+      postureCheckPhotoDate: todayKey,
+      postureScore,
+      updatedAt: Date.now(),
+    });
+    showToast(`Saved posture check: ${measuredAngleDeg}° offset (${postureScore}/100)`);
+  };
 
   // Save handlers
   const handleSaveParents = async (e: React.FormEvent) => {
@@ -527,16 +610,213 @@ export const GrowScreen: React.FC<GrowScreenProps> = ({
         </div>
       </section>
 
-      {/* 2. POSTURE GAIN BANNER */}
+      {/* 2. HONEST FINISHED-GROWTH OR POSTURE BANNER */}
       <section className="ascend-card p-4 border-l-4 border-l-[var(--accent)] flex items-start gap-3">
         <Info className="w-5 h-5 text-[var(--accent)] shrink-0 mt-0.5" />
         <div className="space-y-1 text-xs sm:text-sm text-slate-700 dark:text-slate-200 leading-relaxed">
           <p className="font-semibold">
-            Posture gain: Good posture and spine stretching can give back up to about 1–2 cm of apparent height after sitting.
+            {probablyFinishedGrowing
+              ? STAND_TALL_FINISHED_BANNER
+              : 'Posture gain: Good posture and spine stretching can give back up to about 1–2 cm of apparent height after sitting.'}
           </p>
           <p className="text-xs text-slate-500 dark:text-slate-400">
             Important: stretching and dead hangs temporarily decompress spinal discs and fix slouching — this is <strong>not bone growth</strong>.
           </p>
+        </div>
+      </section>
+
+      {/* 2B. MORNING VS EVENING HEIGHT CHECK & POSTURE PHOTO CHECK */}
+      <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Morning vs Evening Height Check */}
+        <div className="ascend-card p-5 space-y-3">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <h2 className="font-display text-base font-bold">Morning vs Evening Check</h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Spinal discs compress during the day — people usually measure 1–2 cm taller in the morning.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onOpenHeightLog}
+              className="px-3 py-2 rounded-xl bg-slate-100 dark:bg-white/5 text-xs font-bold min-h-[44px] shrink-0"
+            >
+              + Log
+            </button>
+          </div>
+          <div className="grid grid-cols-3 gap-2 text-xs">
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10">
+              <p className="inline-flex items-center gap-1 text-[11px] text-amber-500 font-semibold">
+                <Sun className="w-3.5 h-3.5" /> Morning
+              </p>
+              <p className="font-mono-num text-sm font-bold mt-1">
+                {morningVsEvening.latestMorning
+                  ? `${morningVsEvening.latestMorning.heightCm.toFixed(1)} cm`
+                  : 'Not logged'}
+              </p>
+            </div>
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10">
+              <p className="inline-flex items-center gap-1 text-[11px] text-sky-400 font-semibold">
+                <Moon className="w-3.5 h-3.5" /> Evening
+              </p>
+              <p className="font-mono-num text-sm font-bold mt-1">
+                {morningVsEvening.latestEvening
+                  ? `${morningVsEvening.latestEvening.heightCm.toFixed(1)} cm`
+                  : 'Not logged'}
+              </p>
+            </div>
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10">
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">Daily delta</p>
+              <p className="font-mono-num text-sm font-bold text-[var(--accent)] mt-1">
+                {morningVsEvening.diffCm !== null
+                  ? `${morningVsEvening.diffCm > 0 ? '+' : ''}${morningVsEvening.diffCm} cm`
+                  : 'Need both'}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Posture-from-Photo Check (Ear-Shoulder Angle) */}
+        <div className="ascend-card p-5 space-y-3">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <h2 className="font-display text-base font-bold flex items-center gap-2">
+                <Camera className="w-4 h-4 text-[var(--accent)]" /> Posture-from-Photo Check
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Side photo stays on-device. Tap your <strong>Ear</strong>, then your <strong>Shoulder</strong> to measure forward-head angle.
+              </p>
+            </div>
+            <label className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-bold cursor-pointer min-h-[44px] shrink-0">
+              <Camera className="w-3.5 h-3.5" /> Pick photo
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = '';
+                  if (!file) return;
+                  if (posturePhotoUrl) URL.revokeObjectURL(posturePhotoUrl);
+                  setPosturePhotoUrl(URL.createObjectURL(file));
+                  setEarPt(null);
+                  setShoulderPt(null);
+                }}
+                className="hidden"
+              />
+            </label>
+          </div>
+
+          {posturePhotoUrl && (
+            <div className="space-y-2">
+              <p className="text-[11px] font-semibold text-[var(--accent)]">
+                {!earPt
+                  ? 'Step 1: Tap center of your Ear on the photo'
+                  : !shoulderPt
+                  ? 'Step 2: Tap center of your Shoulder joint on the photo'
+                  : `Measured ear-shoulder plumb offset: ${measuredAngleDeg ?? 0}°`}
+              </p>
+              <div
+                className="relative w-full max-w-[260px] mx-auto rounded-2xl overflow-hidden border border-slate-200 dark:border-white/10 cursor-crosshair select-none"
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const x = ((e.clientX - rect.left) / rect.width) * 100;
+                  const y = ((e.clientY - rect.top) / rect.height) * 100;
+                  if (!earPt) {
+                    setEarPt({ x, y });
+                  } else if (!shoulderPt) {
+                    setShoulderPt({ x, y });
+                  } else {
+                    setEarPt({ x, y });
+                    setShoulderPt(null);
+                  }
+                }}
+              >
+                <img
+                  src={posturePhotoUrl}
+                  alt="Side posture check preview"
+                  className="w-full h-auto block"
+                />
+                <svg
+                  viewBox="0 0 100 100"
+                  preserveAspectRatio="none"
+                  className="absolute inset-0 w-full h-full pointer-events-none"
+                >
+                  {shoulderPt && (
+                    <line
+                      x1={shoulderPt.x}
+                      y1={0}
+                      x2={shoulderPt.x}
+                      y2={100}
+                      stroke="rgba(255,255,255,0.5)"
+                      strokeDasharray="2 2"
+                      strokeWidth="0.6"
+                    />
+                  )}
+                  {earPt && shoulderPt && (
+                    <line
+                      x1={earPt.x}
+                      y1={earPt.y}
+                      x2={shoulderPt.x}
+                      y2={shoulderPt.y}
+                      stroke="#34D399"
+                      strokeWidth="1.2"
+                    />
+                  )}
+                  {earPt && <circle cx={earPt.x} cy={earPt.y} r="2.5" fill="#38BDF8" stroke="#fff" strokeWidth="0.6" />}
+                  {shoulderPt && <circle cx={shoulderPt.x} cy={shoulderPt.y} r="2.5" fill="#34D399" stroke="#fff" strokeWidth="0.6" />}
+                </svg>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setEarPt(null);
+                  setShoulderPt(null);
+                }}
+                className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500 hover:text-[var(--accent)] min-h-[36px]"
+              >
+                <RotateCcw className="w-3 h-3" /> Reset markers
+              </button>
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-2">
+            {!posturePhotoUrl && (
+              <input
+                type="number"
+                min={0}
+                max={45}
+                value={manualAngleInput}
+                onChange={(e) => setManualAngleInput(e.target.value)}
+                placeholder="Or enter angle deg (e.g. 8)"
+                className="flex-1 min-w-[140px] px-3 py-2 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs font-mono-num min-h-[44px]"
+              />
+            )}
+            <button
+              type="button"
+              onClick={handleSavePostureAngle}
+              className="px-4 py-2 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-bold min-h-[44px]"
+            >
+              Save posture check{measuredAngleDeg !== null ? ` (${measuredAngleDeg}°)` : ''}
+            </button>
+          </div>
+
+          {postureHistory.length > 0 && (
+            <div className="pt-2 border-t border-slate-200 dark:border-white/10 space-y-1">
+              <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                Recent ear-shoulder angle trend (lower offset = taller stack):
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {postureHistory.map((log) => (
+                  <span
+                    key={log.date}
+                    className="px-2 py-1 rounded-lg bg-slate-100 dark:bg-white/5 font-mono-num text-[11px]"
+                  >
+                    {log.date.slice(5)}: <strong>{log.earShoulderAngleDeg}°</strong>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </section>
 
@@ -903,86 +1183,160 @@ export const GrowScreen: React.FC<GrowScreenProps> = ({
           </div>
         </div>
 
-        <div className="space-y-2.5">
-          {DAILY_GROWTH_HABITS.map((habit) => {
-            const done = todayCheckedSet.has(habit.id);
-            const open = expandedHabitId === habit.id;
-            return (
-              <div
-                key={habit.id}
-                className={`rounded-2xl border p-3.5 transition ${
-                  done
-                    ? 'bg-emerald-500/[0.06] border-emerald-500/30'
-                    : 'bg-slate-50 dark:bg-white/[0.03] border-slate-200 dark:border-white/10'
-                }`}
-              >
-                <div className="flex items-start gap-3">
-                  <button
-                    type="button"
-                    onClick={() => toggleGrowthCheckoff(todayKey, habit.id, habit.xp)}
-                    aria-label={done ? `Uncheck ${habit.title}` : `Check ${habit.title}`}
-                    className={`mt-0.5 w-7 h-7 rounded-xl border-2 flex items-center justify-center shrink-0 min-h-[44px] min-w-[44px] -m-1.5 transition ${
-                      done
-                        ? 'bg-emerald-500 border-emerald-500 text-white'
-                        : 'border-slate-300 dark:border-white/25 bg-transparent'
-                    }`}
-                  >
-                    {done && <Check className="w-4 h-4 stroke-[3]" />}
-                  </button>
+        {probablyFinishedGrowing ? (
+          <div className="space-y-2.5">
+            <div className="p-3 rounded-xl bg-[var(--accent-soft)] border border-[var(--accent)]/25 text-xs font-semibold text-[var(--accent)]">
+              Stand Tall Plan active — spinal decompression, upper-back alignment, sleep &amp; daily steps.
+            </div>
+            {STAND_TALL_PLAN_ITEMS.map((item) => {
+              const done = todayCheckedSet.has(item.id);
+              const open = expandedHabitId === item.id;
+              return (
+                <div
+                  key={item.id}
+                  className={`rounded-2xl border p-3.5 transition ${
+                    done
+                      ? 'bg-emerald-500/[0.06] border-emerald-500/30'
+                      : 'bg-slate-50 dark:bg-white/[0.03] border-slate-200 dark:border-white/10'
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    <button
+                      type="button"
+                      onClick={() => toggleGrowthCheckoff(todayKey, item.id, 12)}
+                      aria-label={done ? `Uncheck ${item.title}` : `Check ${item.title}`}
+                      className={`mt-0.5 w-7 h-7 rounded-xl border-2 flex items-center justify-center shrink-0 min-h-[44px] min-w-[44px] -m-1.5 transition ${
+                        done
+                          ? 'bg-emerald-500 border-emerald-500 text-white'
+                          : 'border-slate-300 dark:border-white/25 bg-transparent'
+                      }`}
+                    >
+                      {done && <Check className="w-4 h-4 stroke-[3]" />}
+                    </button>
 
-                  <div className="flex-1 min-w-0 space-y-1">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <p className={`text-sm font-semibold ${done ? 'line-through opacity-75' : ''}`}>
-                        {habit.title}
-                      </p>
-                      <span
-                        className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
-                          habit.evidence === 'Proven'
-                            ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300'
-                            : habit.evidence === 'Likely works'
-                            ? 'bg-sky-500/15 text-sky-600 dark:text-sky-300'
-                            : 'bg-amber-500/15 text-amber-600 dark:text-amber-300'
-                        }`}
-                      >
-                        {habit.evidence === 'Not proven' ? 'Posture / Not bone growth' : habit.evidence}
-                      </span>
-                    </div>
-
-                    <p className="text-xs text-slate-500 dark:text-slate-400">{habit.dose}</p>
-
-                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <div className="flex-1 min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className={`text-sm font-semibold ${done ? 'line-through opacity-75' : ''}`}>
+                          {item.title}
+                        </p>
+                        <span
+                          className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                            item.evidence === 'Proven'
+                              ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300'
+                              : 'bg-sky-500/15 text-sky-600 dark:text-sky-300'
+                          }`}
+                        >
+                          {item.evidence}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">{item.dose}</p>
                       <button
                         type="button"
-                        onClick={() => setExpandedHabitId(open ? null : habit.id)}
+                        onClick={() => setExpandedHabitId(open ? null : item.id)}
                         className="text-xs font-semibold text-[var(--accent)] hover:underline min-h-[36px] inline-flex items-center gap-1"
                       >
-                        {open ? 'Hide why & form' : 'Ask why & watch'}
+                        {open ? 'Hide form & links' : 'Watch & why'}
                         {open ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                       </button>
                     </div>
                   </div>
-                </div>
-
-                {open && (
-                  <div className="mt-3 pt-3 border-t border-slate-200 dark:border-white/10 space-y-2.5 text-xs">
-                    <p className="text-slate-700 dark:text-slate-200 font-medium">
-                      {habit.evidenceDetail}
-                    </p>
-                    <p className="text-slate-600 dark:text-slate-300 leading-relaxed">{habit.why}</p>
-                    {habit.watchQuery && (
+                  {open && (
+                    <div className="mt-3 pt-3 border-t border-slate-200 dark:border-white/10 space-y-2.5 text-xs">
+                      <p className="text-slate-600 dark:text-slate-300 leading-relaxed">{item.why}</p>
                       <ExerciseDemoLinks
-                        title={habit.title}
-                        slug={habit.slug}
-                        searchQuery={habit.watchQuery}
-                        doseLabel={habit.dose}
+                        title={item.title}
+                        slug={item.id}
+                        searchQuery={item.watchQuery}
+                        doseLabel={item.dose}
                       />
-                    )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="space-y-2.5">
+            {DAILY_GROWTH_HABITS.map((habit) => {
+              const done = todayCheckedSet.has(habit.id);
+              const open = expandedHabitId === habit.id;
+              return (
+                <div
+                  key={habit.id}
+                  className={`rounded-2xl border p-3.5 transition ${
+                    done
+                      ? 'bg-emerald-500/[0.06] border-emerald-500/30'
+                      : 'bg-slate-50 dark:bg-white/[0.03] border-slate-200 dark:border-white/10'
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    <button
+                      type="button"
+                      onClick={() => toggleGrowthCheckoff(todayKey, habit.id, habit.xp)}
+                      aria-label={done ? `Uncheck ${habit.title}` : `Check ${habit.title}`}
+                      className={`mt-0.5 w-7 h-7 rounded-xl border-2 flex items-center justify-center shrink-0 min-h-[44px] min-w-[44px] -m-1.5 transition ${
+                        done
+                          ? 'bg-emerald-500 border-emerald-500 text-white'
+                          : 'border-slate-300 dark:border-white/25 bg-transparent'
+                      }`}
+                    >
+                      {done && <Check className="w-4 h-4 stroke-[3]" />}
+                    </button>
+
+                    <div className="flex-1 min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className={`text-sm font-semibold ${done ? 'line-through opacity-75' : ''}`}>
+                          {habit.title}
+                        </p>
+                        <span
+                          className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                            habit.evidence === 'Proven'
+                              ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300'
+                              : habit.evidence === 'Likely works'
+                              ? 'bg-sky-500/15 text-sky-600 dark:text-sky-300'
+                              : 'bg-amber-500/15 text-amber-600 dark:text-amber-300'
+                          }`}
+                        >
+                          {habit.evidence === 'Not proven' ? 'Posture / Not bone growth' : habit.evidence}
+                        </span>
+                      </div>
+
+                      <p className="text-xs text-slate-500 dark:text-slate-400">{habit.dose}</p>
+
+                      <div className="flex flex-wrap items-center gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => setExpandedHabitId(open ? null : habit.id)}
+                          className="text-xs font-semibold text-[var(--accent)] hover:underline min-h-[36px] inline-flex items-center gap-1"
+                        >
+                          {open ? 'Hide why & form' : 'Ask why & watch'}
+                          {open ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                    </div>
                   </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+
+                  {open && (
+                    <div className="mt-3 pt-3 border-t border-slate-200 dark:border-white/10 space-y-2.5 text-xs">
+                      <p className="text-slate-700 dark:text-slate-200 font-medium">
+                        {habit.evidenceDetail}
+                      </p>
+                      <p className="text-slate-600 dark:text-slate-300 leading-relaxed">{habit.why}</p>
+                      {habit.watchQuery && (
+                        <ExerciseDemoLinks
+                          title={habit.title}
+                          slug={habit.slug}
+                          searchQuery={habit.watchQuery}
+                          doseLabel={habit.dose}
+                        />
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </section>
 
       {/* 8. SUPPLEMENTS AND "TRICKS" (Info cards only — never tasks) */}

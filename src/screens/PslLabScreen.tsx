@@ -20,7 +20,7 @@ import {
 import { daysBetween, toLocalDateKey } from '../lib/date';
 import { BeforeAfterSlider, SmoothAreaChart } from '../components/ui/Charts';
 import { ErrorBoundary } from '../components/ui/ErrorBoundary';
-import type { AppSettings, FaceScanResult } from '../types';
+import type { AppSettings, FaceScanResult, UserProfile } from '../types';
 
 const GuidedFaceScanner = lazy(() =>
   import('../components/psl/GuidedFaceScanner').then((m) => ({ default: m.GuidedFaceScanner }))
@@ -35,10 +35,20 @@ const FacialAestheticsReport = lazy(() =>
 interface PslLabScreenProps {
   scans: FaceScanResult[];
   settings: AppSettings;
+  profile?: UserProfile;
   onBack?: () => void;
+  onOpenExercises?: () => void;
+  onOpenDebloatFood?: () => void;
 }
 
-export const PslLabScreen: React.FC<PslLabScreenProps> = ({ scans, settings, onBack }) => {
+export const PslLabScreen: React.FC<PslLabScreenProps> = ({
+  scans,
+  settings,
+  profile,
+  onBack,
+  onOpenExercises,
+  onOpenDebloatFood,
+}) => {
   const [subTab, setSubTab] = useState<'scan' | 'results' | 'journal'>(
     scans.length > 0 ? 'results' : 'scan'
   );
@@ -203,6 +213,7 @@ export const PslLabScreen: React.FC<PslLabScreenProps> = ({ scans, settings, onB
                 <FacialAestheticsReport
                   activeScan={activeScan}
                   scans={scans}
+                  profile={profile}
                   slangTierNames={settings.slangTierNames ?? true}
                   includeSkinScore={settings.includeSkinScoreInScans !== false}
                   onSelectScan={(id) => setSelectedResultId(id)}
@@ -214,6 +225,9 @@ export const PslLabScreen: React.FC<PslLabScreenProps> = ({ scans, settings, onB
                     setAugmentScan(scan);
                     setSubTab('scan');
                   }}
+                  onOpenExercises={onOpenExercises}
+                  onOpenDebloatFood={onOpenDebloatFood}
+                  onOpenCompare={() => setSubTab('journal')}
                 />
               </Suspense>
             </ErrorBoundary>
@@ -226,14 +240,19 @@ export const PslLabScreen: React.FC<PslLabScreenProps> = ({ scans, settings, onB
         <div key="journal-tab" className="ascend-panel-enter space-y-4">
           <div className="ascend-card p-4 flex flex-wrap items-center justify-between gap-3">
             <div className="text-xs">
-              <p className="font-semibold text-sm">
-                14-Day Rescan Cadence{' '}
-                {daysSinceLastScan !== null
-                  ? daysSinceLastScan >= 14
-                    ? '— Ready for next check-in'
-                    : `— ${14 - daysSinceLastScan} days until next recommended scan`
-                  : '— Log your baseline scan'}
-              </p>
+              {(() => {
+                const cadenceDays = settings.reminders?.rescanDays >= 28 ? 28 : 14;
+                return (
+                  <p className="font-semibold text-sm">
+                    {cadenceDays}-Day Rescan Cadence{' '}
+                    {daysSinceLastScan !== null
+                      ? daysSinceLastScan >= cadenceDays
+                        ? '— Ready for next check-in'
+                        : `— ${cadenceDays - daysSinceLastScan} days until next recommended scan`
+                      : '— Log your baseline scan'}
+                  </p>
+                );
+              })()}
               <p className="text-slate-500 dark:text-slate-400 mt-0.5">
                 Me vs. me tracking only. Thumbnails are optional; landmark measurements always save locally.
               </p>
@@ -305,20 +324,38 @@ export const PslLabScreen: React.FC<PslLabScreenProps> = ({ scans, settings, onB
                     afterLabel={thumbnailScans[compareB]?.date || 'Later'}
                   />
                   {(() => {
-                    const match = evaluateScanComparisonMatch(
-                      thumbnailScans[compareA],
-                      thumbnailScans[compareB]
-                    );
+                    const scanA = thumbnailScans[compareA];
+                    const scanB = thumbnailScans[compareB];
+                    const match = evaluateScanComparisonMatch(scanA, scanB);
+                    const estDelta =
+                      scanA && scanB
+                        ? Number((scanB.pslEstimate - scanA.pslEstimate).toFixed(1))
+                        : null;
                     return (
-                      <div
-                        className={`p-2.5 rounded-xl border text-xs flex flex-wrap items-center justify-between gap-2 ${
-                          match.comparable
-                            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-300'
-                            : 'bg-amber-500/10 border-amber-500/30 text-amber-800 dark:text-amber-300'
-                        }`}
-                      >
-                        <span className="font-bold">Setup match: {match.label}</span>
-                        <span>{match.reasons.join(' · ')}</span>
+                      <div className="space-y-2">
+                        <div
+                          className={`p-2.5 rounded-xl border text-xs flex flex-wrap items-center justify-between gap-2 ${
+                            match.comparable
+                              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-300'
+                              : 'bg-amber-500/10 border-amber-500/30 text-amber-800 dark:text-amber-300'
+                          }`}
+                        >
+                          <span className="font-bold">Setup match: {match.label}</span>
+                          <span>{match.reasons.join(' · ')}</span>
+                        </div>
+                        {scanA && scanB && estDelta !== null && (
+                          <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 text-xs flex flex-wrap items-center justify-between gap-2 font-mono-num">
+                            <span>
+                              Est: {scanA.pslEstimate}/8 → {scanB.pslEstimate}/8 ({estDelta > 0 ? `+${estDelta}` : estDelta})
+                            </span>
+                            <span>
+                              Skin: {scanA.subScores.skin} → {scanB.subScores.skin}
+                            </span>
+                            <span>
+                              Sym: {scanA.subScores.symmetry} → {scanB.subScores.symmetry}
+                            </span>
+                          </div>
+                        )}
                       </div>
                     );
                   })()}

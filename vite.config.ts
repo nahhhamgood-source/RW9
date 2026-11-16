@@ -7,7 +7,7 @@ import { VitePWA } from 'vite-plugin-pwa';
 export default defineConfig(() => {
   return {
     define: {
-      __APP_VERSION__: JSON.stringify('2.2.0'),
+      __APP_VERSION__: JSON.stringify('2.3.0'),
       __BUILD_DATE__: JSON.stringify(new Date().toISOString().slice(0, 10)),
     },
     plugins: [
@@ -54,8 +54,25 @@ export default defineConfig(() => {
               purpose: 'maskable',
             },
           ],
+          share_target: {
+            action: '/?share-target=1',
+            method: 'POST',
+            enctype: 'multipart/form-data',
+            params: {
+              title: 'title',
+              text: 'text',
+              url: 'url',
+              files: [
+                {
+                  name: 'media',
+                  accept: ['image/*'],
+                },
+              ],
+            },
+          },
         },
         workbox: {
+          importScripts: ['/sw-share-target.js'],
           cleanupOutdatedCaches: true,
           maximumFileSizeToCacheInBytes: 25 * 1024 * 1024,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,webp,woff,woff2,wasm,task}'],

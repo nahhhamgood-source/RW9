@@ -46,6 +46,8 @@ interface ProgressScreenProps {
   scans: FaceScanResult[];
   workouts: WorkoutSession[];
   slangTierNames?: boolean;
+  lastWeeklyReviewDate?: string | null;
+  onMarkWeeklyReviewed?: () => Promise<void> | void;
   initialSubTab?: string;
   onOpenQuickLog: (tab?: 'water' | 'nutrition' | 'sleep' | 'body' | 'mood' | 'skin') => void;
   onOpenOnboarding: () => void;
@@ -73,6 +75,8 @@ export const ProgressScreen: React.FC<ProgressScreenProps> = ({
   scans,
   workouts,
   slangTierNames = true,
+  lastWeeklyReviewDate,
+  onMarkWeeklyReviewed,
   initialSubTab,
   onOpenQuickLog,
   onOpenOnboarding,
@@ -584,10 +588,17 @@ export const ProgressScreen: React.FC<ProgressScreenProps> = ({
             </div>
           </div>
 
-          <div className="ascend-card p-4 space-y-2">
-            <div className="flex items-center gap-2">
-              <Calendar className="w-4 h-4 text-[var(--accent)]" />
-              <h2 className="font-display text-sm font-bold">Weekly Review Summary</h2>
+          <div className="ascend-card p-4 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Calendar className="w-4 h-4 text-[var(--accent)]" />
+                <h2 className="font-display text-sm font-bold">Weekly Review Summary</h2>
+              </div>
+              {lastWeeklyReviewDate && (
+                <span className="text-[11px] font-mono-num text-slate-500 dark:text-slate-400">
+                  Reviewed {lastWeeklyReviewDate}
+                </span>
+              )}
             </div>
             <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
               Over the past 7 days, your strongest habit was{' '}
@@ -596,6 +607,18 @@ export const ProgressScreen: React.FC<ProgressScreenProps> = ({
                 ? `Consider simplifying or moving "${focusHabit.task.title}" (${focusHabit.pct}%) to an easier time block.`
                 : 'Keep steady momentum without adding extra workload too quickly.'}
             </p>
+            {onMarkWeeklyReviewed && lastWeeklyReviewDate !== today && (
+              <button
+                type="button"
+                onClick={async () => {
+                  await onMarkWeeklyReviewed();
+                  showToast('Weekly review saved');
+                }}
+                className="px-3 py-1.5 rounded-xl bg-[var(--accent-soft)] text-[var(--accent)] text-xs font-bold min-h-[36px]"
+              >
+                Mark week reviewed
+              </button>
+            )}
           </div>
         </div>
 

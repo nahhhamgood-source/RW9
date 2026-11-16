@@ -38,6 +38,36 @@ export interface MedicalTopicCard {
   guidance: string;
 }
 
+export interface CcwInfoCard {
+  id: string;
+  title: string;
+  tag: EvidenceTag;
+  infoOnlyLabel: string;
+  claim: string;
+  honestTake: string;
+  risks: string;
+  alternatives: Array<{ label: string; evidence: EvidenceTag }>;
+}
+
+export const CCW_TEMPORALIS_INFO_CARD: CcwInfoCard = {
+  id: 'info-ccw-temporalis',
+  title: 'CCW rotation / temporalis training',
+  tag: 'Not proven',
+  infoOnlyLabel: 'Info card only — never a daily task, exercise, timer, or reminder',
+  claim:
+    'TikTok slides claim that training the temporalis (biting lightly on the molars with the mouth slightly open and shifting the jaw back and up) "rotates the jaw counter-clockwise" and reshapes the face.',
+  honestTake:
+    'The temporalis does lift and retract the jaw, but there is no good evidence that voluntary biting drills change adult bone shape or jaw rotation. The "growth direction" research the slides mention is about children and orthodontic appliances, not adults doing a clenching exercise.',
+  risks:
+    'Repeated biting or clenching can cause jaw (TMJ) pain, headaches, tooth wear and tight muscles. If you already have jaw pain or clicking, see a dentist.',
+  alternatives: [
+    { label: 'Relaxed jaw with lips closed and teeth slightly apart (comfort)', evidence: 'Likely works' },
+    { label: 'Good posture and chin tucks', evidence: 'Likely works' },
+    { label: 'Leanness for a sharper jawline (appearance)', evidence: 'Proven' },
+    { label: 'Consistent skin and grooming care', evidence: 'Proven' },
+  ],
+};
+
 export const ACADEMY_GUIDES: AcademyGuide[] = [
   {
     id: 'guide-sleep',
@@ -447,6 +477,21 @@ export const GLOSSARY_TERMS: GlossaryTerm[] = [
     honestTake: 'Carries real medical, financial, and psychological risks. Strictly belongs in consultations with board-certified physicians.',
   },
   {
+    term: 'PSL',
+    meaning: '1–10 facial aesthetics rating scale used in looks communities based on harmony and ratios.',
+    honestTake: 'Most people sit around 4.5–5.5; real-life appeal depends just as much on body fat, grooming, voice, and posture.',
+  },
+  {
+    term: 'Canthal tilt',
+    meaning: 'Angle between the inner corner and outer corner of each eye.',
+    honestTake: 'Mostly set by eye-socket bone; squinting tricks do not change it permanently, while good sleep reduces puffy lids.',
+  },
+  {
+    term: 'Gonial angle',
+    meaning: 'Corner angle where the back edge of the jaw meets the jawline.',
+    honestTake: 'Bone angle is genetic in adults; getting leaner reveals whatever jaw edge you have cleanly.',
+  },
+  {
     term: 'Mewing',
     meaning: 'Keeping the tongue resting against the roof of the mouth with nasal breathing.',
     honestTake: 'Fine as relaxed oral/nasal posture, NOT proven to reshape adult jawbone or cheekbones.',
@@ -495,6 +540,16 @@ export const GLOSSARY_TERMS: GlossaryTerm[] = [
     term: 'Internet Tier Labels (Chad, Chadlite, HTN, True Normie, LTN, Developing)',
     meaning: 'Community PSL tiers centered on whole numbers: 7.5+ Chad (Elite), 6.5–7.49 Chadlite, 5.5–6.49 HTN (High-Tier Normie), 4.5–5.49 True Normie, 3.5–4.49 LTN (Low-Tier Normie), <3.5 Developing.',
     honestTake: 'Most people naturally land between 4.0 and 5.5 (LTN to True Normie); 7+ is very rare. Internet slang is rough shorthand, never clinical science—and Settings lets you switch to neutral labels anytime.',
+  },
+  {
+    term: 'CCW rotation',
+    meaning: 'Claimed "counter-clockwise" upward/forward jaw rotation promoted in social-media slides via temporalis biting drills.',
+    honestTake: 'Not proven: pediatric orthodontic growth-direction research is about children with appliances, not adults clenching; voluntary biting drills risk TMJ pain, headaches, and tooth wear.',
+  },
+  {
+    term: 'Temporalis training',
+    meaning: 'Biting lightly on molars and pulling the jaw back/up to exercise the temporalis temple muscle.',
+    honestTake: 'Not proven: while the temporalis lifts and retracts the jaw, biting drills do not reshape adult facial bone and can trigger TMJ clicking or jaw pain.',
   },
 ];
 
@@ -558,6 +613,14 @@ export const MYTHS_WALL: MythClaim[] = [
   { id: 'm40', claim: 'Hot water facial washes clean pores better than lukewarm water.', verdict: 'False', evidence: 'Not proven', explanation: 'Hot water strips protective lipids and triggers redness and broken capillaries.' },
   { id: 'm41', claim: 'Stopping all skincare actives during irritation heals redness faster.', verdict: 'True', evidence: 'Proven', explanation: 'A 7-day bland cleanser + moisturizer reset lets the barrier rebuild lipids.' },
   { id: 'm42', claim: 'Consistent self-care habits over 90 days beat extreme 7-day sprints.', verdict: 'True', evidence: 'Proven', explanation: 'Skin turnover (~28 days), hair cycles, and body recomposition all reward steady multi-month consistency.' },
+  {
+    id: 'm43',
+    claim: 'Temporalis biting drills cause CCW jaw rotation and reshape adult facial bone.',
+    verdict: 'False',
+    evidence: 'Not proven',
+    explanation:
+      'Growth-direction research involves children and orthodontic appliances, not adults clenching. Repeated biting can trigger TMJ pain, headaches, and tooth wear.',
+  },
 ];
 
 export const MEDICAL_INFO_CARDS: MedicalTopicCard[] = [

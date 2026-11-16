@@ -3,6 +3,7 @@ import { Search, ShieldCheck, Stethoscope, ChevronDown, ChevronUp } from 'lucide
 import {
   ACADEMY_GUIDES,
   ACADEMY_META,
+  CCW_TEMPORALIS_INFO_CARD,
   GLOSSARY_TERMS,
   MEDICAL_INFO_CARDS,
   MYTHS_WALL,
@@ -114,9 +115,31 @@ export const AcademyScreen: React.FC = () => {
         </div>
       </div>
 
-      {/* 14 DEEP GUIDES */}
+      {/* 14 DEEP GUIDES + CCW/Temporalis Info Card */}
       {tab === 'guides' && (
         <div className="space-y-3">
+          {(!q ||
+            CCW_TEMPORALIS_INFO_CARD.title.toLowerCase().includes(q) ||
+            CCW_TEMPORALIS_INFO_CARD.honestTake.toLowerCase().includes(q)) && (
+            <div className="ascend-card p-4 border-amber-500/30 bg-amber-500/5 space-y-2 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-display text-sm font-bold">{CCW_TEMPORALIS_INFO_CARD.title}</span>
+                <span className="text-[11px] font-bold text-rose-500">{CCW_TEMPORALIS_INFO_CARD.tag}</span>
+              </div>
+              <p className="text-[11px] font-semibold text-amber-700 dark:text-amber-300">
+                {CCW_TEMPORALIS_INFO_CARD.infoOnlyLabel}
+              </p>
+              <p className="text-slate-600 dark:text-slate-300">
+                <strong>Claim:</strong> {CCW_TEMPORALIS_INFO_CARD.claim}
+              </p>
+              <p className="text-slate-700 dark:text-slate-200">
+                <strong>Honest take:</strong> {CCW_TEMPORALIS_INFO_CARD.honestTake}
+              </p>
+              <p className="text-amber-800 dark:text-amber-200">
+                <strong>Risks:</strong> {CCW_TEMPORALIS_INFO_CARD.risks}
+              </p>
+            </div>
+          )}
           {filteredGuides.map((g) => {
             const isOpen = openGuideId === g.id;
             return (

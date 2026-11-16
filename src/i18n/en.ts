@@ -94,6 +94,7 @@ export const en = {
     scanner: 'Scanner & Results',
     care: 'Looks Care',
     exercises: 'Face Exercises',
+    learn: 'Learn',
   },
   growHub: {
     title: 'Grow & Posture',
@@ -150,10 +151,37 @@ export const en = {
   },
   aboutAscend: {
     title: 'About ASCEND',
-    version: 'Version 2.2',
+    version: 'Version 2.3',
     installTitle: 'Add to Home Screen',
     installBody:
       'Install ASCEND on your phone so it opens full screen and works fast offline.',
+  },
+  fightCamp: {
+    title: 'Fight Camp',
+    subtitle: 'Safe weight pace, training fuel, and calm camp tracking',
+    under18Lock:
+      'Weight for a fight is a coach + doctor call at your age. Ask your coach and a doctor.',
+    passiveSafetyCard:
+      'Why we don’t plan this: it hurts performance and can be dangerous. If a weight class needs it, that is a coach + doctor decision.',
+    weighInTitle: 'Fight week basics (info only)',
+  },
+  connections: {
+    title: 'Connections',
+    subtitle: 'Bring in data manually or share photos into ASCEND',
+    privacyLine: 'Stays on your phone unless you turn on the online coach.',
+    webLimitLine:
+      'The web version cannot read WhatsApp, TikTok, other fitness apps, or your phone health store by itself.',
+    androidFlagLine: 'Needs the Android app. A website cannot read your other apps.',
+  },
+  weeklyReview: {
+    title: 'Weekly Leader Review',
+    subtitle: 'Your Sunday reset from real logs',
+    notEnoughData: 'Not enough data yet',
+  },
+  streetFood: {
+    estimateBadge: 'Estimate — edit to match your plate',
+    fitsToday: 'Fits today',
+    swapLabel: 'Lighter swap',
   },
 };
 
@@ -186,8 +214,8 @@ export function getPlanGreetingLine(
   const lead = cleanName ? `${greeting}, ${cleanName}.` : `${greeting}.`;
   if (tone === 'chill') {
     return nextTitle
-      ? `${lead} Day ${dayNumber}. Next up: ${nextTitle}.`
-      : `${lead} Day ${dayNumber}. All daily tasks done.`;
+      ? `${lead} Day ${dayNumber}. Stay locked in — next: ${nextTitle}.`
+      : `${lead} Day ${dayNumber}. Clean W today, all set.`;
   }
   if (tone === 'serious') {
     return nextTitle
@@ -198,3 +226,54 @@ export function getPlanGreetingLine(
     ? `${lead} Day ${dayNumber}. Next: ${nextTitle}.`
     : `${lead} Day ${dayNumber}. Today's plan is complete.`;
 }
+
+export function getWinBannerCopy(kind: 'first_scan' | 'streak_7' | 'weight_milestone' | 'level_up' | 'journey_level', tone: ToneMode = 'normal'): { title: string; subtitle: string } {
+  switch (kind) {
+    case 'first_scan':
+      return {
+        title: getToneText(tone, {
+          normal: 'First face scan saved',
+          chill: 'First scan locked in — W baseline',
+          serious: 'Baseline scan recorded',
+        }),
+        subtitle: 'Your Path below turns these numbers into simple daily steps.',
+      };
+    case 'streak_7':
+      return {
+        title: getToneText(tone, {
+          normal: '7-day streak',
+          chill: '7 days straight, no cap',
+          serious: '7-day consistency milestone',
+        }),
+        subtitle: 'A full week of showing up — keep the pace relaxed and steady.',
+      };
+    case 'weight_milestone':
+      return {
+        title: getToneText(tone, {
+          normal: 'Weight trend milestone',
+          chill: 'Lowkey steady progress on weight',
+          serious: 'Weight milestone reached',
+        }),
+        subtitle: 'Logged cleanly from your real weigh-ins.',
+      };
+    case 'level_up':
+      return {
+        title: getToneText(tone, {
+          normal: 'New XP level unlocked',
+          chill: 'Quiet grind paid off — level up',
+          serious: 'Level up achieved',
+        }),
+        subtitle: 'Daily small reps beat extreme bursts every time.',
+      };
+    case 'journey_level':
+      return {
+        title: getToneText(tone, {
+          normal: 'Journey stage cleared',
+          chill: 'Stage cleared — clean W',
+          serious: 'Journey stage completed',
+        }),
+        subtitle: 'Consistent weeks build real change.',
+      };
+  }
+}
+

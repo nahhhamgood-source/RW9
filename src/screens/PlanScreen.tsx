@@ -27,26 +27,40 @@ import {
 } from 'lucide-react';
 import {
   addLifeGoal,
+  addProtocolToPlan,
   addStarterLifeList,
   db,
   deferTaskToTomorrow,
   getOrCreateDailyLog,
+  isAboutMeItemConfirmed,
   isDayCompleteForStreak,
   isUnder18OrGrowing,
+  logSameAsUsualMeal,
   prepareSuggestedTomorrowPlan,
+  regenerateProtocolFromProfile,
+  saveAndVerifyProfile,
   toggleTaskCompletion,
 } from '../db/database';
 import { xpRequiredForLevel } from '../data/badges';
-import { en, getPlanGreetingLine, getToneText } from '../i18n/en';
+import { CORE_TWELVE_PROTOCOL_IDS, PROTOCOL_MAP } from '../data/protocols';
+import { en, getMealTypeByHour, getPlanGreetingLine, getToneText } from '../i18n/en';
+import { ARABIC_HINTS, formatDisplayNumber } from '../i18n/arabicHints';
 import { addDays, daysBetween, getGreeting, toLocalDateKey } from '../lib/date';
 import { getPslTierMeta } from '../lib/faceMetricsConstants';
+import { evaluateWeeklyWeightAdjustment } from '../lib/nutrition';
+import { computeHonestDailyLine, detectUserPatterns } from '../lib/patterns';
 import { CircularRing } from '../components/ui/ProgressRings';
 import { ExerciseDemoLinks } from '../components/ui/ExerciseDemoLinks';
 import { EmptyState } from '../components/ui/Skeletons';
 import { useToast } from '../components/ui/ToastProvider';
+import { WinMomentBanner, type WinMilestoneKind } from '../components/ui/WinMomentBanner';
+import { PatternInsightsCards } from '../components/plan/PatternInsightsCards';
+import { FightCampCard } from '../components/plan/FightCampCard';
+import { WeeklyLeaderReviewModal } from '../components/plan/WeeklyLeaderReviewModal';
 import type {
   ActiveProtocolTask,
   AppSettings,
+  BodyMetricEntry,
   DailyLog,
   FaceScanResult,
   GoalHorizon,
@@ -56,6 +70,7 @@ import type {
   PrayerKey,
   TaskCompletion,
   TimeBlock,
+  TrainingDayType,
   UserProfile,
   WorkoutSession,
   XpState,
@@ -72,14 +87,17 @@ interface PlanScreenProps {
   dailyLogs: DailyLog[];
   mealScans: MealScanEntry[];
   workouts: WorkoutSession[];
+  bodyMetrics: BodyMetricEntry[];
   goals: LifeGoal[];
   lifeList: LifeListItem[];
   latestScan?: FaceScanResult | null;
+  scans?: FaceScanResult[];
   selectedDate: string;
   initialTab?: string;
   onOpenQuickLog: (tab?: 'water' | 'nutrition' | 'body' | 'sleep' | 'mood' | 'photo' | 'height') => void;
+  onOpenFoodBreakfast?: () => void;
   onNavigate: (screen: string, subTab?: string) => void;
-  onOpenCoach: () => void;
+  onOpenCoach: (prompt?: string) => void;
 }
 
 const HORIZON_ORDER: Record<GoalHorizon, number> = {
@@ -180,12 +198,15 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
   dailyLogs,
   mealScans,
   workouts,
+  bodyMetrics,
   goals,
   lifeList,
   latestScan,
+  scans = [],
   selectedDate,
   initialTab,
   onOpenQuickLog,
+  onOpenFoodBreakfast,
   onNavigate,
   onOpenCoach,
 }) => {
@@ -224,6 +245,8 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
   const [deferredForNow, setDeferredForNow] = useState<string[]>([]);
   const [showStreakHelp, setShowStreakHelp] = useState(false);
   const [showNowHowTo, setShowNowHowTo] = useState(false);
+  const [showWeeklyModal, setShowWeeklyModal] = useState(false);
+  const [showExploreMore, setShowExploreMore] = useState(false);
 
   // Today tab UI state
   const [showAllToday, setShowAllToday] = useState(false);
@@ -267,7 +290,15 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
     [completions, todayKey]
   );
 
-  const todayTasks = useMemo(() => {
+  const isRoughDay = Boolean(settings.roughDayDates?.includes(todayKey));
+  const isRelaxedFriday = Boolean(settings.relaxedFridayMode && todayDow === 5);
+  const arabicHints = Boolean(settings.arabicHintsEnabled);
+  const arabicDigits = Boolean(settings.arabicIndicDigits);
+  const dayMode: TrainingDayType = settings.dayModeByDate?.[todayKey] ?? 'gym';
+  const [windDownChecks, setWindDownChecks] = useState<Record<string, boolean>>({});
+  const [showWindDown, setShowWindDown] = useState(() => new Date().getHours() >= 19);
+
+  const rawTodayTasks = useMemo(() => {
     return tasks.filter((t) => {
       if (!t.enabled) return false;
       if (t.scheduledDate && t.scheduledDate !== todayKey) return false;
@@ -276,21 +307,156 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
     });
   }, [tasks, todayKey, todayDow]);
 
+  const todayTasks = useMemo(() => {
+    if (isRoughDay) {
+      // Rough day mode shrinks Today cleanly to 2 gentle tasks (hydration/sleep/first essentials)
+      const nonExtra = rawTodayTasks.filter((t) => !t.isAdvancedOptional);
+      const source = nonExtra.length >= 2 ? nonExtra : rawTodayTasks;
+      return source.slice(0, 2);
+    }
+    if (isRelaxedFriday) {
+      const nonExtra = rawTodayTasks.filter((t) => !t.isAdvancedOptional);
+      return nonExtra.slice(0, 4);
+    }
+    return rawTodayTasks;
+  }, [rawTodayTasks, isRoughDay, isRelaxedFriday]);
+
   const tomorrowTasks = useMemo(
     () => tasks.filter((t) => t.enabled && t.scheduledDate === tomorrowKey),
     [tasks, tomorrowKey]
   );
 
+  // Simple mode caps Today list to 6 habits unless "Show more" toggled
+  const visibleTodayTasks = useMemo(() => {
+    if (!easyMode || showAllToday) return todayTasks;
+    return todayTasks.slice(0, 6);
+  }, [todayTasks, easyMode, showAllToday]);
+
+  const activeProgressTasks = easyMode && !showAllToday ? visibleTodayTasks : todayTasks;
+
   const todayDoneCount = useMemo(
-    () => todayTasks.filter((t) => completedTodayIds.has(t.id)).length,
-    [todayTasks, completedTodayIds]
+    () => activeProgressTasks.filter((t) => completedTodayIds.has(t.id)).length,
+    [activeProgressTasks, completedTodayIds]
   );
-  const todayPct = todayTasks.length > 0 ? Math.round((todayDoneCount / todayTasks.length) * 100) : 0;
+  const todayPct =
+    activeProgressTasks.length > 0
+      ? Math.round((todayDoneCount / activeProgressTasks.length) * 100)
+      : 0;
+
+  const patternResult = useMemo(
+    () =>
+      detectUserPatterns({
+        todayKey,
+        profile,
+        dailyLogs,
+        mealScans,
+        workouts,
+        bodyMetrics,
+        tasks: rawTodayTasks,
+        completions,
+        dismissedIds: settings.dismissedPatternIds ?? [],
+        maxCards: 2,
+      }),
+    [
+      todayKey,
+      profile,
+      dailyLogs,
+      mealScans,
+      workouts,
+      bodyMetrics,
+      rawTodayTasks,
+      completions,
+      settings.dismissedPatternIds,
+    ]
+  );
+
+  const honestDailyLine = useMemo(
+    () =>
+      computeHonestDailyLine({
+        todayKey,
+        workouts,
+        dailyLogs,
+        completions,
+        targetSleepHours: profile.targetSleepHours,
+        isRoughDay,
+      }),
+    [todayKey, workouts, dailyLogs, completions, profile.targetSleepHours, isRoughDay]
+  );
+
+  const unconfirmedAboutCount = useMemo(() => {
+    const about = profile.aboutMe;
+    if (!about) return 0;
+    const deleted = new Set(about.deletedKeys ?? []);
+    return (['location_foods', 'training_camp', 'eating_pattern', 'identity_focus', 'support_style'] as const).filter(
+      (k) => !deleted.has(k) && (about.statuses?.[k] ?? 'suggested') === 'suggested'
+    ).length;
+  }, [profile.aboutMe]);
+
+  const trainingCampConfirmed = isAboutMeItemConfirmed(profile.aboutMe, 'training_camp');
+  const localFoodsConfirmed = isAboutMeItemConfirmed(profile.aboutMe, 'location_foods');
+  const eatingPatternConfirmed = isAboutMeItemConfirmed(profile.aboutMe, 'eating_pattern');
+
+  const fightCampCountdownDays = useMemo(() => {
+    if (!trainingCampConfirmed) return null;
+    const dt = profile.aboutMe?.tournamentDate;
+    if (!dt || dt < todayKey) return null;
+    return daysBetween(todayKey, dt);
+  }, [trainingCampConfirmed, profile.aboutMe?.tournamentDate, todayKey]);
+
+  const weeklyAdjust = useMemo(
+    () => evaluateWeeklyWeightAdjustment(profile, bodyMetrics, todayKey),
+    [profile, bodyMetrics, todayKey]
+  );
+
+  const autopilotWeeklyStats = useMemo(() => {
+    const cutoff = addDays(todayKey, -6);
+    const recentWorkouts = workouts.filter((w) => w.date >= cutoff && w.date <= todayKey);
+    const recentSleep = dailyLogs.filter(
+      (l) => l.date >= cutoff && l.date <= todayKey && l.sleepHours > 0
+    );
+    const avgSleep =
+      recentSleep.length > 0
+        ? Number(
+            (recentSleep.reduce((s, l) => s + l.sleepHours, 0) / recentSleep.length).toFixed(1)
+          )
+        : null;
+    const recentCompletions = completions.filter((c) => c.date >= cutoff && c.date <= todayKey);
+    const hasEnoughData =
+      recentCompletions.length >= 3 || recentWorkouts.length >= 1 || bodyMetrics.length >= 2;
+    const lastRev = settings.lastWeeklyReviewDate;
+    const daysSinceLast = lastRev ? daysBetween(lastRev, todayKey) : null;
+    const isDue =
+      hasEnoughData &&
+      lastRev !== todayKey &&
+      (daysSinceLast === null ? todayDow === 0 || dayNumber >= 7 : daysSinceLast >= 7 || todayDow === 0);
+
+    return {
+      isDue,
+      workoutCount: recentWorkouts.length,
+      avgSleep,
+      completionCount: recentCompletions.length,
+    };
+  }, [
+    todayKey,
+    workouts,
+    dailyLogs,
+    completions,
+    bodyMetrics.length,
+    settings.lastWeeklyReviewDate,
+    todayDow,
+    dayNumber,
+  ]);
+
+  const showHealthyFrameCard = useMemo(() => {
+    const last = settings.healthyFrameLastShownDate;
+    if (!last) return dayNumber >= 2;
+    return daysBetween(last, todayKey) >= 7;
+  }, [settings.healthyFrameLastShownDate, dayNumber, todayKey]);
 
   /**
    * "Do this now" strict priority order:
    * 1. Due reminders (non-extra)
-   * 2. Essential habits (!isAdvancedOptional)
+   * 2. Essential habits (!isAdvancedOptional), adapted by today's Gym/MMA/Sparring/Rest dayMode
    * 3. My focus tasks (matching profile.focusAreas)
    * 4. Extras (isAdvancedOptional) — never first unless no higher-priority task remains
    */
@@ -307,6 +473,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
 
     const scoreTier = (t: ActiveProtocolTask): number => {
       if (t.isAdvancedOptional) return 3;
+      if (dayMode === 'rest' && t.protocolId === 'body-workout-day') return 2;
       if (isTaskReminderDue(t, settings)) return 0;
       const src = (t.sourceFocusArea || '').toLowerCase();
       const matchesFocus =
@@ -316,7 +483,34 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
       return matchesFocus ? 1 : 2;
     };
 
-    const remaining = todayTasks.filter((t) => !completedTodayIds.has(t.id));
+    const dayModePriorityBoost = (t: ActiveProtocolTask): number => {
+      if (dayMode === 'sparring') {
+        if (
+          t.protocolId === 'body-sleep-fixed' ||
+          t.protocolId === 'body-sleep-winddown' ||
+          t.protocolId === 'face-debloat-water' ||
+          t.protocolId === 'body-mobility-flow'
+        ) {
+          return -1;
+        }
+      } else if (dayMode === 'rest') {
+        if (
+          t.protocolId === 'body-10min-walk' ||
+          t.protocolId === 'body-mobility-flow' ||
+          t.protocolId === 'face-debloat-water'
+        ) {
+          return -1;
+        }
+        if (t.protocolId === 'body-workout-day') return 2;
+      } else if (dayMode === 'gym' || dayMode === 'mma') {
+        if (t.protocolId === 'body-workout-day' || t.protocolId === 'body-protein-check') {
+          return -1;
+        }
+      }
+      return 0;
+    };
+
+    const remaining = activeProgressTasks.filter((t) => !completedTodayIds.has(t.id));
     remaining.sort((a, b) => {
       const aLater = deferredForNow.includes(a.id) ? 1 : 0;
       const bLater = deferredForNow.includes(b.id) ? 1 : 0;
@@ -326,13 +520,17 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
       const bTier = scoreTier(b);
       if (aTier !== bTier) return aTier - bTier;
 
+      const aBoost = dayModePriorityBoost(a);
+      const bBoost = dayModePriorityBoost(b);
+      if (aBoost !== bBoost) return aBoost - bBoost;
+
       if (blockWeight[a.block] !== blockWeight[b.block]) {
         return blockWeight[a.block] - blockWeight[b.block];
       }
       return a.sortOrder - b.sortOrder;
     });
     return remaining;
-  }, [todayTasks, completedTodayIds, deferredForNow, profile.focusAreas, settings]);
+  }, [activeProgressTasks, completedTodayIds, deferredForNow, profile.focusAreas, settings, dayMode]);
 
   const primaryNowTask = nowRemainingTasks[0] ?? null;
   const nextTwoTasks = nowRemainingTasks.slice(1, 3);
@@ -355,7 +553,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
 
   // Real 7-day completion bar chart
   const sevenDayBars = useMemo(() => {
-    const enabledCount = Math.max(1, todayTasks.length);
+    const enabledCount = Math.max(1, activeProgressTasks.length);
     return Array.from({ length: 7 }, (_, idx) => {
       const dateKey = addDays(todayKey, -(6 - idx));
       const d = new Date(`${dateKey}T12:00:00`);
@@ -364,7 +562,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
       const pct = Math.min(100, Math.round((done / enabledCount) * 100));
       return { dateKey, label, pct };
     });
-  }, [completions, todayKey, todayTasks.length]);
+  }, [completions, todayKey, activeProgressTasks.length]);
 
   // Real XP bar calculation
   const xpProgress = useMemo(() => {
@@ -381,7 +579,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
 
   // Real 90-day journey path grouped in 13 levels (7 days per level, Level 13 = Days 85-90)
   const journeyData = useMemo(() => {
-    const enabledCount = Math.max(1, todayTasks.length);
+    const enabledCount = Math.max(1, activeProgressTasks.length);
     const countsByDate = new Map<string, number>();
     for (const c of completions) {
       countsByDate.set(c.date, (countsByDate.get(c.date) ?? 0) + 1);
@@ -444,6 +642,162 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
   const handleMoveToTomorrow = async (task: ActiveProtocolTask) => {
     await deferTaskToTomorrow(task.id, todayKey);
     showToast(`Moved "${cleanTaskTitle(task.title)}" to Tomorrow`);
+  };
+
+  const handleSetDayMode = async (mode: TrainingDayType) => {
+    const nextMap = { ...(settings.dayModeByDate ?? {}), [todayKey]: mode };
+    await db.settings.update('app', { dayModeByDate: nextMap });
+    const labels: Record<TrainingDayType, string> = {
+      gym: 'Gym day mode set',
+      mma: 'MMA day mode set',
+      sparring: 'Hard sparring mode — sleep & recovery bumped',
+      rest: 'Rest day mode set',
+    };
+    showToast(labels[mode]);
+  };
+
+  const handleOneTapTrained = async (kind: 'gym' | 'mma' | 'rest') => {
+    await handleSetDayMode(kind);
+    if (kind === 'rest') return;
+    await db.workouts.add({
+      date: todayKey,
+      name: kind === 'mma' ? 'MMA Training Session' : 'Gym Strength Session',
+      durationMin: kind === 'mma' ? 60 : 45,
+      exercises: [],
+      notes: '1-tap workout check-in',
+      createdAt: Date.now(),
+    });
+    const workoutTask = tasks.find((t) => t.protocolId === 'body-workout-day');
+    if (workoutTask && !completedTodayIds.has(workoutTask.id)) {
+      await toggleTaskCompletion(todayKey, workoutTask);
+    }
+    showToast(`Logged ${kind.toUpperCase()} session`);
+  };
+
+  const handleSameAsUsualMeal = async () => {
+    const slot = getMealTypeByHour();
+    const added = await logSameAsUsualMeal(todayKey, slot);
+    if (!added) {
+      showToast('Log one meal first so "Same as usual" knows your favorite', 'info');
+      onNavigate('food');
+      return;
+    }
+    showToast(`Logged "${added.mealTitle}" (+${added.totalCalories} kcal)`);
+  };
+
+  const handleWaterPlusOne = async () => {
+    const cur = await getOrCreateDailyLog(todayKey);
+    await db.dailyLogs.update(todayKey, {
+      waterMl: (cur.waterMl || 0) + 250,
+      updatedAt: Date.now(),
+    });
+    showToast('+250 ml water logged');
+  };
+
+  const activeWinMilestone: WinMilestoneKind | null = useMemo(() => {
+    const celebrated = new Set(settings.celebratedMilestones ?? []);
+    if (latestScan && !celebrated.has('first_scan')) return 'first_scan';
+    if (xpState.currentStreak >= 7 && !celebrated.has('streak_7')) return 'streak_7';
+    if (xpState.level >= 2 && !celebrated.has(`level_up_${xpState.level}`)) return 'level_up';
+    if (journeyData.levelFinished && !celebrated.has(`journey_level_${journeyLevel}`)) return 'journey_level';
+    if (bodyMetrics.length >= 4 && !celebrated.has('weight_milestone')) return 'weight_milestone';
+    return null;
+  }, [
+    settings.celebratedMilestones,
+    latestScan,
+    xpState.currentStreak,
+    xpState.level,
+    journeyData.levelFinished,
+    journeyLevel,
+    bodyMetrics.length,
+  ]);
+
+  const handleDismissWin = async (kind: WinMilestoneKind) => {
+    const key =
+      kind === 'level_up'
+        ? `level_up_${xpState.level}`
+        : kind === 'journey_level'
+        ? `journey_level_${journeyLevel}`
+        : kind;
+    const next = Array.from(new Set([...(settings.celebratedMilestones ?? []), key]));
+    await db.settings.update('app', { celebratedMilestones: next });
+  };
+
+  const exploreMoreProtocols = useMemo(() => {
+    const activeIds = new Set(
+      tasks.filter((t) => t.enabled && !t.scheduledDate).map((t) => t.protocolId)
+    );
+    return CORE_TWELVE_PROTOCOL_IDS.filter((id) => !activeIds.has(id))
+      .map((id) => PROTOCOL_MAP[id])
+      .filter((p): p is NonNullable<typeof p> => Boolean(p));
+  }, [tasks]);
+
+  const handleToggleRoughDay = async () => {
+    const cur = settings.roughDayDates ?? [];
+    const next = cur.includes(todayKey)
+      ? cur.filter((d) => d !== todayKey)
+      : [...cur, todayKey];
+    await db.settings.update('app', { roughDayDates: next });
+    showToast(
+      cur.includes(todayKey)
+        ? 'Back to regular Today plan'
+        : 'Rough day mode on — shrunk to 2 gentle steps'
+    );
+  };
+
+  const handleToggleDayDone = async () => {
+    const log = await getOrCreateDailyLog(todayKey);
+    const next = !log.minimumsDone;
+    await db.dailyLogs.update(todayKey, {
+      minimumsDone: next,
+      updatedAt: Date.now(),
+    });
+    showToast(next ? 'Day closed cleanly — rest well' : 'Reopened today checklist');
+  };
+
+  const handleDismissPattern = async (patternId: string) => {
+    const next = Array.from(new Set([...(settings.dismissedPatternIds ?? []), patternId]));
+    await db.settings.update('app', { dismissedPatternIds: next });
+    showToast('Hidden pattern card', 'info');
+  };
+
+  const handleMoveBlockTasks = async (fromBlock: TimeBlock, toBlock: TimeBlock) => {
+    const toMove = tasks.filter(
+      (t) => t.enabled && !t.scheduledDate && t.block === fromBlock
+    );
+    if (toMove.length === 0) {
+      showToast('No habits to move in that block', 'info');
+      return;
+    }
+    await Promise.all(
+      toMove.map((t) => db.protocolTasks.update(t.id, { block: toBlock }))
+    );
+    showToast(`Moved ${toMove.length} ${fromBlock} habits to ${toBlock}`);
+  };
+
+  const handleAcknowledgeHealthyFrame = async () => {
+    await db.settings.update('app', { healthyFrameLastShownDate: todayKey });
+  };
+
+  const handleCompleteAutopilotReview = async (applyCalorieNudge = false) => {
+    if (
+      applyCalorieNudge &&
+      !hideCut &&
+      weeklyAdjust.suggestedCalorieGoal !== null &&
+      weeklyAdjust.deltaCalories !== 0
+    ) {
+      await saveAndVerifyProfile({
+        ...profile,
+        calorieGoal: weeklyAdjust.suggestedCalorieGoal,
+      });
+    }
+    await db.settings.update('app', { lastWeeklyReviewDate: todayKey });
+    await prepareSuggestedTomorrowPlan(profile, settings);
+    showToast(
+      applyCalorieNudge && weeklyAdjust.suggestedCalorieGoal
+        ? `Week reviewed (${weeklyAdjust.suggestedCalorieGoal} kcal) & tomorrow queued`
+        : 'Weekly review complete & tomorrow queued'
+    );
   };
 
   const handleAddTodayTask = async (e: React.FormEvent) => {
@@ -582,12 +936,6 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
     tone
   );
 
-  // Simple mode caps Today list to 6 habits unless "Show more" toggled
-  const visibleTodayTasks = useMemo(() => {
-    if (!easyMode || showAllToday) return todayTasks;
-    return todayTasks.slice(0, 6);
-  }, [todayTasks, easyMode, showAllToday]);
-
   const hiddenTodayCount = Math.max(0, todayTasks.length - visibleTodayTasks.length);
 
   const nowTaskIsExercise = Boolean(
@@ -635,22 +983,315 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
       {/* 1. NOW VIEW */}
       {tab === 'now' && (
         <div className="space-y-4">
-          {/* Calm Greeting Banner + Progress Ring */}
-          <div className="ascend-card p-5 flex items-center justify-between gap-4">
-            <div className="min-w-0 space-y-1">
-              <p className="text-xs font-semibold text-[var(--accent)]">
-                Day {dayNumber} · {todayDoneCount}/{todayTasks.length} done today
-              </p>
-              <h1 className="font-display text-lg sm:text-2xl font-bold tracking-tight leading-snug">
-                {greetingLine}
-              </h1>
+          {activeWinMilestone && (
+            <WinMomentBanner
+              kind={activeWinMilestone}
+              tone={tone}
+              onDismiss={() => void handleDismissWin(activeWinMilestone)}
+            />
+          )}
+
+          {/* 5-second Today Entrance */}
+          <div className="ascend-card p-5 space-y-2.5">
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0 space-y-1">
+                <div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-[var(--accent)]">
+                  <span>
+                    Day {formatDisplayNumber(dayNumber, arabicDigits)} ·{' '}
+                    {formatDisplayNumber(todayDoneCount, arabicDigits)}/
+                    {formatDisplayNumber(activeProgressTasks.length, arabicDigits)} done
+                  </span>
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-500 font-bold">
+                    <Flame className="w-3 h-3" /> {formatDisplayNumber(xpState.currentStreak, arabicDigits)}d ·{' '}
+                    {xpState.streakFreezesRemaining} shield
+                  </span>
+                  {fightCampCountdownDays !== null && !hideCut && (
+                    <span className="px-2 py-0.5 rounded-full bg-[var(--accent-soft)] text-[var(--accent)] font-bold">
+                      {formatDisplayNumber(fightCampCountdownDays, arabicDigits)}d to fight
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  Your one thing today
+                </p>
+                <h1 className="font-display text-lg sm:text-2xl font-bold tracking-tight leading-snug">
+                  {greetingLine}
+                </h1>
+              </div>
+              <div className="shrink-0">
+                <CircularRing value={todayPct} size={62} strokeWidth={6} color="var(--accent)">
+                  <span className="font-mono-num text-xs font-bold">
+                    {formatDisplayNumber(todayPct, arabicDigits)}%
+                  </span>
+                </CircularRing>
+              </div>
             </div>
-            <div className="shrink-0">
-              <CircularRing value={todayPct} size={62} strokeWidth={6} color="var(--accent)">
-                <span className="font-mono-num text-xs font-bold">{todayPct}%</span>
-              </CircularRing>
+            <p className="text-xs text-slate-600 dark:text-slate-300 pt-1 border-t border-slate-200/70 dark:border-white/10">
+              {honestDailyLine}
+              {arabicHints && (
+                <span dir="rtl" lang="ar" className="block text-[11px] text-[var(--accent)] mt-0.5">
+                  {ARABIC_HINTS.dailyLineNote}
+                </span>
+              )}
+            </p>
+
+            {/* 1-tap everything row */}
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              <button
+                type="button"
+                onClick={handleSameAsUsualMeal}
+                className="px-3 py-2 rounded-xl bg-slate-100 dark:bg-white/5 text-xs font-semibold min-h-[44px]"
+              >
+                Same as usual meal
+              </button>
+              <button
+                type="button"
+                onClick={handleWaterPlusOne}
+                className="px-3 py-2 rounded-xl bg-slate-100 dark:bg-white/5 text-xs font-semibold min-h-[44px]"
+              >
+                Water +1
+              </button>
+              <button
+                type="button"
+                onClick={() => handleOneTapTrained('gym')}
+                className="px-3 py-2 rounded-xl bg-slate-100 dark:bg-white/5 text-xs font-semibold min-h-[44px]"
+              >
+                Trained: Gym
+              </button>
+              <button
+                type="button"
+                onClick={() => handleOneTapTrained('mma')}
+                className="px-3 py-2 rounded-xl bg-slate-100 dark:bg-white/5 text-xs font-semibold min-h-[44px]"
+              >
+                Trained: MMA
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowWeeklyModal(true)}
+                className="px-3 py-2 rounded-xl bg-[var(--accent-soft)] text-[var(--accent)] text-xs font-bold min-h-[44px]"
+              >
+                Weekly Leader Review
+              </button>
             </div>
+
+            {/* Diet quick card */}
+            <button
+              type="button"
+              onClick={() => onNavigate('diet')}
+              className="w-full p-3 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 hover:border-[var(--accent)]/40 flex items-center justify-between gap-3 text-left min-h-[48px] transition"
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Utensils className="w-4 h-4 text-[var(--accent)] shrink-0" />
+                <span className="text-xs font-bold truncate">
+                  Diet:{' '}
+                  {hideCut
+                    ? `${profile.dietGoal === 'lean_gain' ? en.diet.buildMuscle : en.diet.staySame} · ${formatDisplayNumber(profile.calorieGoal, arabicDigits)} kcal target`
+                    : `${
+                        profile.dietGoal === 'cut'
+                          ? en.diet.loseFat
+                          : profile.dietGoal === 'lean_gain'
+                          ? en.diet.buildMuscle
+                          : en.diet.staySame
+                      } · ${formatDisplayNumber(caloriesLeft, arabicDigits)} kcal left`}
+                </span>
+              </div>
+              <span className="inline-flex items-center gap-1 text-xs font-bold text-[var(--accent)] shrink-0">
+                Open Diet <ArrowRight className="w-3.5 h-3.5" />
+              </span>
+            </button>
           </div>
+
+          {/* Fight Camp Card (strictly age-gated) */}
+          {(profile.mainGoalMode === 'fight_camp' ||
+            profile.mainGoalMode === 'both' ||
+            trainingCampConfirmed ||
+            hideCut) && (
+            <FightCampCard
+              profile={profile}
+              bodyMetrics={bodyMetrics}
+              todayLog={todayLog}
+              todayMode={dayMode}
+              todayKey={todayKey}
+              arabicDigits={arabicDigits}
+              onOpenQuickLog={onOpenQuickLog}
+              onNavigate={onNavigate}
+              onLoggedTraining={() => void handleOneTapTrained(dayMode === 'mma' ? 'mma' : 'gym')}
+            />
+          )}
+
+          {/* Unconfirmed "About me" one-tap review prompt */}
+          {unconfirmedAboutCount > 0 && (
+            <section className="ascend-card p-3.5 bg-[var(--accent-soft)] border border-[var(--accent)]/35 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="min-w-0">
+                <p className="font-bold text-slate-900 dark:text-slate-100">
+                  Is this right? ({formatDisplayNumber(unconfirmedAboutCount, arabicDigits)} suggested notes about you)
+                </p>
+                <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                  Confirm or edit your Egypt food &amp; gym/MMA details so plans fit you properly.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => onNavigate('settings')}
+                className="px-3 py-2 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] font-bold min-h-[38px] shrink-0"
+              >
+                Review in Settings
+                {arabicHints && (
+                  <span dir="rtl" lang="ar" className="block text-[10px] font-normal">
+                    {ARABIC_HINTS.confirmRight}
+                  </span>
+                )}
+              </button>
+            </section>
+          )}
+
+          {/* Morning 1-Glance Rhythm Card + Rough Day Button */}
+          <section className="ascend-card p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  Today&apos;s rhythm
+                </p>
+                <p className="text-xs font-mono-num text-slate-700 dark:text-slate-200 mt-0.5">
+                  Target: {formatDisplayNumber(profile.calorieGoal, arabicDigits)} kcal ·{' '}
+                  {formatDisplayNumber(profile.proteinTargetG, arabicDigits)}g protein ·{' '}
+                  {formatDisplayNumber(((profile.waterTargetMl || 3000) / 1000).toFixed(1), arabicDigits)}L water
+                  {trainingCampConfirmed && (
+                    <span className="text-[var(--accent)] font-bold">
+                      {fightCampCountdownDays !== null
+                        ? ` · ${formatDisplayNumber(fightCampCountdownDays, arabicDigits)}d to tournament`
+                        : ' · Fight camp active'}
+                      {profile.aboutMe?.weightClassKg
+                        ? ` (${formatDisplayNumber(profile.aboutMe.weightClassKg, arabicDigits)} kg class)`
+                        : ''}
+                    </span>
+                  )}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleToggleRoughDay}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold min-h-[38px] border transition ${
+                  isRoughDay
+                    ? 'bg-amber-500/20 border-amber-500/40 text-amber-600 dark:text-amber-300'
+                    : 'bg-slate-100 dark:bg-white/5 border-transparent text-slate-600 dark:text-slate-300'
+                }`}
+              >
+                {isRoughDay ? 'Rough day ON (2 tasks)' : 'Rough day'}
+                {arabicHints && (
+                  <span dir="rtl" lang="ar" className="block text-[10px] font-normal">
+                    {ARABIC_HINTS.roughDay}
+                  </span>
+                )}
+              </button>
+            </div>
+
+            <div className="grid grid-cols-4 gap-1.5">
+              {(
+                [
+                  { id: 'gym', label: 'Gym day', ar: ARABIC_HINTS.gymDay },
+                  { id: 'mma', label: 'MMA day', ar: ARABIC_HINTS.mmaDay },
+                  { id: 'sparring', label: 'Sparring', ar: ARABIC_HINTS.sparringDay },
+                  { id: 'rest', label: 'Rest day', ar: ARABIC_HINTS.restDay },
+                ] as const
+              ).map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => handleSetDayMode(m.id)}
+                  className={`py-2 px-1.5 rounded-xl text-[11px] font-semibold min-h-[40px] border transition ${
+                    dayMode === m.id
+                      ? 'bg-[var(--accent-soft)] text-[var(--accent)] border-[var(--accent)]/40'
+                      : 'bg-slate-100 dark:bg-white/5 border-transparent text-slate-600 dark:text-slate-300'
+                  }`}
+                >
+                  <span>{m.label}</span>
+                  {arabicHints && (
+                    <span dir="rtl" lang="ar" className="block text-[9px] opacity-80">
+                      {m.ar}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              {dayMode === 'gym' || dayMode === 'mma'
+                ? localFoodsConfirmed
+                  ? 'Training fuel: easy carbs (baladi bread/oats/dates) + water 60–90m before, protein (eggs/chicken/kofta) after.'
+                  : 'Training fuel: have easy carbs + water 60–90m before training, and protein within 1–2h after.'
+                : dayMode === 'sparring'
+                ? 'Hard sparring recovery: prioritize fluids, gentle dinner, and 8h+ sleep tonight.'
+                : 'Rest day: light 10m walk, steady hydration, and relaxed mobility.'}
+              {eatingPatternConfirmed && ' Eat steady protein early so lunch cravings stay calm.'}
+              {trainingCampConfirmed && ' No dehydration cuts — coach & doctor guide weight class.'}
+              {isRoughDay && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onOpenCoach("I'm having a rough day — help me do just one small easy step.")
+                  }
+                  className="ml-2 text-[var(--accent)] font-semibold underline"
+                >
+                  Talk to coach
+                </button>
+              )}
+            </p>
+          </section>
+
+          {/* Autopilot Weekly Review (due on Sundays or 7+ days since last review when real logs exist) */}
+          {autopilotWeeklyStats.isDue && (
+            <section className="ascend-card p-4 border border-[var(--accent)]/35 bg-[var(--accent-soft)] space-y-2.5 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                  <Calendar className="w-4 h-4 text-[var(--accent)]" />
+                  Weekly Autopilot Check-In
+                </p>
+                <span className="font-mono-num text-[11px] text-[var(--accent)] font-semibold">
+                  {formatDisplayNumber(autopilotWeeklyStats.completionCount, arabicDigits)} habits ·{' '}
+                  {formatDisplayNumber(autopilotWeeklyStats.workoutCount, arabicDigits)} workouts
+                  {autopilotWeeklyStats.avgSleep !== null
+                    ? ` · ${formatDisplayNumber(autopilotWeeklyStats.avgSleep, arabicDigits)}h avg sleep`
+                    : ''}
+                </span>
+              </div>
+              <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                {weeklyAdjust.headline} {weeklyAdjust.detail}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {(weeklyAdjust.status === 'nudge_down' || weeklyAdjust.status === 'nudge_up') &&
+                  !hideCut &&
+                  weeklyAdjust.suggestedCalorieGoal !== null && (
+                    <button
+                      type="button"
+                      onClick={() => handleCompleteAutopilotReview(true)}
+                      className="px-3.5 py-2 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] font-bold min-h-[38px]"
+                    >
+                      Apply {weeklyAdjust.deltaCalories > 0 ? `+${weeklyAdjust.deltaCalories}` : weeklyAdjust.deltaCalories} kcal &amp; prepare tomorrow
+                    </button>
+                  )}
+                <button
+                  type="button"
+                  onClick={() => handleCompleteAutopilotReview(false)}
+                  className="px-3.5 py-2 rounded-xl bg-white dark:bg-white/10 border border-slate-200 dark:border-white/10 font-bold min-h-[38px]"
+                >
+                  Mark week reviewed &amp; prepare tomorrow
+                </button>
+              </div>
+            </section>
+          )}
+
+          {/* Max 2 real-log "I noticed" pattern cards */}
+          <PatternInsightsCards
+            cards={patternResult.cards}
+            insufficientSummary={patternResult.insufficientSummary}
+            onDismiss={handleDismissPattern}
+            onMoveBlockTasks={handleMoveBlockTasks}
+            onOpenFoodBreakfast={() =>
+              onOpenFoodBreakfast ? onOpenFoodBreakfast() : onNavigate('food')
+            }
+            onSwitchRestDay={() => handleSetDayMode('rest')}
+          />
 
           {/* ONE big "Do this now" card */}
           {primaryNowTask ? (
@@ -721,17 +1362,29 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
                 <button
                   type="button"
                   onClick={() => handleToggleDone(primaryNowTask)}
-                  className="flex-1 min-w-[140px] py-3 px-5 rounded-2xl bg-[var(--accent)] text-[var(--accent-contrast)] text-base font-bold inline-flex items-center justify-center gap-2 min-h-[48px] active:scale-[0.98] transition"
+                  className="flex-1 min-w-[140px] py-3 px-5 rounded-2xl bg-[var(--accent)] text-[var(--accent-contrast)] text-base font-bold inline-flex flex-col items-center justify-center min-h-[48px] active:scale-[0.98] transition"
                 >
-                  <Check className="w-5 h-5" strokeWidth={2.5} />
-                  {en.now.doneBtn}
+                  <span className="inline-flex items-center gap-2">
+                    <Check className="w-5 h-5" strokeWidth={2.5} />
+                    {en.now.doneBtn}
+                  </span>
+                  {arabicHints && (
+                    <span dir="rtl" lang="ar" className="text-[10px] font-normal opacity-90">
+                      {ARABIC_HINTS.done}
+                    </span>
+                  )}
                 </button>
                 <button
                   type="button"
                   onClick={() => handleNowLater(primaryNowTask)}
                   className="py-3 px-4 rounded-2xl bg-slate-100 dark:bg-white/[0.06] border border-slate-200 dark:border-white/10 text-sm font-semibold min-h-[48px] hover:border-[var(--accent)]/40 transition"
                 >
-                  {en.now.laterBtn}
+                  <span>{en.now.laterBtn}</span>
+                  {arabicHints && (
+                    <span dir="rtl" lang="ar" className="block text-[10px] font-normal opacity-75">
+                      {ARABIC_HINTS.later}
+                    </span>
+                  )}
                 </button>
               </div>
             </section>
@@ -1057,6 +1710,99 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
               </div>
             </section>
           )}
+
+          {/* Evening 2-minute wind-down & 1-tap "Day done" */}
+          <section className="ascend-card p-4 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => setShowWindDown((v) => !v)}
+                className="text-left min-w-0 flex-1"
+              >
+                <p className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  Evening 2-min wind-down
+                  {arabicHints && (
+                    <span dir="rtl" lang="ar" className="ml-2 font-normal text-[var(--accent)]">
+                      · {ARABIC_HINTS.windDown}
+                    </span>
+                  )}
+                </p>
+                <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
+                  {todayLog?.minimumsDone
+                    ? 'Day marked done — rest up for tomorrow.'
+                    : 'Quick evening wrap-up before sleep.'}
+                </p>
+              </button>
+              <button
+                type="button"
+                onClick={handleToggleDayDone}
+                className={`px-3.5 py-2 rounded-xl text-xs font-bold min-h-[40px] shrink-0 transition ${
+                  todayLog?.minimumsDone
+                    ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border border-emerald-500/40'
+                    : 'bg-[var(--accent)] text-[var(--accent-contrast)]'
+                }`}
+              >
+                {todayLog?.minimumsDone ? '✓ Day done' : 'Day done'}
+                {arabicHints && (
+                  <span dir="rtl" lang="ar" className="block text-[10px] font-normal">
+                    {ARABIC_HINTS.dayDone}
+                  </span>
+                )}
+              </button>
+            </div>
+
+            {showWindDown && (
+              <div className="space-y-1.5 pt-2 border-t border-slate-200 dark:border-white/10">
+                {[
+                  { id: 'tmrw', label: 'Preview Tomorrow in Plan (10 sec)' },
+                  { id: 'screen', label: 'Dim screen & charge phone out of reach' },
+                  { id: 'skin_pm', label: 'PM wash + moisturizer' },
+                  { id: 'neck', label: '30 sec gentle neck & shoulder release' },
+                ].map((step) => {
+                  const checked = Boolean(windDownChecks[step.id]);
+                  return (
+                    <button
+                      key={step.id}
+                      type="button"
+                      onClick={() =>
+                        setWindDownChecks((prev) => ({ ...prev, [step.id]: !prev[step.id] }))
+                      }
+                      className="w-full flex items-center gap-2.5 p-2 rounded-xl bg-slate-50 dark:bg-white/[0.03] text-left text-xs min-h-[38px]"
+                    >
+                      <span
+                        className={`w-4 h-4 rounded flex items-center justify-center shrink-0 ${
+                          checked
+                            ? 'bg-[var(--accent)] text-[var(--accent-contrast)]'
+                            : 'border border-slate-300 dark:border-white/25'
+                        }`}
+                      >
+                        {checked && <Check className="w-3 h-3" />}
+                      </span>
+                      <span className={checked ? 'line-through text-slate-400' : ''}>
+                        {step.label}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          {/* Rarely shown Healthy-Frame card (Part 6) */}
+          {showHealthyFrameCard && (
+            <section className="ascend-card p-3.5 bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 flex items-center justify-between gap-3 text-xs">
+              <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                Looks are one part of you. Sleep, fitness, skills and people matter more for how life goes.
+              </p>
+              <button
+                type="button"
+                onClick={handleAcknowledgeHealthyFrame}
+                className="px-3 py-1.5 rounded-xl bg-slate-200 dark:bg-white/10 font-semibold shrink-0 min-h-[34px]"
+              >
+                Got it
+              </button>
+            </section>
+          )}
         </div>
       )}
 
@@ -1071,11 +1817,23 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
               <div className="min-w-0">
                 <h2 className="font-display text-lg font-bold">{en.today.title}</h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  {todayDoneCount} of {todayTasks.length} habits done
+                  {formatDisplayNumber(todayDoneCount, arabicDigits)} of{' '}
+                  {formatDisplayNumber(activeProgressTasks.length, arabicDigits)}{' '}
+                  {easyMode && !showAllToday && todayTasks.length > 6 ? 'core daily habits' : 'habits'} done
                 </p>
               </div>
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={async () => {
+                  await regenerateProtocolFromProfile(profile);
+                  showToast('Synced Daily 6 with your current goals');
+                }}
+                className="px-3 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 text-xs font-semibold min-h-[44px]"
+              >
+                Sync 6
+              </button>
               <button
                 type="button"
                 onClick={() => setAddingToday((v) => !v)}
@@ -1268,7 +2026,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
                                   </button>
                                   <button
                                     type="button"
-                                    onClick={onOpenCoach}
+                                    onClick={() => onOpenCoach(`Tips for "${cleanTitle}"`)}
                                     className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[var(--accent-soft)] text-[var(--accent)] text-xs font-semibold min-h-[40px]"
                                   >
                                     <MessageSquareText className="w-3.5 h-3.5" /> Ask coach
@@ -1302,6 +2060,62 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
                 >
                   {showAllToday ? en.today.showLess : `${en.today.showMore} (${hiddenTodayCount} more)`}
                 </button>
+              )}
+
+              {/* Part 3: Collapsed Explore More Shelf for Core 12 familiar habits (never auto-added) */}
+              {exploreMoreProtocols.length > 0 && (
+                <section className="ascend-card p-4 space-y-3">
+                  <button
+                    type="button"
+                    onClick={() => setShowExploreMore((v) => !v)}
+                    className="w-full flex items-center justify-between gap-2 text-left min-h-[44px]"
+                  >
+                    <div>
+                      <p className="text-sm font-bold">Explore more ({exploreMoreProtocols.length})</p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        Optional Core habits — never auto-added to Today
+                      </p>
+                    </div>
+                    {showExploreMore ? (
+                      <ChevronUp className="w-4 h-4 text-slate-400 shrink-0" />
+                    ) : (
+                      <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
+                    )}
+                  </button>
+
+                  {showExploreMore && (
+                    <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-white/10">
+                      {exploreMoreProtocols.map((item) => (
+                        <div
+                          key={item.id}
+                          className="p-3 rounded-xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 flex items-center justify-between gap-3"
+                        >
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="px-1.5 py-0.5 rounded bg-[var(--accent-soft)] text-[var(--accent)] text-[10px] font-bold">
+                                New
+                              </span>
+                              <p className="text-sm font-semibold truncate">{cleanTaskTitle(item.title)}</p>
+                            </div>
+                            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                              {item.why}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await addProtocolToPlan(item.id, 'Explore');
+                              showToast(`Added "${cleanTaskTitle(item.title)}" to Today`);
+                            }}
+                            className="px-3.5 py-2 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-bold min-h-[44px] shrink-0"
+                          >
+                            Add
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
               )}
             </div>
           )}
@@ -1729,12 +2543,29 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
             <button
               type="button"
               onClick={() => onOpenQuickLog('water')}
-              className="inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--accent)] min-h-[40px]"
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--accent)] min-h-[44px]"
             >
               <Plus className="w-3.5 h-3.5" /> Quick log water or check-in
             </button>
           </div>
         </div>
+      )}
+
+      {showWeeklyModal && (
+        <WeeklyLeaderReviewModal
+          profile={profile}
+          settings={settings}
+          tasks={tasks}
+          completions={completions}
+          dailyLogs={dailyLogs}
+          mealScans={mealScans}
+          workouts={workouts}
+          bodyMetrics={bodyMetrics}
+          scans={scans}
+          onClose={() => setShowWeeklyModal(false)}
+          onOpenQuickLog={onOpenQuickLog}
+          onNavigate={onNavigate}
+        />
       )}
     </div>
   );

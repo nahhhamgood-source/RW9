@@ -390,3 +390,107 @@ export const STAND_TALLER_TIPS: Array<{ title: string; detail: string }> = [
     detail: 'Resistance training 3×/week, daily water, vitamin D, calcium from food, and 7–9h sleep preserve every millimeter over decades.',
   },
 ];
+
+export const STAND_TALL_FINISHED_BANNER =
+  'Your bones are mostly done growing. Exercises cannot add bone length. They CAN help you stand tall and look taller by up to about 1-2 cm.';
+
+export interface StandTallExerciseItem {
+  id: string;
+  title: string;
+  dose: string;
+  evidence: EvidenceTag;
+  why: string;
+  watchQuery: string;
+}
+
+export const STAND_TALL_PLAN_ITEMS: StandTallExerciseItem[] = [
+  {
+    id: 'st-dead-hang',
+    title: 'Dead hang',
+    dose: '3 × 20–30s',
+    evidence: 'Likely works',
+    why: 'Gently decompresses tight spinal posture without forcing shoulders.',
+    watchQuery: 'dead hang bar posture exercise proper form',
+  },
+  {
+    id: 'st-cobra',
+    title: 'Cobra stretch',
+    dose: '3 × 10 slow lifts',
+    evidence: 'Likely works',
+    why: 'Opens a stiff chest and upper back from phone and desk sitting.',
+    watchQuery: 'cobra stretch back posture proper form',
+  },
+  {
+    id: 'st-cat-cow',
+    title: 'Cat-Cow flow',
+    dose: '2 × 10 breaths',
+    evidence: 'Proven',
+    why: 'Moves every spinal segment smoothly and eases morning stiffness.',
+    watchQuery: 'cat cow stretch spine mobility proper form',
+  },
+  {
+    id: 'st-childs-pose',
+    title: "Child's pose",
+    dose: '60s calm breathing',
+    evidence: 'Proven',
+    why: 'Lengthens lats and relaxes low-back tension.',
+    watchQuery: 'childs pose stretch spine proper form',
+  },
+  {
+    id: 'st-wall-angels',
+    title: 'Wall angels',
+    dose: '2 × 10 slow reps',
+    evidence: 'Proven',
+    why: 'Strengthens upper back so shoulders sit naturally back and tall.',
+    watchQuery: 'wall angels posture exercise proper form',
+  },
+  {
+    id: 'st-hip-flexor',
+    title: 'Hip flexor stretch',
+    dose: '2 × 40s / side',
+    evidence: 'Proven',
+    why: 'Eases anterior pelvic tilt that makes you stand shorter.',
+    watchQuery: 'half kneeling hip flexor stretch proper form',
+  },
+  {
+    id: 'st-glute-bridge',
+    title: 'Glute bridge',
+    dose: '3 × 15 reps',
+    evidence: 'Proven',
+    why: 'Stabilizes hips and lower back for cleaner upright alignment.',
+    watchQuery: 'glute bridge posture alignment proper form',
+  },
+  {
+    id: 'st-chin-tucks',
+    title: 'Chin tucks',
+    dose: '2 × 10 (3s holds)',
+    evidence: 'Likely works',
+    why: 'Aligns head over shoulders to undo forward-neck slump.',
+    watchQuery: 'cervical chin tucks proper form',
+  },
+  {
+    id: 'st-wall-reset',
+    title: 'Face-the-wall posture reset',
+    dose: '60s check',
+    evidence: 'Likely works',
+    why: 'Builds clean wall alignment from heels and hips to crown.',
+    watchQuery: 'face the wall posture squat reset exercise',
+  },
+  {
+    id: 'st-sleep',
+    title: 'Steady sleep window',
+    dose: '7–9h adults · 8–10h teens',
+    evidence: 'Proven',
+    why: 'Spinal discs rehydrate overnight when you sleep on a steady schedule.',
+    watchQuery: 'sleep hygiene posture recovery',
+  },
+  {
+    id: 'st-steps',
+    title: 'Daily walking steps',
+    dose: '8,000–10,000 steps',
+    evidence: 'Proven',
+    why: 'Keeps hips, spine, and daily posture active instead of stuck in chairs.',
+    watchQuery: 'upright walking posture form',
+  },
+];
+

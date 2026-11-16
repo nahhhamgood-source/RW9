@@ -523,3 +523,49 @@ export const PROTOCOL_MAP: Record<string, ProtocolDefinition> = {
   ...LEGACY_ALIASES,
   ...byId,
 };
+
+/**
+ * Part 3: Core library of 12 familiar tasks using only existing protocol types.
+ */
+export const CORE_TWELVE_PROTOCOL_IDS = [
+  'face-debloat-water',
+  'body-protein-check',
+  'body-10min-walk',
+  'body-sleep-fixed',
+  'body-workout-day',
+  'body-mobility-flow',
+  'body-posture-reset',
+  'face-cleanse-am',
+  'face-cleanse-pm',
+  'face-spf-daily',
+  'body-neck-set',
+  'face-tongue-posture',
+] as const;
+
+export const STARTER_SIX_BY_GOAL = {
+  fight_camp: [
+    'body-workout-day',
+    'body-protein-check',
+    'face-debloat-water',
+    'body-sleep-fixed',
+    'body-mobility-flow',
+    'body-10min-walk',
+  ],
+  look_better: [
+    'face-cleanse-am',
+    'face-spf-daily',
+    'face-debloat-water',
+    'body-posture-reset',
+    'body-protein-check',
+    'body-sleep-fixed',
+  ],
+  both: [
+    'body-workout-day',
+    'body-protein-check',
+    'face-debloat-water',
+    'face-cleanse-am',
+    'face-spf-daily',
+    'body-sleep-fixed',
+  ],
+} as const;
+

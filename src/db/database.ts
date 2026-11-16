@@ -4,6 +4,8 @@ import { BADGE_DEFINITIONS, xpRequiredForLevel } from '../data/badges';
 import { addDays, getIsoWeekKey, setDayStartHour4am, toLocalDateKey } from '../lib/date';
 import { calculateMifflinStJeor } from '../lib/fitness';
 import type {
+  AboutMeItemKey,
+  AboutMeProfile,
   ActiveProtocolTask,
   AppSettings,
   BodyMetricEntry,
@@ -46,6 +48,7 @@ export function isAgeUnknown(
   profile: Pick<UserProfile, 'age' | 'ageExplicitlySet' | 'onboardingSkipped'>
 ): boolean {
   if (!Number.isFinite(profile.age) || profile.age <= 0) return true;
+  if (profile.ageExplicitlySet === false) return true;
   if (profile.onboardingSkipped && profile.ageExplicitlySet !== true) return true;
   return false;
 }
@@ -333,6 +336,57 @@ export class AscendDB extends Dexie {
 
 export const db = new AscendDB();
 
+export const DEFAULT_LOCAL_FOODS = [
+  'Shawarma',
+  'Hawawshi',
+  'Kofta',
+  'Sausage (Sogoq)',
+  'Liver (Kibda)',
+  'Chicken Pane',
+  'Macaroni Tagine',
+  'Ful',
+  "Ta'miya",
+  'Koshari',
+  'Fiteer',
+];
+
+export function createDefaultAboutMe(weightKg = 74): AboutMeProfile {
+  return {
+    countryRegion: 'Egypt',
+    localFoods: [...DEFAULT_LOCAL_FOODS],
+    trainingDisciplines: ['Gym (a few months)', 'MMA (a couple months)'],
+    tournamentUpcoming: true,
+    tournamentDate: null,
+    weightClassKg: null,
+    currentWeightKg: weightKg,
+    targetWeightKg: null,
+    eatingPattern: 'Often skips breakfast (coffee with milk only) and overeats at lunch',
+    identityFocus:
+      'Looksmaxxing / glow-up, tiny daily steps across face, body, mind, study & programming, optional light prayer check-ins',
+    supportStyle:
+      'Shame-free quit support, friendly short picture-first coach, app handles the organizing',
+    statuses: {
+      location_foods: 'suggested',
+      training_camp: 'suggested',
+      eating_pattern: 'suggested',
+      identity_focus: 'suggested',
+      support_style: 'suggested',
+    },
+    deletedKeys: [],
+    updatedAt: Date.now(),
+  };
+}
+
+export function isAboutMeItemConfirmed(
+  about: AboutMeProfile | undefined,
+  key: AboutMeItemKey
+): boolean {
+  if (!about) return false;
+  if (about.deletedKeys?.includes(key)) return false;
+  const st = about.statuses?.[key];
+  return st === 'confirmed' || st === 'edited';
+}
+
 export function createDefaultProfile(): UserProfile {
   const calc = calculateMifflinStJeor({
     sex: 'male',
@@ -378,6 +432,7 @@ export function createDefaultProfile(): UserProfile {
     waterTargetMl: calc.waterMl,
     stepTarget: 10000,
     detectedFaceShape: null,
+    aboutMe: createDefaultAboutMe(74),
     onboardingDone: false,
     onboardingComplete: false,
     onboardingSkipped: false,
@@ -411,7 +466,16 @@ export function createDefaultSettings(): AppSettings {
       maghrib: '18:15',
       isha: '19:45',
     },
-    tongueReminderTimes: ['10:00', '14:30', '19:00'],
+    tongueReminderTimes: ['11:00', '15:30', '20:00'],
+    arabicHintsEnabled: false,
+    arabicIndicDigits: false,
+    dismissedPatternIds: [],
+    trainingWindowStart: '18:00',
+    trainingWindowEnd: '20:00',
+    relaxedFridayMode: false,
+    roughDayDates: [],
+    dayModeByDate: {},
+    healthyFrameLastShownDate: null,
     pinHash: null,
     reminders: {
       enabled: true,
@@ -436,7 +500,14 @@ export function createDefaultSettings(): AppSettings {
       quietHoursStart: '23:00',
       quietHoursEnd: '07:00',
       maxPerDay: 6,
+      mewingCheckEnabled: true,
+      neckSetEnabled: true,
+      neckSetTime: '19:30',
+      showDetailsInNotifications: false,
     },
+    celebratedMilestones: [],
+    lastAutoPlanDate: null,
+    quickMealLastInputs: { calories: '520', protein: '35', sodium: '550' },
     lastWeeklyReviewDate: null,
     lastBackupDate: null,
     autoPedometer: false,
@@ -557,6 +628,53 @@ export function buildPlanForProfile(
     boost('mind-dhikr-quran', 109, 'Prayer');
   }
 
+  // Confirmed "About me" personalization (strictly gated behind explicit user confirm/edit)
+  const about = profile.aboutMe;
+  if (isAboutMeItemConfirmed(about, 'training_camp')) {
+    boost('body-workout-day', 28, 'Fight Camp');
+    boost('body-sleep-fixed', 20, 'Fight Camp');
+    boost('body-mobility-flow', 24, 'Fight Camp');
+    boost('face-debloat-water', 16, 'Fight Camp');
+  }
+  if (isAboutMeItemConfirmed(about, 'eating_pattern')) {
+    boost('body-protein-check', 34, 'Body');
+    boost('face-debloat-water', 20, 'Face');
+    boost('body-10min-walk', 14, 'Body');
+  }
+  if (isAboutMeItemConfirmed(about, 'location_foods')) {
+    boost('body-protein-check', 10, 'Body');
+    boost('face-debloat-water', 10, 'Face');
+  }
+  if (isAboutMeItemConfirmed(about, 'identity_focus') && about?.identityFocus) {
+    const focusText = about.identityFocus.toLowerCase();
+    if (focusText.includes('program') || focusText.includes('cod')) {
+      boost('mind-coding-lesson', 18, 'Mind · Code');
+    }
+    if (focusText.includes('study')) {
+      boost('mind-study-block', 18, 'Mind · Study');
+    }
+    if (focusText.includes('prayer') && settings?.prayerTrackingEnabled) {
+      boost('mind-dhikr-quran', 12, 'Prayer');
+    }
+  }
+
+  // Adapt slightly to today's active training day mode (Gym / MMA / Sparring / Rest)
+  const todayMode = settings?.dayModeByDate?.[toLocalDateKey()];
+  if (todayMode === 'sparring') {
+    boost('body-sleep-winddown', 36, 'Recovery');
+    boost('body-sleep-fixed', 20, 'Recovery');
+    boost('body-mobility-flow', 28, 'Recovery');
+    boost('face-debloat-water', 18, 'Hydration');
+  } else if (todayMode === 'rest') {
+    boost('body-10min-walk', 24, 'Recovery');
+    boost('body-mobility-flow', 28, 'Recovery');
+    boost('body-sleep-winddown', 38, 'Recovery');
+    if (scoreMap.has('body-workout-day')) {
+      const prev = scoreMap.get('body-workout-day')!;
+      scoreMap.set('body-workout-day', { ...prev, score: prev.score - 45 });
+    }
+  }
+
   if (candidateIds.size === 0) {
     boost('face-cleanse-am', 100, 'Face');
     boost('face-spf-daily', 98, 'Face');
@@ -637,6 +755,11 @@ export async function ensureDatabaseReady(): Promise<{
       profile = { ...profile, name: '' };
       await db.profile.update('me', { name: '' });
     }
+    if (!profile.aboutMe) {
+      const seededAbout = createDefaultAboutMe(profile.weightKg);
+      profile = { ...profile, aboutMe: seededAbout };
+      await db.profile.update('me', { aboutMe: seededAbout });
+    }
     if (profile.onboardingDone || profile.onboardingComplete || profile.onboardingSkipped) {
       writeBootMirror(profile);
     }
@@ -653,6 +776,11 @@ export async function ensureDatabaseReady(): Promise<{
       settings.tone === undefined ||
       settings.slangTierNames === undefined ||
       settings.includeSkinScoreInScans === undefined ||
+      settings.arabicHintsEnabled === undefined ||
+      settings.arabicIndicDigits === undefined ||
+      settings.dismissedPatternIds === undefined ||
+      settings.roughDayDates === undefined ||
+      settings.dayModeByDate === undefined ||
       settings.reminders?.maxPerDay === undefined;
     if (needsSync) {
       settings = {
@@ -662,9 +790,22 @@ export async function ensureDatabaseReady(): Promise<{
         tone: settings.tone ?? 'normal',
         slangTierNames: settings.slangTierNames ?? true,
         includeSkinScoreInScans: settings.includeSkinScoreInScans ?? true,
+        arabicHintsEnabled: settings.arabicHintsEnabled ?? false,
+        arabicIndicDigits: settings.arabicIndicDigits ?? false,
+        dismissedPatternIds: settings.dismissedPatternIds ?? [],
+        trainingWindowStart: settings.trainingWindowStart ?? '18:00',
+        trainingWindowEnd: settings.trainingWindowEnd ?? '20:00',
+        relaxedFridayMode: settings.relaxedFridayMode ?? false,
+        roughDayDates: settings.roughDayDates ?? [],
+        dayModeByDate: settings.dayModeByDate ?? {},
+        tongueReminderTimes:
+          settings.tongueReminderTimes && settings.tongueReminderTimes.length > 0
+            ? settings.tongueReminderTimes
+            : defaults.tongueReminderTimes,
         reminders: {
           ...defaults.reminders,
           ...settings.reminders,
+          maxPerDay: Math.min(6, settings.reminders?.maxPerDay ?? 6),
         },
       };
       await db.settings.put(settings);
@@ -761,12 +902,13 @@ export async function prepareSuggestedTomorrowPlan(
   settings?: Partial<AppSettings> | null
 ): Promise<number> {
   const tomorrowKey = addDays(toLocalDateKey(), 1);
-  const existingTomorrow = await db.protocolTasks
-    .filter((t) => t.scheduledDate === tomorrowKey)
-    .toArray();
+  const [existingTomorrow, latestScans] = await Promise.all([
+    db.protocolTasks.filter((t) => t.scheduledDate === tomorrowKey).toArray(),
+    db.scans.orderBy('timestamp').reverse().limit(1).toArray(),
+  ]);
   const existingProtocols = new Set(existingTomorrow.map((t) => t.protocolId));
 
-  const suggestions = buildPlanForProfile(profile, null, settings).slice(0, 6);
+  const suggestions = buildPlanForProfile(profile, latestScans[0] ?? null, settings).slice(0, 6);
   const newItems: ActiveProtocolTask[] = [];
   for (const s of suggestions) {
     if (existingProtocols.has(s.protocolId)) continue;
@@ -937,12 +1079,13 @@ export async function toggleTaskCompletion(dateKey: string, task: ActiveProtocol
 }
 
 export async function recalculateXpAndBadges(): Promise<XpState> {
-  const [completions, tasks, scans, workouts, skinEntries, prevXp] = await Promise.all([
+  const [completions, tasks, scans, workouts, skinEntries, exerciseLogs, prevXp] = await Promise.all([
     db.taskCompletions.toArray(),
     db.protocolTasks.filter((t) => t.enabled && !t.scheduledDate).toArray(),
     db.scans.toArray(),
     db.workouts.toArray(),
     db.skinEntries.toArray(),
+    db.exerciseLogs.toArray(),
     db.xpState.get('xp'),
   ]);
 
@@ -957,6 +1100,8 @@ export async function recalculateXpAndBadges(): Promise<XpState> {
     arr.push(c);
     byDate.set(c.date, arr);
   }
+
+  const totalExerciseXp = exerciseLogs.reduce((sum, e) => sum + (e.xpEarned || 0), 0);
 
   const enabledCount = Math.max(1, tasks.length);
   let consistencyDayBonus = 0;
@@ -990,7 +1135,7 @@ export async function recalculateXpAndBadges(): Promise<XpState> {
   }
 
   const longestStreak = Math.max(prevXp?.longestStreak ?? 0, streak);
-  const totalXp = totalTaskXp + consistencyDayBonus;
+  const totalXp = totalTaskXp + totalExerciseXp + consistencyDayBonus;
 
   let level = 1;
   let remaining = totalXp;
@@ -1144,6 +1289,125 @@ export async function repeatYesterdaysMeals(todayKey: string): Promise<number> {
     updatedAt: Date.now(),
   });
   return yesterdays.length;
+}
+
+export async function getMostCommonMealForSlot(slot: MealScanEntry['mealType']): Promise<MealScanEntry | null> {
+  const all = await db.mealScans.toArray();
+  const candidates = all.filter((m) => (m.mealType ?? 'lunch') === (slot ?? 'lunch'));
+  const pool = candidates.length > 0 ? candidates : all;
+  if (pool.length === 0) return null;
+
+  const counts = new Map<string, { count: number; latest: MealScanEntry }>();
+  for (const entry of pool) {
+    const key = entry.mealTitle.trim().toLowerCase();
+    const prev = counts.get(key);
+    if (!prev) {
+      counts.set(key, { count: 1, latest: entry });
+    } else {
+      counts.set(key, {
+        count: prev.count + 1,
+        latest: entry.timestamp >= prev.latest.timestamp ? entry : prev.latest,
+      });
+    }
+  }
+
+  let best: { count: number; latest: MealScanEntry } | null = null;
+  for (const val of counts.values()) {
+    if (!best || val.count > best.count || (val.count === best.count && val.latest.timestamp > best.latest.timestamp)) {
+      best = val;
+    }
+  }
+  return best?.latest ?? null;
+}
+
+export async function logSameAsUsualMeal(
+  todayKey: string,
+  slot: MealScanEntry['mealType']
+): Promise<MealScanEntry | null> {
+  const template = await getMostCommonMealForSlot(slot);
+  if (!template) return null;
+  const now = Date.now();
+  const clonedItems = template.items.map((it, idx) => ({
+    ...it,
+    id: `usual-${now}-${idx}`,
+  }));
+  const newEntry: Omit<MealScanEntry, 'id'> = {
+    ...template,
+    date: todayKey,
+    timestamp: now,
+    mealType: slot ?? template.mealType ?? 'lunch',
+    items: clonedItems,
+  };
+  const id = await saveMealScanEntry(newEntry);
+  return { ...newEntry, id };
+}
+
+export async function ensureMorningAutoPlan(
+  profile: UserProfile,
+  settings: AppSettings
+): Promise<boolean> {
+  const todayKey = toLocalDateKey();
+  if (settings.lastAutoPlanDate === todayKey) return false;
+
+  const yesterdayKey = addDays(todayKey, -1);
+  const [yesterdayLog, yesterdayCompletions, existingTasks, latestScans] = await Promise.all([
+    db.dailyLogs.get(yesterdayKey),
+    db.taskCompletions.where('date').equals(yesterdayKey).toArray(),
+    db.protocolTasks.toArray(),
+    db.scans.orderBy('timestamp').reverse().limit(1).toArray(),
+  ]);
+
+  const completedCount = yesterdayCompletions.length;
+  const scheduledYesterday = existingTasks.filter((t) => t.scheduledDate === yesterdayKey);
+  const tomorrowCarry = existingTasks.filter((t) => t.scheduledDate === todayKey);
+
+  // Build updated Starter 6 suggestion when no custom-only overhaul blocks it
+  const built = buildPlanForProfile(profile, latestScans[0] ?? null, settings);
+  const carryIds = new Set(tomorrowCarry.map((t) => t.protocolId));
+  const customTasks = existingTasks.filter((t) => t.isCustom && !t.scheduledDate);
+
+  const lowSleep = Boolean(yesterdayLog && yesterdayLog.sleepHours > 0 && yesterdayLog.sleepHours < 6.5);
+  const updates: ActiveProtocolTask[] = [];
+
+  for (const t of tomorrowCarry) {
+    updates.push({
+      ...t,
+      scheduledDate: undefined,
+      enabled: true,
+    });
+  }
+
+  for (const b of built) {
+    if (carryIds.has(b.protocolId)) continue;
+    const prevMatch = existingTasks.find((e) => e.protocolId === b.protocolId && !e.scheduledDate);
+    if (prevMatch) {
+      updates.push({
+        ...prevMatch,
+        enabled: completedCount === 0 && lowSleep ? prevMatch.sortOrder < 5 : prevMatch.enabled,
+      });
+    } else if (existingTasks.filter((e) => !e.scheduledDate && e.enabled).length === 0) {
+      updates.push(b);
+    }
+  }
+
+  // Keep already-enabled starter or user-added tasks intact
+  for (const e of existingTasks) {
+    if (!e.scheduledDate && !updates.some((u) => u.id === e.id) && !scheduledYesterday.some((s) => s.id === e.id)) {
+      updates.push(e);
+    }
+  }
+
+  await db.transaction('rw', [db.protocolTasks, db.settings], async () => {
+    for (const c of customTasks) {
+      if (!updates.some((u) => u.id === c.id)) updates.push(c);
+    }
+    if (updates.length > 0) {
+      await db.protocolTasks.bulkPut(updates);
+    }
+    await db.settings.update('app', { lastAutoPlanDate: todayKey });
+  });
+
+  return true;
 }
 
 export async function toggleGrowthCheckoff(
@@ -1395,3 +1659,211 @@ export async function wipeAllData(): Promise<void> {
   ]);
   await ensureDatabaseReady();
 }
+
+export type StorageCategoryKey =
+  | 'about_me'
+  | 'daily_logs'
+  | 'meals'
+  | 'body_height'
+  | 'face_scans'
+  | 'looks_care'
+  | 'workouts'
+  | 'quit_habits'
+  | 'goals_life';
+
+export interface StorageCategorySummary {
+  key: StorageCategoryKey;
+  label: string;
+  detail: string;
+  count: number;
+  approxBytes: number;
+}
+
+function estimateJsonBytes(value: unknown): number {
+  try {
+    return new Blob([JSON.stringify(value)]).size;
+  } catch {
+    return JSON.stringify(value).length;
+  }
+}
+
+export async function getStorageCategoryBreakdown(): Promise<StorageCategorySummary[]> {
+  const [
+    profile,
+    dailyLogs,
+    completions,
+    mealScans,
+    bodyMetrics,
+    heightLogs,
+    scans,
+    skinEntries,
+    products,
+    hairPrefs,
+    wardrobe,
+    outfits,
+    workouts,
+    exerciseLogs,
+    quitItems,
+    quitSlips,
+    goals,
+    lifeList,
+  ] = await Promise.all([
+    db.profile.get('me'),
+    db.dailyLogs.toArray(),
+    db.taskCompletions.toArray(),
+    db.mealScans.toArray(),
+    db.bodyMetrics.toArray(),
+    db.heightLogs.toArray(),
+    db.scans.toArray(),
+    db.skinEntries.toArray(),
+    db.products.toArray(),
+    db.hairPreferences.toArray(),
+    db.wardrobeItems.toArray(),
+    db.outfits.toArray(),
+    db.workouts.toArray(),
+    db.exerciseLogs.toArray(),
+    db.quitItems.toArray(),
+    db.quitSlips.toArray(),
+    db.goals.toArray(),
+    db.lifeList.toArray(),
+  ]);
+
+  const aboutConfirmed = profile?.aboutMe
+    ? Object.values(profile.aboutMe.statuses ?? {}).filter((s) => s === 'confirmed' || s === 'edited')
+        .length
+    : 0;
+
+  return [
+    {
+      key: 'about_me',
+      label: 'Profile & About me',
+      detail: `${aboutConfirmed} confirmed personal facts · Age, targets & focus`,
+      count: profile?.aboutMe ? 5 - (profile.aboutMe.deletedKeys?.length ?? 0) : 0,
+      approxBytes: estimateJsonBytes(profile ?? {}),
+    },
+    {
+      key: 'daily_logs',
+      label: 'Daily check-ins & task ticks',
+      detail: `${dailyLogs.length} day logs · ${completions.length} completed tasks`,
+      count: dailyLogs.length + completions.length,
+      approxBytes: estimateJsonBytes({ dailyLogs, completions }),
+    },
+    {
+      key: 'meals',
+      label: 'Meals & food scans',
+      detail: `${mealScans.length} saved meals & local thumbnails`,
+      count: mealScans.length,
+      approxBytes: estimateJsonBytes(mealScans),
+    },
+    {
+      key: 'body_height',
+      label: 'Weight, measurements & height',
+      detail: `${bodyMetrics.length} weight checks · ${heightLogs.length} height logs`,
+      count: bodyMetrics.length + heightLogs.length,
+      approxBytes: estimateJsonBytes({ bodyMetrics, heightLogs }),
+    },
+    {
+      key: 'face_scans',
+      label: 'PSL LAB face scans',
+      detail: `${scans.length} saved scans (stays 100% on-device)`,
+      count: scans.length,
+      approxBytes: estimateJsonBytes(scans),
+    },
+    {
+      key: 'looks_care',
+      label: 'Skin, hair & wardrobe',
+      detail: `${skinEntries.length} skin logs · ${products.length} products · ${wardrobe.length} wardrobe items`,
+      count: skinEntries.length + products.length + hairPrefs.length + wardrobe.length + outfits.length,
+      approxBytes: estimateJsonBytes({ skinEntries, products, hairPrefs, wardrobe, outfits }),
+    },
+    {
+      key: 'workouts',
+      label: 'Workouts & face exercises',
+      detail: `${workouts.length} training sessions · ${exerciseLogs.length} exercise runs`,
+      count: workouts.length + exerciseLogs.length,
+      approxBytes: estimateJsonBytes({ workouts, exerciseLogs }),
+    },
+    {
+      key: 'quit_habits',
+      label: 'Quit habits (private)',
+      detail: `${quitItems.length} habits · ${quitSlips.length} private slip notes (never sent online)`,
+      count: quitItems.length + quitSlips.length,
+      approxBytes: estimateJsonBytes({ quitItems, quitSlips }),
+    },
+    {
+      key: 'goals_life',
+      label: 'Goals & life list',
+      detail: `${goals.length} main goals · ${lifeList.length} checklist items`,
+      count: goals.length + lifeList.length,
+      approxBytes: estimateJsonBytes({ goals, lifeList }),
+    },
+  ];
+}
+
+export async function deleteStorageCategory(key: StorageCategoryKey): Promise<void> {
+  switch (key) {
+    case 'about_me': {
+      const existing = await db.profile.get('me');
+      if (existing) {
+        await db.profile.update('me', {
+          aboutMe: {
+            countryRegion: '',
+            localFoods: [],
+            trainingDisciplines: [],
+            tournamentUpcoming: false,
+            tournamentDate: null,
+            weightClassKg: null,
+            currentWeightKg: null,
+            targetWeightKg: null,
+            eatingPattern: '',
+            identityFocus: '',
+            supportStyle: '',
+            statuses: {},
+            deletedKeys: [
+              'location_foods',
+              'training_camp',
+              'eating_pattern',
+              'identity_focus',
+              'support_style',
+            ],
+            updatedAt: Date.now(),
+          },
+          updatedAt: Date.now(),
+        });
+      }
+      break;
+    }
+    case 'daily_logs':
+      await Promise.all([db.dailyLogs.clear(), db.taskCompletions.clear()]);
+      await recalculateXpAndBadges();
+      break;
+    case 'meals':
+      await db.mealScans.clear();
+      break;
+    case 'body_height':
+      await Promise.all([db.bodyMetrics.clear(), db.heightLogs.clear()]);
+      break;
+    case 'face_scans':
+      await Promise.all([db.scans.clear(), db.puffinessLogs.clear()]);
+      break;
+    case 'looks_care':
+      await Promise.all([
+        db.skinEntries.clear(),
+        db.products.clear(),
+        db.hairPreferences.clear(),
+        db.wardrobeItems.clear(),
+        db.outfits.clear(),
+      ]);
+      break;
+    case 'workouts':
+      await Promise.all([db.workouts.clear(), db.exerciseLogs.clear(), db.growthCheckoffs.clear()]);
+      break;
+    case 'quit_habits':
+      await Promise.all([db.quitItems.clear(), db.quitSlips.clear()]);
+      break;
+    case 'goals_life':
+      await Promise.all([db.goals.clear(), db.lifeList.clear()]);
+      break;
+  }
+}
+

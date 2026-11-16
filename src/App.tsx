@@ -27,6 +27,7 @@ import {
   createDefaultXpState,
   db,
   ensureDatabaseReady,
+  ensureMorningAutoPlan,
   getOrCreateDailyLog,
   requestPersistentStorageAndCheck,
 } from './db/database';
@@ -85,10 +86,14 @@ const AcademyScreen = lazy(() =>
 const SettingsScreen = lazy(() =>
   import('./screens/SettingsScreen').then((m) => ({ default: m.SettingsScreen }))
 );
+const DietScreen = lazy(() =>
+  import('./screens/DietScreen').then((m) => ({ default: m.DietScreen }))
+);
 
 type ScreenId =
   | 'plan'
   | 'food'
+  | 'diet'
   | 'face'
   | 'grow'
   | 'health'
@@ -123,6 +128,8 @@ const AppShell: React.FC = () => {
 
   const [foodMealType, setFoodMealType] = useState<MealType | undefined>(undefined);
   const [foodMode, setFoodMode] = useState<'timeline' | 'scan' | 'quick' | undefined>(undefined);
+  const [sharedFoodNote, setSharedFoodNote] = useState<string | undefined>(undefined);
+  const [sharedFoodFile, setSharedFoodFile] = useState<File | null>(null);
 
   const [quickLogOpen, setQuickLogOpen] = useState(false);
   const [quickLogTab, setQuickLogTab] = useState<QuickLogTab>('water');
@@ -181,8 +188,42 @@ const AppShell: React.FC = () => {
       );
       if (!isCompleted) {
         setOnboardingOpen(true);
+      } else if (bootResult.profile) {
+        ensureMorningAutoPlan(bootResult.profile, bootResult.settings).catch(() => {});
       }
       setDbReady(true);
+
+      // Handle Web Share Target handoff (?share-target=1)
+      if (typeof window !== 'undefined') {
+        const params = new URLSearchParams(window.location.search);
+        if (params.has('share-target')) {
+          const noteParts = [params.get('title'), params.get('text'), params.get('url')]
+            .filter((s): s is string => Boolean(s && s.trim()));
+          if (noteParts.length > 0) {
+            setSharedFoodNote(noteParts.join(' · '));
+          }
+          if (params.get('has-photo') === '1' && 'caches' in window) {
+            caches
+              .open('ascend-share-target')
+              .then(async (cache) => {
+                const resp = await cache.match('/__shared-photo__');
+                if (!resp) return;
+                const blob = await resp.blob();
+                const rawName = resp.headers.get('X-File-Name') || 'shared-meal.jpg';
+                const fileName = decodeURIComponent(rawName);
+                const file = new File([blob], fileName, { type: blob.type || 'image/jpeg' });
+                await cache.delete('/__shared-photo__');
+                setSharedFoodFile(file);
+              })
+              .catch(() => {});
+            setFoodMode('scan');
+          } else {
+            setFoodMode(noteParts.length > 0 ? 'scan' : 'timeline');
+          }
+          setScreen('food');
+          window.history.replaceState({}, '', '/');
+        }
+      }
     } catch (err) {
       setDbError(err instanceof Error ? err.message : 'Failed to open local IndexedDB.');
     }
@@ -444,8 +485,9 @@ const AppShell: React.FC = () => {
         todayLog: todayLogForRem,
         waterTargetMl: profile.waterTargetMl || 3000,
         todayMealsCount: todayMealsCountForRem,
+        userName: profile.name,
       }),
-    [settings, scans, todayLogForRem, profile.waterTargetMl, todayMealsCountForRem]
+    [settings, scans, todayLogForRem, profile.waterTargetMl, todayMealsCountForRem, profile.name]
   );
 
   const navigate = useCallback((nextScreen: string, nextSubTab?: string) => {
@@ -460,6 +502,9 @@ const AppShell: React.FC = () => {
       case 'food':
         target = 'food';
         setFoodMode(nextSubTab === 'scan' || nextSubTab === 'quick' ? nextSubTab : 'timeline');
+        break;
+      case 'diet':
+        target = 'diet';
         break;
       case 'psl':
         target = 'face';
@@ -612,7 +657,7 @@ const AppShell: React.FC = () => {
     );
   }
 
-  const isSubScreen = ['more', 'dashboard', 'routine', 'academy', 'settings'].includes(screen);
+  const isSubScreen = ['diet', 'more', 'dashboard', 'routine', 'academy', 'settings'].includes(screen);
   const avatarInitials = getInitials(profile.name);
 
   return (
@@ -745,14 +790,20 @@ const AppShell: React.FC = () => {
                     dailyLogs={dailyLogs}
                     mealScans={mealScans}
                     workouts={workouts}
+                    bodyMetrics={bodyMetrics}
                     goals={goals}
                     lifeList={lifeList}
                     latestScan={scans[0] ?? null}
+                    scans={scans}
                     selectedDate={selectedDate}
                     initialTab={subTab}
                     onOpenQuickLog={(t) => openQuickLogWithTab(t)}
+                    onOpenFoodBreakfast={() => {
+                      setFoodMealType('breakfast');
+                      navigate('food', 'quick');
+                    }}
                     onNavigate={navigate}
-                    onOpenCoach={() => openCoach()}
+                    onOpenCoach={(prompt) => openCoach(prompt)}
                   />
                 </ErrorBoundary>
               )}
@@ -767,8 +818,29 @@ const AppShell: React.FC = () => {
                     bodyMetrics={bodyMetrics}
                     initialMealType={foodMealType}
                     initialMode={foodMode}
+                    initialPrefillNote={sharedFoodNote}
+                    initialSharedFile={sharedFoodFile}
+                    onConsumeSharedInput={() => {
+                      setSharedFoodFile(null);
+                    }}
                     onOpenNutritionVault={() => navigate('health', 'meals')}
+                    onOpenDiet={() => navigate('diet')}
                     onOpenCoach={() => openCoach('Ask about calories, protein, or meal swaps')}
+                  />
+                </ErrorBoundary>
+              )}
+
+              {screen === 'diet' && (
+                <ErrorBoundary screenName="Diet">
+                  <DietScreen
+                    profile={profile}
+                    settings={settings}
+                    dailyLogs={dailyLogs}
+                    mealScans={mealScans}
+                    bodyMetrics={bodyMetrics}
+                    onBack={() => navigate('food')}
+                    onNavigate={navigate}
+                    onOpenCoach={(prompt) => openCoach(prompt)}
                   />
                 </ErrorBoundary>
               )}
@@ -788,6 +860,7 @@ const AppShell: React.FC = () => {
                     initialTab={subTab}
                     onBackToPlan={() => navigate('plan', 'now')}
                     onAskCoach={() => openCoach('Explain my scan')}
+                    onOpenDebloatFood={() => navigate('food')}
                   />
                 </ErrorBoundary>
               )}
@@ -800,6 +873,7 @@ const AppShell: React.FC = () => {
                     heightLogs={heightLogs}
                     growthCheckoffs={growthCheckoffs}
                     growthPrograms={growthPrograms}
+                    dailyLogs={dailyLogs}
                     onOpenHeightLog={() => openQuickLogWithTab('height')}
                     onAskCoach={() => openCoach('Ask about height and posture')}
                   />
@@ -1098,12 +1172,15 @@ const AppShell: React.FC = () => {
         settings={settings}
         context={{
           profile,
+          settings,
           tasks,
           completions,
           dailyLogs,
           skinEntries,
           scans,
           workouts,
+          mealScans,
+          bodyMetrics,
         }}
         onClose={() => {
           setCoachOpen(false);
@@ -1113,6 +1190,7 @@ const AppShell: React.FC = () => {
 
       <ReminderCenterModal
         open={remindersOpen}
+        profile={profile}
         settings={settings}
         lastScanDate={scans[0]?.date ?? null}
         todayKey={toLocalDateKey()}
