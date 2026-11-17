@@ -774,9 +774,9 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-2 text-xs">
                 <div>
-                  <span className="font-semibold block">AI Food Photo Scan</span>
+                  <span className="font-semibold block">AI Food Chat, Voice &amp; Photo</span>
                   <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                    Sends resized meal photo only when you tap scan
+                    Sends food text, voice note, or meal photo when used; audio &amp; photos are never stored
                   </span>
                 </div>
                 <button

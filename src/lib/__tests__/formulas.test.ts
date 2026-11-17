@@ -29,6 +29,15 @@ import {
 } from '../fightCamp';
 import { buildNormalizedImportPreview, parseHealthFileText } from '../connections';
 import { evaluateMealFitForToday } from '../../data/mealLibrary';
+import { FOOD_CATALOG } from '../../data/foodCatalog';
+import {
+  applyFollowUpChip,
+  estimateCustomFoodLocally,
+  formatKcalEstimate,
+  parseFoodTextLocally,
+  roundKcal,
+  roundProtein,
+} from '../foodChatParser';
 
 describe('Fitness & Anthropometry formulas', () => {
   it('computes Mifflin-St Jeor BMR & TDEE realistically', () => {
@@ -830,6 +839,147 @@ describe('Add-on Part B & C (Mewing/Neck reminders + CCW info card)', () => {
     expect(terms).toContain('Temporalis training');
   });
 });
+
+describe('Food Chat ("Just tell me what you ate") — Part 8', () => {
+  it('ships ~150+ Egyptian & everyday food catalog items with Arabic & EN labels', () => {
+    expect(FOOD_CATALOG.length).toBeGreaterThanOrEqual(145);
+    expect(FOOD_CATALOG.every((it) => it.estimateNote === 'estimate' && it.defaultPortionLabel.length > 0)).toBe(true);
+  });
+
+  it('parses English, Egyptian Arabic, and Franco-Arabic multi-food inputs locally', () => {
+    // English
+    const enRes = parseFoodTextLocally('breakfast: 2 boiled eggs and 1 baladi loaf', 'lunch');
+    expect(enRes.mealType).toBe('breakfast');
+    expect(enRes.items).toHaveLength(2);
+    expect(enRes.items[0].name).toMatch(/egg/i);
+    expect(enRes.items[1].name).toMatch(/baladi/i);
+    expect(enRes.items[0].kcal).toBe(roundKcal(enRes.items[0].kcal));
+
+    // Egyptian Arabic with Arabic-Indic numeral
+    const arRes = parseFoodTextLocally('فول و ٣ طعمية', 'breakfast');
+    expect(arRes.items).toHaveLength(2);
+    expect(arRes.items[0].name).toMatch(/ful/i);
+    expect(arRes.items[1].name).toMatch(/taameya|falafel/i);
+    expect(arRes.items[1].quantity).toBe(3);
+
+    // Franco-Arabic compound
+    const francoRes = parseFoodTextLocally('akalt 2 ra3if 3eish w foul', 'breakfast');
+    expect(francoRes.items).toHaveLength(2);
+    expect(francoRes.items[0].name).toMatch(/baladi/i);
+    expect(francoRes.items[0].quantity).toBe(2);
+    expect(francoRes.items[1].name).toMatch(/ful/i);
+
+    // Compound Arabic drink preserved (not split on b-laban)
+    const arDrink = parseFoodTextLocally('شربت نسكافيه بلبن', 'breakfast');
+    expect(arDrink.items).toHaveLength(1);
+    expect(arDrink.items[0].name.toLowerCase()).toContain('nescafe');
+  });
+
+  it('rounds calories & protein cleanly, shows ranges for street/mixed food, and supports "I don\'t know"', () => {
+    expect(roundKcal(62)).toBe(60);
+    expect(roundKcal(244)).toBe(240);
+    expect(roundKcal(247)).toBe(250);
+    expect(roundProtein(12.6)).toBe(13);
+
+    const streetRes = parseFoodTextLocally('koshari', 'lunch');
+    expect(streetRes.items).toHaveLength(1);
+    expect(streetRes.items[0].kcalMin).toBeDefined();
+    expect(streetRes.items[0].kcalMax).toBeGreaterThan(streetRes.items[0].kcalMin!);
+    expect(formatKcalEstimate(streetRes.items[0])).toMatch(/^about \d+–\d+ kcal$/);
+
+    const idkRes = parseFoodTextLocally("koshari I don't know how much", 'lunch');
+    expect(idkRes.items[0].portionLabel).toBe('average portion');
+    expect(idkRes.items[0].questionsQueue).toHaveLength(0);
+  });
+
+  it('runs the exact 2-step Nescafe flow -> mug (~250 ml) -> with milk -> ~60 kcal, 3g protein', () => {
+    const start = parseFoodTextLocally('I drank a Nescafe', 'breakfast');
+    expect(start.items).toHaveLength(1);
+    let draft = start.items[0];
+    expect(draft.questionsQueue).toHaveLength(2);
+    expect(draft.questionsQueue[0].chips.some((c) => c.id === 'mug')).toBe(true);
+
+    // Step 1: mug (~250 ml)
+    const mugChip = draft.questionsQueue[0].chips.find((c) => c.id === 'mug')!;
+    draft = applyFollowUpChip(draft, mugChip);
+    expect(draft.questionsQueue).toHaveLength(1);
+
+    // Step 2: with milk
+    const milkChip = draft.questionsQueue[0].chips.find((c) => c.id === 'milk')!;
+    draft = applyFollowUpChip(draft, milkChip);
+    expect(draft.questionsQueue).toHaveLength(0);
+    expect(draft.needsQuestion).toBe(false);
+    expect(draft.kcal).toBe(60);
+    expect(draft.proteinG).toBe(3);
+  });
+
+  it('keeps offline fallback working and handles custom/unmatched foods without failing', () => {
+    const partial = parseFoodTextLocally('2 eggs and grandmother mystery casserole', 'dinner');
+    expect(partial.items).toHaveLength(1);
+    expect(partial.unmatchedSegments.length).toBeGreaterThanOrEqual(1);
+
+    const customEst = estimateCustomFoodLocally({
+      name: 'Homemade lentil soup',
+      portionText: '1 bowl',
+      sizePreset: 'medium',
+      proteinLevel: 'moderate',
+    });
+    expect(customEst.kcal).toBe(380);
+    expect(customEst.proteinG).toBe(14);
+    expect(customEst.kcalRange).toMatch(/about \d+–\d+ kcal/);
+  });
+
+  it('enforces age gate (no protein judgment or fat cut for under-18 / unknown age)', () => {
+    const unknown = createDefaultProfile();
+    expect(isAgeUnknown(unknown)).toBe(true);
+    expect(isUnder18OrGrowing(unknown)).toBe(true);
+    expect(resolveSafeDietGoal(unknown, 'cut').cutLocked).toBe(true);
+  });
+
+  it('detects the real meal-fullness weekly pattern card when marked Very full >= 3 days', () => {
+    const today = '2026-11-15';
+    const profile = { ...createDefaultProfile(), age: 23, ageExplicitlySet: true, stillGrowing: 'no' as const };
+    const scans: MealScanEntry[] = [0, -1, -2].map((offset, i) => {
+      const dt = addDays(today, offset);
+      return {
+        id: 900 + i,
+        date: dt,
+        timestamp: Date.parse(`${dt}T14:00:00Z`),
+        mealTitle: 'Koshari plate',
+        mealType: 'lunch',
+        fullness: 'very_full',
+        items: [],
+        totalCalories: 720,
+        totalProteinG: 22,
+        totalCarbsG: 110,
+        totalFatsG: 16,
+        totalSodiumMg: 700,
+        totalAddedSugarG: 4,
+        debloatStatus: 'moderate',
+        debloatHeadline: 'Moderate sodium',
+        summaryNote: '',
+        confidence: 'Medium',
+        isManual: true,
+      };
+    });
+
+    const detected = detectUserPatterns({
+      todayKey: today,
+      profile,
+      dailyLogs: [],
+      mealScans: scans,
+      workouts: [],
+      bodyMetrics: [],
+      tasks: [],
+      completions: [],
+      maxCards: 2,
+    });
+    const fullnessCard = detected.cards.find((c) => c.id === 'meal-fullness');
+    expect(fullnessCard).toBeDefined();
+    expect(fullnessCard!.headline).toContain('Lunch makes you very full 3 days this week');
+  });
+});
+
 
 
 

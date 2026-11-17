@@ -5,6 +5,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import healthHandler from './api/health.ts';
 import analyzeFoodHandler from './api/analyze-food.ts';
+import foodChatHandler from './api/food-chat.ts';
 import coachHandler from './api/coach.ts';
 import pushHandler from './api/push.ts';
 import sendRemindersHandler from './api/send-reminders.ts';
@@ -14,7 +15,7 @@ const isProduction = process.env.NODE_ENV === 'production';
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '2mb' }));
+  app.use(express.json({ limit: '3mb' }));
 
   app.all('/api/health', async (req: Request, res: Response) => {
     healthHandler(req, res);
@@ -22,6 +23,10 @@ async function startServer() {
 
   app.all('/api/analyze-food', async (req: Request, res: Response) => {
     await analyzeFoodHandler(req, res);
+  });
+
+  app.all('/api/food-chat', async (req: Request, res: Response) => {
+    await foodChatHandler(req, res);
   });
 
   app.all('/api/coach', async (req: Request, res: Response) => {

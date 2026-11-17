@@ -120,7 +120,7 @@ export const en = {
     localSummary: 'On-device storage · Face scans stay on your phone · Optional online AI tools require consent',
     consentTitle: 'Optional online AI features',
     consentBody:
-      'Your face scans, body logs, and diary entries stay on your phone. Only when you tap AI Food Scan or enable Online AI Coach is a meal photo or short chat summary sent to our server for Gemini processing. The server does not store your data.',
+      'Your face scans, body logs, and diary entries stay on your phone. Only when you enable AI Food Chat & Scan or Online AI Coach is your food text, voice note, meal photo, or brief coach summary sent to our server for Gemini processing. Neither audio nor photos are stored after processing.',
   },
   safety: {
     under18Headline: 'Still growing? Eat enough, sleep 8–10h, stay active.',

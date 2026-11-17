@@ -1148,6 +1148,8 @@ const AppShell: React.FC = () => {
         initialTab={quickLogTab}
         dateKey={selectedDate}
         profile={profile}
+        settings={settings}
+        mealScans={mealScans}
         units={settings.units}
         onClose={() => setQuickLogOpen(false)}
         onOpenSkinLab={() => navigate('face', 'skin')}

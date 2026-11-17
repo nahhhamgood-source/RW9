@@ -80,9 +80,9 @@ export const OnlineConsentModal: React.FC<OnlineConsentModalProps> = ({
         <div className="space-y-2">
           <label className="flex items-center justify-between gap-3 p-3 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 cursor-pointer min-h-[52px]">
             <div>
-              <p className="text-xs font-bold">AI Food Photo Scan</p>
+              <p className="text-xs font-bold">AI Food Chat, Voice &amp; Photo Scan</p>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                Sends resized meal photo only when you tap scan
+                Sends what you typed, short voice note, or meal photo only when you use it (nothing is stored)
               </p>
             </div>
             <input

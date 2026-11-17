@@ -24,6 +24,8 @@ export type ToneMode = 'normal' | 'chill' | 'serious';
 
 export type MealType = 'breakfast' | 'lunch' | 'dinner' | 'snack';
 
+export type MealFullness = 'still_hungry' | 'good' | 'very_full';
+
 export type DietGoalMode = 'cut' | 'maintain' | 'lean_gain';
 
 export type StillGrowingStatus = 'yes' | 'no' | 'unsure';
@@ -183,10 +185,40 @@ export interface AppSettings {
   celebratedMilestones?: string[];
   lastAutoPlanDate?: string | null;
   quickMealLastInputs?: { name?: string; calories: string; protein: string; sodium: string };
+  favoriteFoodIds?: string[];
+  recentFoodIds?: string[];
+  customFoodCatalog?: CustomFoodEntry[];
   pinHash: string | null;
   reminders: ReminderPreferences;
   lastWeeklyReviewDate: string | null;
   lastBackupDate?: string | null;
+}
+
+export type FoodCatalogCategory =
+  | 'Breakfast'
+  | 'Egyptian home food'
+  | 'Street food'
+  | 'Fast food'
+  | 'Drinks'
+  | 'Sweets'
+  | 'Fruit'
+  | 'Snacks';
+
+export interface CustomFoodEntry {
+  id: string;
+  name: string;
+  nameAr?: string;
+  icon: string;
+  category: FoodCatalogCategory;
+  portionLabel: string;
+  kcal: number;
+  kcalRange?: string;
+  proteinG: number;
+  carbsG?: number;
+  fatsG?: number;
+  sodiumMg?: number;
+  addedSugarG?: number;
+  createdAt: number;
 }
 
 export interface ProtocolDefinition {
@@ -557,6 +589,11 @@ export type DebloatStatus = 'optimal' | 'moderate' | 'high_retention';
 export interface MealFoodItem {
   id: string;
   name: string;
+  nameAr?: string;
+  icon?: string;
+  portionLabel?: string;
+  kcalRange?: string;
+  confidence?: 'High' | 'Medium' | 'Low';
   portionGrams: number;
   baseGrams: number;
   calories: number;
@@ -585,6 +622,7 @@ export interface MealScanEntry {
   debloatStatus: DebloatStatus;
   debloatHeadline: string;
   summaryNote: string;
+  fullness?: MealFullness;
   photoThumbnail?: string;
   isManual?: boolean;
 }

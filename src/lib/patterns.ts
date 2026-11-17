@@ -15,6 +15,7 @@ export interface DetectedPatternCard {
   id:
     | 'breakfast-gap'
     | 'big-lunch'
+    | 'meal-fullness'
     | 'load-vs-sleep'
     | 'weight-trend-honesty'
     | 'time-of-day-consistency';
@@ -176,6 +177,39 @@ export function detectUserPatterns(input: PatternDetectionInput): PatternDetecti
         suggestion:
           'Try the plate method: protein first, half plate salad/veg, then rice, pasta, or baladi bread — same lunch, smaller carb scoop.',
         why: `Calculated from ${bigLunchDays} multi-meal days in your Food log where lunch exceeded 40% of daily energy intake.`,
+        evidence: 'Likely works',
+      });
+    }
+  }
+
+  // 2b. Meal fullness pattern (optional 1-tap fullness check-in after meals)
+  if (!dismissed.has('meal-fullness') && mealsByDate.size >= 2) {
+    const veryFullDaysBySlot: Record<'breakfast' | 'lunch' | 'dinner' | 'snack', Set<string>> = {
+      breakfast: new Set(),
+      lunch: new Set(),
+      dinner: new Set(),
+      snack: new Set(),
+    };
+    mealsByDate.forEach((dayMeals, dt) => {
+      for (const m of dayMeals) {
+        if (m.fullness === 'very_full') {
+          const slot = m.mealType ?? 'lunch';
+          veryFullDaysBySlot[slot].add(dt);
+        }
+      }
+    });
+    const topSlot = (['lunch', 'dinner', 'breakfast', 'snack'] as const)
+      .map((slot) => ({ slot, days: veryFullDaysBySlot[slot].size }))
+      .sort((a, b) => b.days - a.days)[0];
+
+    if (topSlot && topSlot.days >= 3) {
+      candidates.push({
+        id: 'meal-fullness',
+        title: 'Fullness pattern',
+        headline: `${topSlot.slot.charAt(0).toUpperCase() + topSlot.slot.slice(1)} makes you very full ${topSlot.days} days this week.`,
+        suggestion:
+          'Eat protein & salad first or leave a quarter of the starch/bread if you prefer feeling lighter afterward.',
+        why: `Based on ${topSlot.days} days this week where you tapped "Very full" after ${topSlot.slot}.`,
         evidence: 'Likely works',
       });
     }

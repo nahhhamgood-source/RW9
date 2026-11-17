@@ -9,23 +9,28 @@ import {
   Camera,
   Ruler,
   AlertTriangle,
-  ScanLine,
   Wind,
   ShieldCheck,
 } from 'lucide-react';
 import {
+  createDefaultSettings,
   db,
   getOrCreateDailyLog,
   isUnder18OrGrowing,
   recalculateXpAndBadges,
   saveHeightLog,
-  saveMealScanEntry,
 } from '../../db/database';
 import { toLocalDateKey } from '../../lib/date';
 import { calculateUSNavyBodyFat, computeBmi } from '../../lib/fitness';
-import { computeDebloatImpact } from '../../lib/nutrition';
 import { en, getMealTypeByHour } from '../../i18n/en';
-import type { MealFoodItem, MealType, UnitSystem, UserProfile } from '../../types';
+import type {
+  AppSettings,
+  MealScanEntry,
+  MealType,
+  UnitSystem,
+  UserProfile,
+} from '../../types';
+import { TellMeFoodBox } from '../food/TellMeFoodBox';
 import { useToast } from '../ui/ToastProvider';
 
 export type QuickLogTab =
@@ -43,6 +48,8 @@ interface QuickLogSheetProps {
   initialTab?: QuickLogTab | 'skin';
   dateKey: string;
   profile: UserProfile;
+  settings?: AppSettings;
+  mealScans?: MealScanEntry[];
   units?: UnitSystem;
   onClose: () => void;
   onOpenSkinLab?: () => void;
@@ -63,6 +70,8 @@ export const QuickLogSheet: React.FC<QuickLogSheetProps> = ({
   initialTab = 'water',
   dateKey,
   profile,
+  settings,
+  mealScans = [],
   units = 'metric',
   onClose,
   onOpenSkinLab,
@@ -78,12 +87,9 @@ export const QuickLogSheet: React.FC<QuickLogSheetProps> = ({
   // Water
   const [waterAdd, setWaterAdd] = useState(250);
 
-  // Meal quick add
+  // Meal chat slot
   const [mealType, setMealType] = useState<MealType>(() => getMealTypeByHour());
-  const [mealNameInput, setMealNameInput] = useState('');
-  const [proteinAdd, setProteinAdd] = useState(30);
-  const [caloriesInput, setCaloriesInput] = useState('450');
-  const [stepsInput, setStepsInput] = useState('');
+  const effectiveSettings = useMemo(() => settings ?? createDefaultSettings(), [settings]);
 
   // Sleep
   const [sleepHours, setSleepHours] = useState('8');
@@ -151,61 +157,6 @@ export const QuickLogSheet: React.FC<QuickLogSheetProps> = ({
       updatedAt: Date.now(),
     });
     showToast(`Added ${ml} ml water`);
-    onClose();
-  };
-
-  const logNutrition = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const targetDate = dateKey || toLocalDateKey();
-    const log = await getOrCreateDailyLog(targetDate);
-    const mealCal = Math.max(0, Math.round(Number(caloriesInput) || 0));
-    const mealPro = Math.max(0, Number(Number(proteinAdd || 0).toFixed(1)));
-    const title = mealNameInput.trim() || `${en.meals[mealType]} quick add`;
-
-    if (!isGrowingSafe && mealCal > 0 && mealCal < 250 && log.calories === 0) {
-      // small snack is normal, only flag extreme total < 1200 when logging total intake later
-    }
-
-    const item: MealFoodItem = {
-      id: `ql-${Date.now()}`,
-      name: title,
-      portionGrams: 250,
-      baseGrams: 250,
-      calories: mealCal,
-      proteinG: mealPro,
-      carbsG: 0,
-      fatsG: 0,
-      sodiumMg: 400,
-      addedSugarG: 0,
-    };
-    const debloat = computeDebloatImpact(item.sodiumMg, 0);
-    await saveMealScanEntry({
-      date: targetDate,
-      timestamp: Date.now(),
-      mealType,
-      mealTitle: title,
-      confidence: 'High',
-      items: [item],
-      totalCalories: mealCal,
-      totalProteinG: mealPro,
-      totalCarbsG: 0,
-      totalFatsG: 0,
-      totalSodiumMg: item.sodiumMg,
-      totalAddedSugarG: 0,
-      debloatStatus: debloat.status,
-      debloatHeadline: debloat.headline,
-      summaryNote: `${en.meals[mealType]} · Quick add`,
-      isManual: true,
-    });
-
-    if (stepsInput) {
-      await db.dailyLogs.update(targetDate, {
-        steps: Math.max(0, Number(stepsInput) || log.steps),
-        updatedAt: Date.now(),
-      });
-    }
-    setMealNameInput('');
-    showToast(`Saved "${title}" to ${en.meals[mealType]}`);
     onClose();
   };
 
@@ -462,42 +413,23 @@ export const QuickLogSheet: React.FC<QuickLogSheetProps> = ({
         )}
 
         {tab === 'nutrition' && (
-          <div className="space-y-4">
-            <div>
-              <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1.5">
-                1. Meal type
-              </label>
-              <div className="grid grid-cols-4 gap-1.5">
-                {(['breakfast', 'lunch', 'dinner', 'snack'] as MealType[]).map((slot) => (
-                  <button
-                    key={slot}
-                    type="button"
-                    onClick={() => setMealType(slot)}
-                    className={`py-2.5 rounded-xl text-xs font-semibold min-h-[42px] transition ${
-                      mealType === slot
-                        ? 'bg-[var(--accent)] text-[var(--accent-contrast)]'
-                        : 'bg-slate-100 dark:bg-white/5 text-slate-700 dark:text-slate-300'
-                    }`}
-                  >
-                    {en.meals[slot]}
-                  </button>
-                ))}
-              </div>
+          <div className="space-y-3">
+            <div className="grid grid-cols-4 gap-1.5">
+              {(['breakfast', 'lunch', 'dinner', 'snack'] as MealType[]).map((slot) => (
+                <button
+                  key={slot}
+                  type="button"
+                  onClick={() => setMealType(slot)}
+                  className={`py-2.5 rounded-xl text-xs font-semibold min-h-[42px] transition ${
+                    mealType === slot
+                      ? 'bg-[var(--accent)] text-[var(--accent-contrast)]'
+                      : 'bg-slate-100 dark:bg-white/5 text-slate-700 dark:text-slate-300'
+                  }`}
+                >
+                  {en.meals[slot]}
+                </button>
+              ))}
             </div>
-
-            {onOpenMealScanner && (
-              <button
-                type="button"
-                onClick={() => {
-                  onClose();
-                  onOpenMealScanner(mealType);
-                }}
-                className="w-full py-3 px-4 rounded-2xl bg-[var(--accent-soft)] border border-[var(--accent)]/30 text-[var(--accent)] text-sm font-bold flex items-center justify-center gap-2 min-h-[48px]"
-              >
-                <ScanLine className="w-4 h-4" />
-                Scan {en.meals[mealType]} with camera AI
-              </button>
-            )}
 
             {isGrowingSafe && (
               <div className="p-3 rounded-2xl bg-sky-500/10 border border-sky-500/25 text-xs text-slate-700 dark:text-slate-200">
@@ -505,77 +437,22 @@ export const QuickLogSheet: React.FC<QuickLogSheetProps> = ({
               </div>
             )}
 
-            <form onSubmit={logNutrition} className="space-y-3 pt-1 border-t border-slate-200 dark:border-white/10">
-              <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">
-                2. Or quick add {en.meals[mealType]} manually
-              </p>
-              <input
-                type="text"
-                value={mealNameInput}
-                onChange={(e) => setMealNameInput(e.target.value)}
-                placeholder={`Meal name (e.g., ${en.meals[mealType]} plate)`}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-base min-h-[44px]"
-              />
-              <div>
-                <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">
-                  Protein (grams)
-                </label>
-                <div className="flex gap-2 mb-2">
-                  {[20, 30, 45].map((g) => (
-                    <button
-                      key={g}
-                      type="button"
-                      onClick={() => setProteinAdd(g)}
-                      className={`px-3.5 py-2 rounded-xl text-xs font-mono-num font-semibold min-h-[40px] ${
-                        proteinAdd === g
-                          ? 'bg-[var(--accent)] text-[var(--accent-contrast)]'
-                          : 'bg-slate-100 dark:bg-white/5'
-                      }`}
-                    >
-                      {g}g
-                    </button>
-                  ))}
-                </div>
-                <input
-                  type="number"
-                  value={proteinAdd}
-                  onChange={(e) => setProteinAdd(Number(e.target.value))}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-base min-h-[44px]"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">
-                    Meal calories (kcal)
-                  </label>
-                  <input
-                    type="number"
-                    placeholder="450"
-                    value={caloriesInput}
-                    onChange={(e) => setCaloriesInput(e.target.value)}
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-base min-h-[44px]"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">
-                    Steps today
-                  </label>
-                  <input
-                    type="number"
-                    placeholder="8500"
-                    value={stepsInput}
-                    onChange={(e) => setStepsInput(e.target.value)}
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 font-mono-num text-base min-h-[44px]"
-                  />
-                </div>
-              </div>
-              <button
-                type="submit"
-                className="w-full py-3 rounded-2xl bg-[var(--accent)] text-[var(--accent-contrast)] text-sm font-semibold min-h-[46px]"
-              >
-                Quick add to {en.meals[mealType]}
-              </button>
-            </form>
+            <TellMeFoodBox
+              compact
+              profile={profile}
+              settings={effectiveSettings}
+              mealScans={mealScans}
+              selectedSlot={mealType}
+              onChangeSlot={setMealType}
+              onOpenCamera={
+                onOpenMealScanner
+                  ? (slot) => {
+                      onClose();
+                      onOpenMealScanner(slot);
+                    }
+                  : undefined
+              }
+            />
           </div>
         )}
 
