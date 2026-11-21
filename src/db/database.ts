@@ -3,6 +3,13 @@ import { CURATED_PROTOCOLS, PROTOCOL_MAP } from '../data/protocols';
 import { BADGE_DEFINITIONS, xpRequiredForLevel } from '../data/badges';
 import { addDays, getIsoWeekKey, setDayStartHour4am, toLocalDateKey } from '../lib/date';
 import { calculateMifflinStJeor } from '../lib/fitness';
+import {
+  buildEventOutcomeDraftMeal,
+  buildOneQuestionDayEstimate,
+  classifyDayTrackingStatus,
+  createDefaultRealLifeSettings,
+} from '../lib/realLifeFood';
+import { getEventTypeMeta } from '../data/eventPresets';
 import type {
   AboutMeItemKey,
   AboutMeProfile,
@@ -10,6 +17,8 @@ import type {
   AppSettings,
   BodyMetricEntry,
   DailyLog,
+  EventOutcomeLevel,
+  EventType,
   ExerciseSessionLog,
   FaceScanResult,
   FocusAreaId,
@@ -26,6 +35,7 @@ import type {
   PuffinessLogEntry,
   QuitHabitItem,
   QuitSlipEntry,
+  SavedMealTemplate,
   SkinEntry,
   TaskCompletion,
   UnlockedBadge,
@@ -508,6 +518,10 @@ export function createDefaultSettings(): AppSettings {
     celebratedMilestones: [],
     lastAutoPlanDate: null,
     quickMealLastInputs: { calories: '520', protein: '35', sodium: '550' },
+    realLifeFood: createDefaultRealLifeSettings(),
+    mealTemplates: [],
+    skippedGapCheckinDates: [],
+    dailyCheckinAskedDates: {},
     lastWeeklyReviewDate: null,
     lastBackupDate: null,
     autoPedometer: false,
@@ -1079,17 +1093,21 @@ export async function toggleTaskCompletion(dateKey: string, task: ActiveProtocol
 }
 
 export async function recalculateXpAndBadges(): Promise<XpState> {
-  const [completions, tasks, scans, workouts, skinEntries, exerciseLogs, prevXp] = await Promise.all([
-    db.taskCompletions.toArray(),
-    db.protocolTasks.filter((t) => t.enabled && !t.scheduledDate).toArray(),
-    db.scans.toArray(),
-    db.workouts.toArray(),
-    db.skinEntries.toArray(),
-    db.exerciseLogs.toArray(),
-    db.xpState.get('xp'),
-  ]);
+  const [completions, tasks, scans, workouts, skinEntries, exerciseLogs, dailyLogs, mealScans, prevXp] =
+    await Promise.all([
+      db.taskCompletions.toArray(),
+      db.protocolTasks.filter((t) => t.enabled && !t.scheduledDate).toArray(),
+      db.scans.toArray(),
+      db.workouts.toArray(),
+      db.skinEntries.toArray(),
+      db.exerciseLogs.toArray(),
+      db.dailyLogs.toArray(),
+      db.mealScans.toArray(),
+      db.xpState.get('xp'),
+    ]);
 
   const byDate = new Map<string, TaskCompletion[]>();
+  const checkedInDates = new Set<string>();
   let totalTaskXp = 0;
   let spfCount = 0;
 
@@ -1099,6 +1117,29 @@ export async function recalculateXpAndBadges(): Promise<XpState> {
     const arr = byDate.get(c.date) ?? [];
     arr.push(c);
     byDate.set(c.date, arr);
+    checkedInDates.add(c.date);
+  }
+
+  for (const w of workouts) checkedInDates.add(w.date);
+  for (const s of skinEntries) checkedInDates.add(s.date);
+  for (const ex of exerciseLogs) checkedInDates.add(ex.date);
+  for (const m of mealScans) checkedInDates.add(m.date);
+  for (const dl of dailyLogs) {
+    if (
+      dl.waterMl > 0 ||
+      dl.calories > 0 ||
+      dl.sleepHours > 0 ||
+      dl.mood > 0 ||
+      dl.energy > 0 ||
+      dl.minimumsDone ||
+      dl.eventMode?.active ||
+      dl.eventMode?.outcome ||
+      dl.dayStatus === 'complete' ||
+      dl.dayStatus === 'partial' ||
+      dl.dayStatus === 'estimated'
+    ) {
+      checkedInDates.add(dl.date);
+    }
   }
 
   const totalExerciseXp = exerciseLogs.reduce((sum, e) => sum + (e.xpEarned || 0), 0);
@@ -1117,12 +1158,14 @@ export async function recalculateXpAndBadges(): Promise<XpState> {
   const currentWeek = getIsoWeekKey(today);
   let freezesRemaining = prevXp?.lastFreezeWeek === currentWeek ? prevXp.streakFreezesRemaining : 1;
 
+  // Streak counts "checked in" (any tap: a task, a log, an event chip, Day done),
+  // so missing/skipping food logging NEVER breaks the user's app streak.
   let streak = 0;
-  let cursor = completeDates.has(today) ? today : addDays(today, -1);
+  let cursor = checkedInDates.has(today) ? today : addDays(today, -1);
   let usedFreeze = false;
 
   for (let i = 0; i < 365; i++) {
-    if (completeDates.has(cursor)) {
+    if (checkedInDates.has(cursor)) {
       streak++;
       cursor = addDays(cursor, -1);
     } else if (!usedFreeze && freezesRemaining > 0 && streak > 0) {
@@ -1216,44 +1259,46 @@ export async function getOrCreateDailyLog(dateKey: string): Promise<DailyLog> {
   return fresh;
 }
 
-export async function saveMealScanEntry(entry: Omit<MealScanEntry, 'id'>): Promise<number> {
-  const id = await db.mealScans.add(entry);
-  const log = await getOrCreateDailyLog(entry.date);
-  await db.dailyLogs.update(entry.date, {
-    calories: Math.max(0, Math.round((log.calories || 0) + entry.totalCalories)),
-    proteinG: Math.max(0, Math.round((log.proteinG || 0) + entry.totalProteinG)),
+async function syncDailyNutritionAndStatus(dateKey: string): Promise<void> {
+  const [dayMeals, log, settings] = await Promise.all([
+    db.mealScans.where('date').equals(dateKey).toArray(),
+    getOrCreateDailyLog(dateKey),
+    db.settings.get('app'),
+  ]);
+  const totalCalories = Math.max(0, Math.round(dayMeals.reduce((s, m) => s + (m.totalCalories || 0), 0)));
+  const totalProteinG = Math.max(0, Math.round(dayMeals.reduce((s, m) => s + (m.totalProteinG || 0), 0)));
+  const nextStatus = classifyDayTrackingStatus({
+    dateKey,
+    dailyLog: { ...log, calories: totalCalories, proteinG: totalProteinG },
+    meals: dayMeals,
+    settings,
+  }).status;
+  await db.dailyLogs.update(dateKey, {
+    calories: totalCalories,
+    proteinG: totalProteinG,
+    dayStatus: nextStatus,
     updatedAt: Date.now(),
   });
+}
+
+export async function saveMealScanEntry(entry: Omit<MealScanEntry, 'id'>): Promise<number> {
+  const id = await db.mealScans.add(entry);
+  await syncDailyNutritionAndStatus(entry.date);
+  await recalculateXpAndBadges();
   return id;
 }
 
 export async function updateMealScanEntry(updated: MealScanEntry): Promise<void> {
   if (!updated.id) return;
-  const prev = await db.mealScans.get(updated.id);
   await db.mealScans.put(updated);
-  if (prev) {
-    const log = await getOrCreateDailyLog(updated.date);
-    const calDelta = updated.totalCalories - prev.totalCalories;
-    const proDelta = updated.totalProteinG - prev.totalProteinG;
-    await db.dailyLogs.update(updated.date, {
-      calories: Math.max(0, Math.round((log.calories || 0) + calDelta)),
-      proteinG: Math.max(0, Math.round((log.proteinG || 0) + proDelta)),
-      updatedAt: Date.now(),
-    });
-  }
+  await syncDailyNutritionAndStatus(updated.date);
 }
 
 export async function deleteMealScanEntry(entry: MealScanEntry): Promise<void> {
   if (!entry.id) return;
   await db.mealScans.delete(entry.id);
-  const log = await db.dailyLogs.get(entry.date);
-  if (log) {
-    await db.dailyLogs.update(entry.date, {
-      calories: Math.max(0, Math.round((log.calories || 0) - entry.totalCalories)),
-      proteinG: Math.max(0, Math.round((log.proteinG || 0) - entry.totalProteinG)),
-      updatedAt: Date.now(),
-    });
-  }
+  await syncDailyNutritionAndStatus(entry.date);
+  await recalculateXpAndBadges();
 }
 
 export async function repeatYesterdaysMeals(todayKey: string): Promise<number> {
@@ -1340,6 +1385,124 @@ export async function logSameAsUsualMeal(
   };
   const id = await saveMealScanEntry(newEntry);
   return { ...newEntry, id };
+}
+
+export async function startEventModeForDay(dateKey: string, eventType: EventType): Promise<DailyLog> {
+  const log = await getOrCreateDailyLog(dateKey);
+  const nextEventMode = {
+    active: true,
+    type: eventType,
+    startedAt: log.eventMode?.startedAt ?? Date.now(),
+    reminderQuietUntilMidnight: true,
+    outcome: log.eventMode?.outcome,
+    platesCount: log.eventMode?.platesCount,
+    hadDessert: log.eventMode?.hadDessert,
+  };
+  await db.dailyLogs.update(dateKey, {
+    eventMode: nextEventMode,
+    dayStatus: 'estimated',
+    updatedAt: Date.now(),
+  });
+  await recalculateXpAndBadges();
+  return { ...log, eventMode: nextEventMode, dayStatus: 'estimated' };
+}
+
+export async function endEventModeForDay(dateKey: string): Promise<void> {
+  const log = await getOrCreateDailyLog(dateKey);
+  if (!log.eventMode) return;
+  await db.dailyLogs.update(dateKey, {
+    eventMode: {
+      ...log.eventMode,
+      active: false,
+      endedAt: Date.now(),
+      reminderQuietUntilMidnight: false,
+    },
+    updatedAt: Date.now(),
+  });
+}
+
+export async function saveEventOutcomeLog(params: {
+  dateKey: string;
+  eventType: EventType;
+  outcome: EventOutcomeLevel;
+  platesCount?: number;
+  hadDessert?: boolean;
+  mealType?: MealScanEntry['mealType'];
+}): Promise<number> {
+  const meta = getEventTypeMeta(params.eventType);
+  const log = await getOrCreateDailyLog(params.dateKey);
+  const draft = buildEventOutcomeDraftMeal({
+    dateKey: params.dateKey,
+    eventTypeLabel: meta.label,
+    outcome: params.outcome,
+    platesCount: params.platesCount,
+    hadDessert: params.hadDessert,
+    mealType: params.mealType ?? 'dinner',
+  });
+  const id = await saveMealScanEntry(draft);
+  await db.dailyLogs.update(params.dateKey, {
+    eventMode: {
+      active: true,
+      type: params.eventType,
+      startedAt: log.eventMode?.startedAt ?? Date.now(),
+      reminderQuietUntilMidnight: true,
+      outcome: params.outcome,
+      platesCount: params.platesCount,
+      hadDessert: params.hadDessert,
+    },
+    dayStatus: 'estimated',
+    updatedAt: Date.now(),
+  });
+  await recalculateXpAndBadges();
+  return id;
+}
+
+export async function saveSkippedGapDay(dateKey: string): Promise<void> {
+  const settings = (await db.settings.get('app')) ?? createDefaultSettings();
+  const prevSkipped = settings.skippedGapCheckinDates ?? [];
+  if (!prevSkipped.includes(dateKey)) {
+    await db.settings.update('app', {
+      skippedGapCheckinDates: [...prevSkipped.slice(-60), dateKey],
+    });
+  }
+  const log = await getOrCreateDailyLog(dateKey);
+  await db.dailyLogs.update(dateKey, {
+    dayStatus: log.calories > 0 ? log.dayStatus ?? 'partial' : 'not_tracked',
+    updatedAt: Date.now(),
+  });
+}
+
+export async function saveOneQuestionDayOutcome(
+  dateKey: string,
+  outcome: EventOutcomeLevel
+): Promise<number> {
+  const settings = (await db.settings.get('app')) ?? createDefaultSettings();
+  const asked = { ...(settings.dailyCheckinAskedDates ?? {}), [dateKey]: outcome };
+  await db.settings.update('app', { dailyCheckinAskedDates: asked });
+  const draft = buildOneQuestionDayEstimate({ dateKey, level: outcome });
+  const id = await saveMealScanEntry(draft);
+  await db.dailyLogs.update(dateKey, {
+    dayStatus: 'estimated',
+    updatedAt: Date.now(),
+  });
+  await recalculateXpAndBadges();
+  return id;
+}
+
+export async function saveMealTemplate(template: SavedMealTemplate): Promise<SavedMealTemplate[]> {
+  const settings = (await db.settings.get('app')) ?? createDefaultSettings();
+  const prev = settings.mealTemplates ?? [];
+  const filtered = prev.filter((t) => t.id !== template.id);
+  const next = [template, ...filtered].slice(0, 30);
+  await db.settings.update('app', { mealTemplates: next });
+  return next;
+}
+
+export async function deleteMealTemplate(templateId: string): Promise<SavedMealTemplate[]> {
+  const settings = (await db.settings.get('app')) ?? createDefaultSettings();
+  const next = (settings.mealTemplates ?? []).filter((t) => t.id !== templateId);
+  await db.settings.update('app', { mealTemplates: next });
+  return next;
 }
 
 export async function ensureMorningAutoPlan(

@@ -16,6 +16,7 @@ import {
   Lock,
   MessageSquareText,
   Moon,
+  PartyPopper,
   Plus,
   Sparkles,
   Sun,
@@ -49,6 +50,7 @@ import { addDays, daysBetween, getGreeting, toLocalDateKey } from '../lib/date';
 import { getPslTierMeta } from '../lib/faceMetricsConstants';
 import { evaluateWeeklyWeightAdjustment } from '../lib/nutrition';
 import { computeHonestDailyLine, detectUserPatterns } from '../lib/patterns';
+import { getRealLifeSettings } from '../lib/realLifeFood';
 import { CircularRing } from '../components/ui/ProgressRings';
 import { ExerciseDemoLinks } from '../components/ui/ExerciseDemoLinks';
 import { EmptyState } from '../components/ui/Skeletons';
@@ -57,6 +59,7 @@ import { WinMomentBanner, type WinMilestoneKind } from '../components/ui/WinMome
 import { PatternInsightsCards } from '../components/plan/PatternInsightsCards';
 import { FightCampCard } from '../components/plan/FightCampCard';
 import { WeeklyLeaderReviewModal } from '../components/plan/WeeklyLeaderReviewModal';
+import { NextMorningCheckinCard } from '../components/food/NextMorningCheckinCard';
 import type {
   ActiveProtocolTask,
   AppSettings,
@@ -67,6 +70,7 @@ import type {
   LifeGoal,
   LifeListItem,
   MealScanEntry,
+  MealType,
   PrayerKey,
   TaskCompletion,
   TimeBlock,
@@ -96,6 +100,10 @@ interface PlanScreenProps {
   initialTab?: string;
   onOpenQuickLog: (tab?: 'water' | 'nutrition' | 'body' | 'sleep' | 'mood' | 'photo' | 'height') => void;
   onOpenFoodBreakfast?: () => void;
+  onOpenFoodForDate?: (dateKey: string, slot: MealType) => void;
+  onOpenEventModal?: (dateKey: string) => void;
+  onOpenOneQuestionModal?: (dateKey: string) => void;
+  onOpenGalleryImport?: () => void;
   onNavigate: (screen: string, subTab?: string) => void;
   onOpenCoach: (prompt?: string) => void;
 }
@@ -207,15 +215,21 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
   initialTab,
   onOpenQuickLog,
   onOpenFoodBreakfast,
+  onOpenFoodForDate,
+  onOpenEventModal,
+  onOpenOneQuestionModal,
+  onOpenGalleryImport,
   onNavigate,
   onOpenCoach,
 }) => {
   const { showToast } = useToast();
   const todayKey = toLocalDateKey();
+  const yesterdayKey = useMemo(() => addDays(todayKey, -1), [todayKey]);
   const tomorrowKey = useMemo(() => addDays(todayKey, 1), [todayKey]);
   const easyMode = settings.easyMode !== false;
   const tone = settings.tone ?? 'normal';
   const hideCut = useMemo(() => isUnder18OrGrowing(profile), [profile]);
+  const realLife = useMemo(() => getRealLifeSettings(settings), [settings]);
   const tierBadge = useMemo(
     () =>
       latestScan
@@ -540,9 +554,19 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
     [dailyLogs, todayKey]
   );
 
-  const todayMealsCal = useMemo(
-    () => mealScans.filter((m) => m.date === todayKey).reduce((s, m) => s + m.totalCalories, 0),
+  const yesterdayLog = useMemo(
+    () => dailyLogs.find((l) => l.date === yesterdayKey),
+    [dailyLogs, yesterdayKey]
+  );
+
+  const todayMeals = useMemo(
+    () => mealScans.filter((m) => m.date === todayKey),
     [mealScans, todayKey]
+  );
+
+  const todayMealsCal = useMemo(
+    () => todayMeals.reduce((s, m) => s + m.totalCalories, 0),
+    [todayMeals]
   );
   const todayCaloriesEaten = Math.max(todayMealsCal, todayLog?.calories ?? 0);
   const caloriesLeft = Math.max(0, (profile.calorieGoal || 2200) - todayCaloriesEaten);
@@ -550,6 +574,51 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
     () => workouts.find((w) => w.date === todayKey) ?? null,
     [workouts, todayKey]
   );
+
+  const isEventDay = Boolean(todayLog?.eventMode?.active);
+
+  const hasNextMorningPrompt = useMemo(() => {
+    if (!realLife.nextMorningCheckinEnabled) return false;
+    if (settings.skippedGapCheckinDates?.includes(yesterdayKey)) return false;
+    if (yesterdayLog?.eventMode?.outcome) return false;
+    if (yesterdayLog?.dayStatus === 'complete') return false;
+    const present = new Set(
+      mealScans.filter((m) => m.date === yesterdayKey).map((m) => m.mealType || 'lunch')
+    );
+    return (['breakfast', 'lunch', 'dinner'] as MealType[]).some((s) => !present.has(s));
+  }, [realLife.nextMorningCheckinEnabled, settings.skippedGapCheckinDates, yesterdayKey, yesterdayLog, mealScans]);
+
+  const showOneQuestionBanner = useMemo(() => {
+    if (!realLife.dailyOneQuestionEnabled) return false;
+    if (hasNextMorningPrompt) return false; // 1 food prompt/day cap
+    if (isEventDay) return false;
+    if (todayMeals.length > 0 || todayCaloriesEaten > 0) return false;
+    if (settings.dailyCheckinAskedDates?.[todayKey]) return false;
+    if (settings.skippedGapCheckinDates?.includes(todayKey)) return false;
+    const now = new Date();
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    const targetMin = parseMinutes(realLife.dailyOneQuestionTime || '21:00') ?? 21 * 60;
+    return nowMin >= targetMin;
+  }, [
+    realLife.dailyOneQuestionEnabled,
+    realLife.dailyOneQuestionTime,
+    hasNextMorningPrompt,
+    isEventDay,
+    todayMeals.length,
+    todayCaloriesEaten,
+    settings.dailyCheckinAskedDates,
+    settings.skippedGapCheckinDates,
+    todayKey,
+  ]);
+
+  const qualitativeFoodStatus = useMemo(() => {
+    if (isEventDay) return en.realLife.eventActiveLabel;
+    if (todayCaloriesEaten <= 0) return 'Not logged yet';
+    const pct = todayCaloriesEaten / Math.max(1, profile.calorieGoal || 2200);
+    if (pct < 0.6) return 'Light';
+    if (pct <= 1.08) return 'On track';
+    return 'Full day';
+  }, [isEventDay, todayCaloriesEaten, profile.calorieGoal]);
 
   // Real 7-day completion bar chart
   const sevenDayBars = useMemo(() => {
@@ -1072,7 +1141,44 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
               >
                 Weekly Leader Review
               </button>
+              {realLife.eventModeEnabled && onOpenEventModal && (
+                <button
+                  type="button"
+                  onClick={() => onOpenEventModal(todayKey)}
+                  className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold min-h-[44px] border transition ${
+                    isEventDay
+                      ? 'bg-sky-500/15 border-sky-500/40 text-sky-600 dark:text-sky-300'
+                      : 'bg-slate-100 dark:bg-white/5 border-transparent text-slate-700 dark:text-slate-200'
+                  }`}
+                >
+                  <PartyPopper className="w-3.5 h-3.5 text-[var(--accent)]" />
+                  {isEventDay ? 'Event mode ON' : en.realLife.outTodayBtn}
+                </button>
+              )}
             </div>
+
+            {isEventDay && (
+              <div className="p-3 rounded-2xl bg-sky-500/12 border border-sky-500/30 flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="min-w-0">
+                  <p className="font-bold text-sky-700 dark:text-sky-200 flex items-center gap-1.5">
+                    <PartyPopper className="w-3.5 h-3.5 shrink-0" />
+                    {en.realLife.eventActiveLabel}
+                  </p>
+                  <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                    {en.realLife.eventActiveSub}
+                  </p>
+                </div>
+                {onOpenEventModal && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenEventModal(todayKey)}
+                    className="px-3 py-1.5 rounded-xl bg-white dark:bg-white/10 font-bold text-[11px] min-h-[34px] shrink-0"
+                  >
+                    How did it go?
+                  </button>
+                )}
+              </div>
+            )}
 
             {/* Diet quick card */}
             <button
@@ -1084,7 +1190,13 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
                 <Utensils className="w-4 h-4 text-[var(--accent)] shrink-0" />
                 <span className="text-xs font-bold truncate">
                   Diet:{' '}
-                  {hideCut
+                  {realLife.showNumbers === 'hidden_today'
+                    ? 'Calories hidden today · Tap Food for details'
+                    : realLife.showNumbers === 'simple'
+                    ? qualitativeFoodStatus
+                    : isEventDay
+                    ? `${en.realLife.eventActiveLabel} · Zero overshoot`
+                    : hideCut
                     ? `${profile.dietGoal === 'lean_gain' ? en.diet.buildMuscle : en.diet.staySame} · ${formatDisplayNumber(profile.calorieGoal, arabicDigits)} kcal target`
                     : `${
                         profile.dietGoal === 'cut'
@@ -1101,6 +1213,41 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
             </button>
           </div>
 
+          {/* Yesterday Gap Check-In Card (1 food prompt/day cap) */}
+          {realLife.nextMorningCheckinEnabled && (
+            <NextMorningCheckinCard
+              settings={settings}
+              dailyLogs={dailyLogs}
+              mealScans={mealScans}
+              onOpenEventForDate={(dk) => onOpenEventModal?.(dk)}
+              onOpenFoodForDate={(dk, slot) =>
+                onOpenFoodForDate ? onOpenFoodForDate(dk, slot) : onNavigate('food')
+              }
+              onOpenGalleryImport={() => onOpenGalleryImport?.()}
+            />
+          )}
+
+          {/* 9pm 1-Question Daily Eating Prompt (strictly capped to 1 food prompt/day) */}
+          {showOneQuestionBanner && onOpenOneQuestionModal && (
+            <section className="ascend-card p-3.5 bg-[var(--accent-soft)] border border-[var(--accent)]/35 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="min-w-0">
+                <p className="font-bold text-slate-900 dark:text-white">
+                  {en.realLife.oneQuestionPrompt}
+                </p>
+                <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                  1 tap saves an honest estimate or skips cleanly — no stress.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => onOpenOneQuestionModal(todayKey)}
+                className="px-3 py-2 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] font-bold min-h-[38px] shrink-0"
+              >
+                1-Tap Answer
+              </button>
+            </section>
+          )}
+
           {/* Fight Camp Card (strictly age-gated) */}
           {(profile.mainGoalMode === 'fight_camp' ||
             profile.mainGoalMode === 'both' ||
@@ -1109,6 +1256,9 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
             <FightCampCard
               profile={profile}
               bodyMetrics={bodyMetrics}
+              dailyLogs={dailyLogs}
+              mealScans={mealScans}
+              settings={settings}
               todayLog={todayLog}
               todayMode={dayMode}
               todayKey={todayKey}
@@ -1153,9 +1303,23 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
                   Today&apos;s rhythm
                 </p>
                 <p className="text-xs font-mono-num text-slate-700 dark:text-slate-200 mt-0.5">
-                  Target: {formatDisplayNumber(profile.calorieGoal, arabicDigits)} kcal ·{' '}
-                  {formatDisplayNumber(profile.proteinTargetG, arabicDigits)}g protein ·{' '}
-                  {formatDisplayNumber(((profile.waterTargetMl || 3000) / 1000).toFixed(1), arabicDigits)}L water
+                  {realLife.showNumbers === 'hidden_today' ? (
+                    <>
+                      Focus: Steady protein &amp;{' '}
+                      {formatDisplayNumber(((profile.waterTargetMl || 3000) / 1000).toFixed(1), arabicDigits)}L water
+                    </>
+                  ) : realLife.showNumbers === 'simple' ? (
+                    <>
+                      Food: {qualitativeFoodStatus} ·{' '}
+                      {formatDisplayNumber(((profile.waterTargetMl || 3000) / 1000).toFixed(1), arabicDigits)}L water
+                    </>
+                  ) : (
+                    <>
+                      Target: {formatDisplayNumber(profile.calorieGoal, arabicDigits)} kcal ·{' '}
+                      {formatDisplayNumber(profile.proteinTargetG, arabicDigits)}g protein ·{' '}
+                      {formatDisplayNumber(((profile.waterTargetMl || 3000) / 1000).toFixed(1), arabicDigits)}L water
+                    </>
+                  )}
                   {trainingCampConfirmed && (
                     <span className="text-[var(--accent)] font-bold">
                       {fightCampCountdownDays !== null
@@ -1422,10 +1586,24 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
               >
                 <span className="inline-flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400">
                   <Utensils className="w-3.5 h-3.5 text-amber-400" />
-                  {hideCut ? 'Calories today' : 'Calories left'}
+                  {realLife.showNumbers === 'hidden_today'
+                    ? 'Food'
+                    : realLife.showNumbers === 'simple'
+                    ? 'Food status'
+                    : isEventDay
+                    ? 'Event mode'
+                    : hideCut
+                    ? 'Calories today'
+                    : 'Calories left'}
                 </span>
-                <p className="font-mono-num text-sm font-bold mt-1">
-                  {hideCut ? `${todayCaloriesEaten} kcal` : `${caloriesLeft} kcal`}
+                <p className="font-mono-num text-sm font-bold mt-1 truncate">
+                  {realLife.showNumbers === 'hidden_today'
+                    ? 'Hidden today'
+                    : realLife.showNumbers === 'simple' || isEventDay
+                    ? qualitativeFoodStatus
+                    : hideCut
+                    ? `${todayCaloriesEaten} kcal`
+                    : `${caloriesLeft} kcal`}
                 </p>
               </button>
 
@@ -1555,7 +1733,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
 
             {showStreakHelp && (
               <p className="text-xs text-slate-600 dark:text-slate-300 pt-2 border-t border-slate-200/80 dark:border-white/10 leading-relaxed">
-                Finish at least 70% of your habits on a day to keep your streak going. Missing a day uses 1 rest shield if you have one.
+                Any check-in tap (a task, water, an event chip, or Day done) keeps your streak going. Missing or skipping food logging NEVER breaks your streak.
               </p>
             )}
 

@@ -10,6 +10,12 @@ export const ARABIC_HINTS = {
   confirmRight: 'تمام، صح',
   dailyLineNote: 'خطوة هادية النهارده أفضل من الكمال.',
   windDown: 'تقفيل اليوم في دقيقتين',
+  outToday: 'طالع بره النهارده',
+  skipDontTrack: 'تخطي، بلاش تسجيل',
+  sameAsUsual: 'زي المعتاد',
+  eventDayNote: 'يوم مناسبة — استمتع وبكره يوم عادي',
+  estimateWord: 'تقدير تقريبي',
+  howWasEating: 'الأكل كان إيه النهارده؟',
 } as const;
 
 const ARABIC_INDIC_MAP = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];

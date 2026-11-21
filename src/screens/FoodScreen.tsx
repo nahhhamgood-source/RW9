@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Calendar,
   Camera,
   Check,
   ChevronRight,
@@ -13,6 +14,7 @@ import {
   MessageSquareText,
   Mic,
   MicOff,
+  PartyPopper,
   Repeat2,
   ScanLine,
   Search,
@@ -34,9 +36,11 @@ import {
   repeatYesterdaysMeals,
   saveAndVerifyProfile,
   saveMealScanEntry,
+  saveSkippedGapDay,
 } from '../db/database';
 import { MEAL_LIBRARY, evaluateMealFitForToday, type LibraryMealItem } from '../data/mealLibrary';
-import { formatDisplayNumber } from '../i18n/arabicHints';
+import { getEventTypeMeta } from '../data/eventPresets';
+import { ARABIC_HINTS, formatDisplayNumber } from '../i18n/arabicHints';
 import { en, getMealTypeByHour } from '../i18n/en';
 import { addDays, toLocalDateKey } from '../lib/date';
 import { apiRequest, hasOnlineConsent } from '../lib/api';
@@ -55,9 +59,20 @@ import {
   prepareMealImageAssets,
   resolveSafeDietGoal,
 } from '../lib/nutrition';
+import {
+  buildMealMemorySuggestions,
+  classifyDayTrackingStatus,
+  computeAdaptiveMaintenanceCalibration,
+  computeNutritionAverages,
+  computeWeeklyCalorieBudget,
+  detectContextFoodPrompt,
+  getRealLifeSettings,
+} from '../lib/realLifeFood';
 import { calculateMifflinStJeor } from '../lib/fitness';
+import { EventModeModal } from '../components/food/EventModeModal';
 import { FoodFinderModal } from '../components/food/FoodFinderModal';
 import { FoodResultCard } from '../components/food/FoodResultCard';
+import { GalleryImportModal } from '../components/food/GalleryImportModal';
 import { TellMeFoodBox } from '../components/food/TellMeFoodBox';
 import type { DraftFoodItem, FollowUpChip, FollowUpQuestion } from '../components/food/foodChatTypes';
 import { OnlineConsentModal } from '../components/modals/OnlineConsentModal';
@@ -74,6 +89,7 @@ import type {
   MealScanEntry,
   MealType,
   UserProfile,
+  WorkoutSession,
 } from '../types';
 
 interface FoodScreenProps {
@@ -82,10 +98,14 @@ interface FoodScreenProps {
   dailyLogs: DailyLog[];
   mealScans: MealScanEntry[];
   bodyMetrics?: BodyMetricEntry[];
+  workouts?: WorkoutSession[];
   initialMealType?: MealType;
   initialMode?: 'timeline' | 'scan' | 'quick';
+  initialDate?: string;
   initialPrefillNote?: string;
+  initialIsSharedInput?: boolean;
   initialSharedFile?: File | null;
+  autoFocusMic?: boolean;
   onConsumeSharedInput?: () => void;
   onOpenNutritionVault: () => void;
   onOpenDiet?: () => void;
@@ -161,10 +181,14 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
   dailyLogs,
   mealScans,
   bodyMetrics = [],
+  workouts = [],
   initialMealType,
   initialMode,
+  initialDate,
   initialPrefillNote,
+  initialIsSharedInput = false,
   initialSharedFile,
+  autoFocusMic = false,
   onConsumeSharedInput,
   onOpenNutritionVault,
   onOpenDiet,
@@ -172,8 +196,11 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
 }) => {
   const { showToast } = useToast();
   const todayKey = toLocalDateKey();
+  const minCatchupDate = addDays(todayKey, -7);
+  const [activeDate, setActiveDate] = useState<string>(() => initialDate ?? todayKey);
   const hideCut = isUnder18OrGrowing(profile);
   const ageUnknown = isAgeUnknown(profile);
+  const realLife = useMemo(() => getRealLifeSettings(settings), [settings]);
 
   const { goal: activeGoal, cutLocked, lockReason } = useMemo(
     () => resolveSafeDietGoal(profile),
@@ -183,7 +210,7 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
   const localFoodsConfirmed = isAboutMeItemConfirmed(profile.aboutMe, 'location_foods');
   const eatingPatternConfirmed = isAboutMeItemConfirmed(profile.aboutMe, 'eating_pattern');
   const trainingCampConfirmed = isAboutMeItemConfirmed(profile.aboutMe, 'training_camp');
-  const dayMode = settings.dayModeByDate?.[todayKey] ?? 'gym';
+  const dayMode = settings.dayModeByDate?.[activeDate] ?? 'gym';
   const arabicDigits = Boolean(settings.arabicIndicDigits);
 
   const tellMeSectionRef = useRef<HTMLDivElement | null>(null);
@@ -194,6 +221,15 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
   const [showTargetMath, setShowTargetMath] = useState(false);
   const [photoFinderOpen, setPhotoFinderOpen] = useState(false);
   const [photoSwapTargetId, setPhotoSwapTargetId] = useState<string | null>(null);
+  const [eventModalOpen, setEventModalOpen] = useState(false);
+  const [galleryImportOpen, setGalleryImportOpen] = useState(false);
+  const [dismissedContextId, setDismissedContextId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (initialDate) {
+      setActiveDate(initialDate > todayKey ? todayKey : initialDate < minCatchupDate ? minCatchupDate : initialDate);
+    }
+  }, [initialDate, todayKey, minCatchupDate]);
 
   // "What should I eat?" ~60-meal library filter & edit state
   const [mealSearch, setMealSearch] = useState('');
@@ -294,33 +330,109 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
   const proteinTarget = profile.proteinTargetG || targets.proteinG;
   const waterTarget = profile.waterTargetMl || targets.debloatWaterMl;
 
-  const todayLog = useMemo(() => dailyLogs.find((l) => l.date === todayKey), [dailyLogs, todayKey]);
-  const todayMeals = useMemo(
+  const activeDayLog = useMemo(() => dailyLogs.find((l) => l.date === activeDate), [dailyLogs, activeDate]);
+  const activeDayMeals = useMemo(
     () =>
       mealScans
-        .filter((m) => m.date === todayKey)
+        .filter((m) => m.date === activeDate)
         .sort((a, b) => a.timestamp - b.timestamp),
-    [mealScans, todayKey]
+    [mealScans, activeDate]
+  );
+  const isEventDay = Boolean(
+    activeDayLog?.eventMode?.active ||
+      activeDayLog?.eventMode?.outcome ||
+      activeDayMeals.some((m) => m.sourceKind === 'event_quick' || m.sourceKind === 'event_preset')
+  );
+  const activeDayStatus = useMemo(
+    () =>
+      classifyDayTrackingStatus({
+        dateKey: activeDate,
+        dailyLog: activeDayLog,
+        meals: mealScans,
+        settings,
+      }),
+    [activeDate, activeDayLog, mealScans, settings]
   );
 
   const totals = useMemo(() => {
-    const mealCal = todayMeals.reduce((s, m) => s + m.totalCalories, 0);
-    const mealPro = todayMeals.reduce((s, m) => s + m.totalProteinG, 0);
-    const mealSodium = todayMeals.reduce((s, m) => s + m.totalSodiumMg, 0);
-    const cal = Math.max(mealCal, todayLog?.calories ?? 0);
-    const pro = Number(Math.max(mealPro, todayLog?.proteinG ?? 0).toFixed(1));
+    const mealCal = activeDayMeals.reduce((s, m) => s + m.totalCalories, 0);
+    const mealPro = activeDayMeals.reduce((s, m) => s + m.totalProteinG, 0);
+    const mealSodium = activeDayMeals.reduce((s, m) => s + m.totalSodiumMg, 0);
+    const cal = Math.max(mealCal, activeDayLog?.calories ?? 0);
+    const pro = Number(Math.max(mealPro, activeDayLog?.proteinG ?? 0).toFixed(1));
     return {
       calories: cal,
       proteinG: pro,
       sodiumMg: mealSodium,
-      waterMl: todayLog?.waterMl ?? 0,
+      waterMl: activeDayLog?.waterMl ?? 0,
     };
-  }, [todayMeals, todayLog]);
+  }, [activeDayMeals, activeDayLog]);
 
   const caloriesLeft = Math.max(0, calTarget - totals.calories);
   const caloriePct = Math.min(100, Math.round((totals.calories / Math.max(1, calTarget)) * 100));
   const proteinPct = Math.min(100, Math.round((totals.proteinG / Math.max(1, proteinTarget)) * 100));
   const waterPct = Math.min(100, Math.round((totals.waterMl / Math.max(500, waterTarget)) * 100));
+
+  const weeklyBudget = useMemo(
+    () =>
+      computeWeeklyCalorieBudget({
+        todayKey,
+        dailyTargetKcal: calTarget,
+        dailyLogs,
+        mealScans,
+        settings,
+      }),
+    [todayKey, calTarget, dailyLogs, mealScans, settings]
+  );
+
+  const nutritionAverages = useMemo(
+    () =>
+      computeNutritionAverages({
+        todayKey,
+        daysBack: 7,
+        dailyLogs,
+        mealScans,
+        settings,
+        includeEstimated: realLife.includeEstimatedInAverages,
+      }),
+    [todayKey, dailyLogs, mealScans, settings, realLife.includeEstimatedInAverages]
+  );
+
+  const adaptiveCalibration = useMemo(
+    () =>
+      computeAdaptiveMaintenanceCalibration({
+        todayKey,
+        profile,
+        dailyLogs,
+        mealScans,
+        bodyMetrics,
+        settings,
+      }),
+    [todayKey, profile, dailyLogs, mealScans, bodyMetrics, settings]
+  );
+
+  const contextPrompt = useMemo(
+    () =>
+      detectContextFoodPrompt({
+        todayKey,
+        workouts,
+        mealScans,
+        dailyLog: dailyLogs.find((l) => l.date === todayKey) ?? null,
+        skippedDates: settings.skippedGapCheckinDates,
+      }),
+    [todayKey, workouts, mealScans, dailyLogs, settings.skippedGapCheckinDates]
+  );
+
+  const mealMemoryDrafts = useMemo(
+    () =>
+      buildMealMemorySuggestions({
+        todayKey: activeDate,
+        mealScans,
+        workouts,
+        slot: selectedSlot,
+      }),
+    [activeDate, mealScans, workouts, selectedSlot]
+  );
 
   const weeklyAdjust = useMemo(
     () => evaluateWeeklyWeightAdjustment(profile, bodyMetrics, todayKey),
@@ -416,11 +528,11 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
       dinner: [],
       snack: [],
     };
-    for (const m of todayMeals) {
+    for (const m of activeDayMeals) {
       map[resolveMealSlot(m)].push(m);
     }
     return map;
-  }, [todayMeals]);
+  }, [activeDayMeals]);
 
   const mealSuggestions = useMemo(() => {
     const proteinLeft = Math.max(0, Math.round(proteinTarget - totals.proteinG));
@@ -510,8 +622,8 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
   };
 
   const handleAddWater = async (ml: number) => {
-    const log = await getOrCreateDailyLog(todayKey);
-    await db.dailyLogs.update(todayKey, {
+    const log = await getOrCreateDailyLog(activeDate);
+    await db.dailyLogs.update(activeDate, {
       waterMl: Math.max(0, (log.waterMl || 0) + ml),
       updatedAt: Date.now(),
     });
@@ -519,7 +631,7 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
   };
 
   const handleRepeatYesterday = async () => {
-    const count = await repeatYesterdaysMeals(todayKey);
+    const count = await repeatYesterdaysMeals(activeDate);
     if (count === 0) {
       showToast('No meals logged yesterday to copy.', 'info');
     } else {
@@ -528,7 +640,7 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
   };
 
   const handleSameAsUsual = async () => {
-    const logged = await logSameAsUsualMeal(todayKey, selectedSlot);
+    const logged = await logSameAsUsualMeal(activeDate, selectedSlot);
     if (!logged) {
       showToast(`Log your first ${en.meals[selectedSlot].toLowerCase()} meal to unlock 1-tap Same as usual.`, 'info');
     } else {
@@ -566,7 +678,7 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
     };
     const debloat = computeDebloatImpact(item.sodiumMg, item.addedSugarG);
     await saveMealScanEntry({
-      date: todayKey,
+      date: activeDate,
       timestamp: Date.now(),
       mealType: targetSlot,
       mealTitle: item.name,
@@ -909,7 +1021,7 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
     const conf = photoDraftItems[0]?.confidence ?? 'Medium';
 
     const entryId = await saveMealScanEntry({
-      date: todayKey,
+      date: activeDate,
       timestamp: Date.now(),
       mealType: selectedSlot,
       mealTitle: title,
@@ -926,6 +1038,9 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
       summaryNote: photoSummaryNote || `${en.meals[selectedSlot]} · Photo estimate`,
       photoThumbnail: photoThumbnail || undefined,
       isManual: false,
+      isEstimate: true,
+      estimateRangeLabel: `about ${roundKcal(totalCal * 0.85)}–${roundKcal(totalCal * 1.18)} kcal`,
+      sourceKind: initialSharedFile ? 'share_target' : 'normal',
     });
 
     setLastPhotoSaved({ id: entryId, title });
@@ -963,12 +1078,32 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
       <section className="ascend-card p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h1 className="font-display text-2xl font-bold">Food &amp; Hydration</h1>
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="font-display text-2xl font-bold">Food &amp; Hydration</h1>
+              <span className="px-2 py-0.5 rounded-lg bg-slate-100 dark:bg-white/10 text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300">
+                {activeDayStatus.label}
+              </span>
+            </div>
             <p className="text-xs text-slate-500 dark:text-slate-400">
               {hideCut ? 'Daily fuel & protein tracker' : 'Calories, protein & debloat balance'}
+              {activeDate !== todayKey ? ` · Viewing ${activeDate}` : ''}
             </p>
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {realLife.eventModeEnabled && (
+              <button
+                type="button"
+                onClick={() => setEventModalOpen(true)}
+                className={`inline-flex items-center gap-1 px-3 py-2 rounded-xl text-xs font-bold min-h-[40px] border transition ${
+                  isEventDay
+                    ? 'bg-sky-500/15 border-sky-400/40 text-sky-600 dark:text-sky-300'
+                    : 'bg-slate-100 dark:bg-white/5 border-slate-200 dark:border-white/10 text-slate-800 dark:text-slate-100'
+                }`}
+              >
+                <PartyPopper className="w-3.5 h-3.5 text-[var(--accent)]" />
+                {isEventDay ? 'Event ON' : en.realLife.outTodayBtn}
+              </button>
+            )}
             {onOpenCoach && (
               <button
                 type="button"
@@ -987,6 +1122,72 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Event Day Banner (calm, zero red/overshoot, zero compensation) */}
+        {isEventDay && (
+          <div className="p-3.5 rounded-2xl bg-sky-500/10 border border-sky-400/30 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div>
+              <p className="font-bold text-sky-700 dark:text-sky-300">
+                {getEventTypeMeta(activeDayLog?.eventMode?.type ?? 'wedding').icon}{' '}
+                {en.realLife.eventActiveLabel}
+                {settings.arabicHintsEnabled ? ` · ${ARABIC_HINTS.eventDayNote}` : ''}
+              </p>
+              <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5">
+                {activeDayLog?.eventMode?.outcome
+                  ? en.realLife.noCompensationNote
+                  : en.realLife.eventActiveSub}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setEventModalOpen(true)}
+              className="px-3 py-1.5 rounded-xl bg-white dark:bg-[#0D131F] border border-sky-400/30 text-xs font-bold text-sky-700 dark:text-sky-300 min-h-[34px]"
+            >
+              {activeDayLog?.eventMode?.outcome ? 'Edit event' : 'How did it go?'}
+            </button>
+          </div>
+        )}
+
+        {/* Smart Context Prompt (Post-workout or Friday dinner) */}
+        {contextPrompt && dismissedContextId !== contextPrompt.id && !isEventDay && activeDate === todayKey && (
+          <div className="p-3.5 rounded-2xl bg-[var(--accent-soft)] border border-[var(--accent)]/30 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div>
+              <p className="font-bold text-slate-900 dark:text-white">{contextPrompt.headline}</p>
+              <p className="text-[11px] text-slate-600 dark:text-slate-300">{contextPrompt.subline}</p>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {contextPrompt.suggestedMeal && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await logSameAsUsualMeal(todayKey, contextPrompt.slot);
+                    showToast(`Logged "${contextPrompt.suggestedMeal?.mealTitle}"`);
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] font-bold min-h-[34px]"
+                >
+                  Log usual
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setEventModalOpen(true)}
+                className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-[#0D131F] font-semibold min-h-[34px]"
+              >
+                Event
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setDismissedContextId(contextPrompt.id);
+                  await saveSkippedGapDay(todayKey);
+                }}
+                className="px-2.5 py-1.5 rounded-xl text-slate-500 hover:bg-black/5 min-h-[34px]"
+              >
+                Skip
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* My Goal Picker */}
         <div className="p-3 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 space-y-2">
@@ -1112,31 +1313,64 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          {/* Calories Ring */}
+          {/* Calories Ring (respects Event mode + Simple numbers mode) */}
           <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 space-y-1.5">
             <div className="flex items-center gap-3.5">
-              <CircularRing value={caloriePct} size={68} strokeWidth={7} color="var(--accent)">
+              <CircularRing
+                value={isEventDay ? Math.min(100, Math.max(25, caloriePct)) : caloriePct}
+                size={68}
+                strokeWidth={7}
+                color={isEventDay ? '#38BDF8' : 'var(--accent)'}
+              >
                 <span className="font-mono-num text-xs font-bold">
-                  {formatDisplayNumber(`${caloriePct}%`, arabicDigits)}
+                  {isEventDay
+                    ? 'Event'
+                    : realLife.showNumbers === 'simple'
+                    ? totals.calories === 0
+                      ? 'New'
+                      : totals.calories <= calTarget + 150
+                      ? 'Good'
+                      : 'Full'
+                    : formatDisplayNumber(`${caloriePct}%`, arabicDigits)}
                 </span>
               </CircularRing>
               <div className="min-w-0">
-                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">Calories</p>
-                <p className="font-mono-num text-lg font-bold">
-                  {formatDisplayNumber(totals.calories, arabicDigits)}{' '}
-                  <span className="text-xs font-normal text-slate-500">
-                    / {formatDisplayNumber(calTarget, arabicDigits)}
-                  </span>
+                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">
+                  {isEventDay ? en.realLife.eventActiveLabel : 'Calories'}
                 </p>
-                <p className="text-xs font-mono-num text-[var(--accent)]">
-                  {hideCut
-                    ? 'Steady fuel target'
-                    : `${formatDisplayNumber(caloriesLeft, arabicDigits)} kcal left`}
-                </p>
+                {realLife.showNumbers === 'simple' ? (
+                  <p className="text-sm font-bold text-slate-900 dark:text-white mt-0.5">
+                    {isEventDay
+                      ? 'Estimated outing'
+                      : totals.calories < calTarget * 0.55
+                      ? 'Low so far'
+                      : totals.calories <= calTarget + 150
+                      ? 'On track'
+                      : 'Higher today'}
+                  </p>
+                ) : (
+                  <>
+                    <p className="font-mono-num text-lg font-bold">
+                      {formatDisplayNumber(totals.calories, arabicDigits)}{' '}
+                      <span className="text-xs font-normal text-slate-500">
+                        / {formatDisplayNumber(calTarget, arabicDigits)}
+                      </span>
+                    </p>
+                    <p className="text-xs font-mono-num text-[var(--accent)]">
+                      {isEventDay
+                        ? 'No overshoot today · estimate'
+                        : hideCut
+                        ? 'Steady fuel target'
+                        : `${formatDisplayNumber(caloriesLeft, arabicDigits)} kcal left`}
+                    </p>
+                  </>
+                )}
               </div>
             </div>
             <p className="text-[11px] text-slate-500 dark:text-slate-400">
-              Steady daily fuel without heavy afternoon swings.
+              {isEventDay
+                ? 'Tomorrow stays normal — never cut food after an event.'
+                : 'Steady daily fuel without heavy afternoon swings.'}
             </p>
           </div>
 
@@ -1145,20 +1379,34 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
             <div className="flex items-center gap-3.5">
               <CircularRing value={proteinPct} size={68} strokeWidth={7} color="#10B981">
                 <span className="font-mono-num text-xs font-bold">
-                  {formatDisplayNumber(`${proteinPct}%`, arabicDigits)}
+                  {realLife.showNumbers === 'simple'
+                    ? proteinPct >= 80
+                      ? 'High'
+                      : proteinPct >= 40
+                      ? 'Mid'
+                      : 'Low'
+                    : formatDisplayNumber(`${proteinPct}%`, arabicDigits)}
                 </span>
               </CircularRing>
               <div className="min-w-0">
                 <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">Protein</p>
-                <p className="font-mono-num text-lg font-bold">
-                  {formatDisplayNumber(`${totals.proteinG}g`, arabicDigits)}{' '}
-                  <span className="text-xs font-normal text-slate-500">
-                    / {formatDisplayNumber(`${proteinTarget}g`, arabicDigits)}
-                  </span>
-                </p>
-                <p className="text-xs font-mono-num text-emerald-500">
-                  {formatDisplayNumber(`${Math.max(0, Math.round(proteinTarget - totals.proteinG))}g left`, arabicDigits)}
-                </p>
+                {realLife.showNumbers === 'simple' ? (
+                  <p className="text-sm font-bold text-slate-900 dark:text-white mt-0.5">
+                    {proteinPct >= 85 ? 'On track' : proteinPct >= 45 ? 'Building up' : 'Low today'}
+                  </p>
+                ) : (
+                  <>
+                    <p className="font-mono-num text-lg font-bold">
+                      {formatDisplayNumber(`${totals.proteinG}g`, arabicDigits)}{' '}
+                      <span className="text-xs font-normal text-slate-500">
+                        / {formatDisplayNumber(`${proteinTarget}g`, arabicDigits)}
+                      </span>
+                    </p>
+                    <p className="text-xs font-mono-num text-emerald-500">
+                      {formatDisplayNumber(`${Math.max(0, Math.round(proteinTarget - totals.proteinG))}g left`, arabicDigits)}
+                    </p>
+                  </>
+                )}
               </div>
             </div>
             <p className="text-[11px] text-slate-500 dark:text-slate-400">
@@ -1200,6 +1448,29 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
             </p>
           </div>
         </div>
+
+        {/* Optional Weekly Calorie Budget Progress Bar */}
+        {realLife.budgetView === 'weekly' && !hideCut && realLife.showNumbers !== 'simple' && (
+          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="font-bold text-slate-900 dark:text-white inline-flex items-center gap-1.5">
+                <Calendar className="w-3.5 h-3.5 text-[var(--accent)]" />
+                7-Day Weekly Calorie Budget
+              </span>
+              <span className="font-mono-num font-bold text-slate-700 dark:text-slate-200">
+                {formatDisplayNumber(weeklyBudget.spentKcal, arabicDigits)} /{' '}
+                {formatDisplayNumber(weeklyBudget.weeklyTargetKcal, arabicDigits)} kcal
+              </span>
+            </div>
+            <div className="h-2.5 rounded-full bg-slate-200 dark:bg-white/10 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-[var(--accent)] transition-all duration-300"
+                style={{ width: `${weeklyBudget.progressPct}%` }}
+              />
+            </div>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">{weeklyBudget.plainSummary}</p>
+          </div>
+        )}
 
         {/* Primary Actions */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
@@ -1271,6 +1542,56 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
         </div>
       </section>
 
+      {/* Meal Memory Quick-Tap Drafts (never auto-saved without tap unless setting ON) */}
+      {mealMemoryDrafts.length > 0 && (
+        <section className="ascend-card p-3.5 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-bold text-slate-700 dark:text-slate-200">
+              Quick drafts from your habits
+            </p>
+            {realLife.galleryImportEnabled && (
+              <button
+                type="button"
+                onClick={() => setGalleryImportOpen(true)}
+                className="inline-flex items-center gap-1 text-xs font-bold text-[var(--accent)]"
+              >
+                <ImagePlus className="w-3.5 h-3.5" /> Add photos from gallery
+              </button>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {mealMemoryDrafts.map((draft) => (
+              <button
+                key={draft.id}
+                type="button"
+                onClick={async () => {
+                  const clonedItems = draft.sourceMeal.items.map((it, idx) => ({
+                    ...it,
+                    id: `mem-${Date.now()}-${idx}`,
+                  }));
+                  const { id: _ignoredId, ...sourceWithoutId } = draft.sourceMeal;
+                  await saveMealScanEntry({
+                    ...sourceWithoutId,
+                    date: activeDate,
+                    timestamp: Date.now(),
+                    mealType: draft.slot,
+                    items: clonedItems,
+                    sourceKind: 'template',
+                  });
+                  showToast(`Added "${draft.label}" to ${en.meals[draft.slot]}`);
+                }}
+                className="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-white/[0.05] border border-slate-200 dark:border-white/10 text-xs text-left hover:border-[var(--accent)]"
+              >
+                <span className="font-bold text-slate-900 dark:text-white">{draft.label}</span>
+                <span className="block text-[10px] text-slate-500 dark:text-slate-400">
+                  {draft.reason} · ~{roundKcal(draft.sourceMeal.totalCalories)} kcal · 1 tap
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Main Easy Logger: "Tell me what you ate" (Speak / Type / Pick from list) */}
       <div ref={tellMeSectionRef}>
         <TellMeFoodBox
@@ -1278,10 +1599,18 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
           settings={settings}
           mealScans={mealScans}
           selectedSlot={selectedSlot}
+          selectedDate={activeDate}
+          onChangeDate={setActiveDate}
           onChangeSlot={setSelectedSlot}
           onOpenCamera={() => {
             setScanPanelOpen(true);
           }}
+          onOpenGalleryImport={() => setGalleryImportOpen(true)}
+          initialPrefillText={initialPrefillNote}
+          isSharedInput={initialIsSharedInput}
+          autoFocusMic={autoFocusMic}
+          kcalLeft={caloriesLeft}
+          proteinLeftG={Math.max(0, Math.round(proteinTarget - totals.proteinG))}
         />
       </div>
 
@@ -1867,11 +2196,11 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
 
       {/* Today's Timeline: Breakfast · Lunch · Dinner · Snacks */}
       <section className="space-y-3">
-        {todayMeals.length === 0 && !scanPanelOpen && (
+        {activeDayMeals.length === 0 && !scanPanelOpen && (
           <EmptyState
             icon={<Utensils className="w-6 h-6" />}
-            title="No meals logged today yet"
-            message='Speak or type what you ate above, or tap Scan meal for a quick plate photo.'
+            title={activeDate === todayKey ? 'No meals logged today yet' : `No meals logged for ${activeDate}`}
+            message='Speak or type what you ate above, or tap Add photos from gallery.'
             actionLabel="Tell me what you ate"
             onAction={() => {
               tellMeSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1919,9 +2248,18 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
                           />
                         )}
                         <div className="min-w-0 space-y-1">
-                          <p className="text-sm font-semibold truncate">{meal.mealTitle}</p>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <p className="text-sm font-semibold truncate">{meal.mealTitle}</p>
+                            {(meal.isEstimate || meal.confidence === 'Low') && (
+                              <span className="px-1.5 py-0.5 rounded-md bg-sky-500/15 text-sky-600 dark:text-sky-300 text-[10px] font-bold">
+                                Estimate
+                              </span>
+                            )}
+                          </div>
                           <p className="text-xs font-mono-num text-slate-500 dark:text-slate-400">
-                            about {roundKcal(meal.totalCalories)} kcal · {roundProtein(meal.totalProteinG)}g protein
+                            {meal.estimateRangeLabel
+                              ? `${meal.estimateRangeLabel} · ${roundProtein(meal.totalProteinG)}g protein`
+                              : `about ${roundKcal(meal.totalCalories)} kcal · ${roundProtein(meal.totalProteinG)}g protein`}
                             {meal.items[0]?.portionLabel ? ` · ${meal.items[0].portionLabel}` : ''}
                           </p>
                           <div className="flex flex-wrap items-center gap-1.5">
@@ -1967,7 +2305,7 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
         })}
       </section>
 
-      {/* Weekly Auto-Adjust + Weight/Waist/Calorie Trends */}
+      {/* Weekly Auto-Adjust + Weight/Waist/Calorie Trends + Adaptive Calibration */}
       <section className="ascend-card p-5 space-y-4">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -2003,7 +2341,44 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
             )}
         </div>
 
-        {/* Weight, Waist & 7-Day Calorie Strip */}
+        {/* Adaptive 3+ Week Maintenance Calibration Card */}
+        {adaptiveCalibration.allowed && (
+          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs font-bold text-slate-900 dark:text-white">
+                Calibration over time (real trend)
+              </p>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                {adaptiveCalibration.label}
+              </span>
+            </div>
+            <p className="text-xs text-slate-600 dark:text-slate-300">{adaptiveCalibration.reason}</p>
+            {adaptiveCalibration.ready && adaptiveCalibration.estimatedMaintenanceKcal && (
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                <span className="text-xs font-mono-num font-bold text-[var(--accent)]">
+                  Estimated maintenance: ~{adaptiveCalibration.estimatedMaintenanceKcal} kcal/day
+                </span>
+                {adaptiveCalibration.suggestedTargetKcal && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await saveAndVerifyProfile({
+                        ...profile,
+                        calorieGoal: adaptiveCalibration.suggestedTargetKcal!,
+                      });
+                      showToast(`Updated target to ${adaptiveCalibration.suggestedTargetKcal} kcal`);
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-bold min-h-[34px]"
+                  >
+                    Update target to {adaptiveCalibration.suggestedTargetKcal} kcal
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Weight, Waist & Honest 7-Day Calorie Average (untracked days never treated as 0) */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
           <div className="p-3 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10">
             <p className="text-[11px] text-slate-500 dark:text-slate-400">7-day weight avg</p>
@@ -2034,32 +2409,34 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
           <div className="p-3 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10">
             <p className="text-[11px] text-slate-500 dark:text-slate-400">7-day calorie avg</p>
             <p className="font-mono-num text-base font-bold mt-0.5">
-              {trendSummary.avg7dCal !== null ? `${trendSummary.avg7dCal} kcal` : 'No meal days'}
+              {nutritionAverages.avgCalories !== null ? `${nutritionAverages.avgCalories} kcal` : 'No full/est days'}
             </p>
             <p className="text-[11px] text-slate-500 dark:text-slate-400">
-              {trendSummary.loggedCalCount}/7 days logged vs {calTarget} goal
+              {nutritionAverages.completeDays} complete · {nutritionAverages.estimatedDays} estimated ({nutritionAverages.notTrackedDays} skipped)
             </p>
           </div>
         </div>
 
-        {/* 7-day Calorie Mini Bars */}
-        {trendSummary.loggedCalCount > 0 && (
+        {/* 7-day Calorie Mini Bars (event/estimate days use calm sky blue — never red/overshoot) */}
+        {nutritionAverages.summaries.some((s) => s.totalCalories > 0) && (
           <div className="grid grid-cols-7 gap-1.5 pt-1">
-            {trendSummary.last7Days.map((day) => {
-              const ratio = Math.min(1.2, day.calories / Math.max(1, calTarget));
+            {nutritionAverages.summaries.map((day) => {
+              const ratio = Math.min(1.2, day.totalCalories / Math.max(1, calTarget));
               const barPct = Math.round((ratio / 1.2) * 100);
               return (
                 <div key={day.date} className="flex flex-col items-center gap-1">
                   <div className="w-full h-14 rounded-lg bg-slate-100 dark:bg-white/5 flex items-end overflow-hidden p-0.5">
                     <div
                       className={`w-full rounded-md transition-all ${
-                        day.calories === 0
+                        day.totalCalories === 0
                           ? 'bg-transparent'
-                          : day.calories <= calTarget + 120
+                          : day.hasEvent || day.status === 'estimated'
+                          ? 'bg-sky-400'
+                          : day.totalCalories <= calTarget + 120
                           ? 'bg-[var(--accent)]'
                           : 'bg-amber-400'
                       }`}
-                      style={{ height: `${Math.max(day.calories > 0 ? 12 : 0, barPct)}%` }}
+                      style={{ height: `${Math.max(day.totalCalories > 0 ? 12 : 0, barPct)}%` }}
                     />
                   </div>
                   <span className="text-[10px] font-mono-num text-slate-400">
@@ -2140,6 +2517,24 @@ export const FoodScreen: React.FC<FoodScreenProps> = ({
           setPhotoFinderOpen(false);
           setPhotoSwapTargetId(null);
         }}
+      />
+
+      <EventModeModal
+        open={eventModalOpen}
+        dateKey={activeDate}
+        dailyLog={activeDayLog}
+        settings={settings}
+        onClose={() => setEventModalOpen(false)}
+        onOpenDetailsFlow={(mode) => {
+          if (mode === 'gallery') setGalleryImportOpen(true);
+          else tellMeSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }}
+      />
+
+      <GalleryImportModal
+        open={galleryImportOpen}
+        settings={settings}
+        onClose={() => setGalleryImportOpen(false)}
       />
 
       <OnlineConsentModal

@@ -1,8 +1,20 @@
 import React, { useMemo, useState } from 'react';
-import { Calendar, Check, Download, Sparkles, X } from 'lucide-react';
-import { db, isUnder18OrGrowing, prepareSuggestedTomorrowPlan, saveAndVerifyProfile } from '../../db/database';
+import { Calendar, Check, Download, PartyPopper, Repeat2, SkipForward, Sparkles, X } from 'lucide-react';
+import {
+  db,
+  isUnder18OrGrowing,
+  logSameAsUsualMeal,
+  prepareSuggestedTomorrowPlan,
+  saveAndVerifyProfile,
+  saveSkippedGapDay,
+  startEventModeForDay,
+} from '../../db/database';
 import { addDays, toLocalDateKey } from '../../lib/date';
 import { evaluateWeeklyWeightAdjustment } from '../../lib/nutrition';
+import {
+  computeAdaptiveMaintenanceCalibration,
+  computeNutritionAverages,
+} from '../../lib/realLifeFood';
 import type {
   ActiveProtocolTask,
   AppSettings,
@@ -52,6 +64,45 @@ export const WeeklyLeaderReviewModal: React.FC<WeeklyLeaderReviewModalProps> = (
 
   const [aiPolish, setAiPolish] = useState<string | null>(null);
   const [polishing, setPolishing] = useState(false);
+  const [stepperOpen, setStepperOpen] = useState(false);
+  const [stepIdx, setStepIdx] = useState(0);
+
+  const nutritionAvg = useMemo(
+    () =>
+      computeNutritionAverages({
+        todayKey,
+        daysBack: 7,
+        dailyLogs,
+        mealScans,
+        settings,
+      }),
+    [todayKey, dailyLogs, mealScans, settings]
+  );
+
+  const adaptiveCalib = useMemo(
+    () =>
+      computeAdaptiveMaintenanceCalibration({
+        todayKey,
+        profile,
+        dailyLogs,
+        mealScans,
+        bodyMetrics,
+        settings,
+      }),
+    [todayKey, profile, dailyLogs, mealScans, bodyMetrics, settings]
+  );
+
+  const gapDays = useMemo(
+    () =>
+      nutritionAvg.summaries.filter(
+        (s) =>
+          (s.status === 'not_tracked' || s.status === 'partial') &&
+          !settings.skippedGapCheckinDates?.includes(s.date)
+      ),
+    [nutritionAvg.summaries, settings.skippedGapCheckinDates]
+  );
+
+  const activeGapDay = gapDays[Math.min(stepIdx, Math.max(0, gapDays.length - 1))] ?? null;
 
   const stats = useMemo(() => {
     const weekWorkouts = workouts.filter((w) => w.date >= cutoff && w.date <= todayKey);
@@ -61,23 +112,8 @@ export const WeeklyLeaderReviewModal: React.FC<WeeklyLeaderReviewModalProps> = (
     const sleepConsistencyPct =
       weekSleep.length > 0 ? Math.round((sleepGoodNights / weekSleep.length) * 100) : null;
 
-    const weekMealsByDate = new Map<string, { cal: number; pro: number }>();
-    for (const m of mealScans) {
-      if (m.date < cutoff || m.date > todayKey) continue;
-      const cur = weekMealsByDate.get(m.date) ?? { cal: 0, pro: 0 };
-      cur.cal += m.totalCalories;
-      cur.pro += m.totalProteinG;
-      weekMealsByDate.set(m.date, cur);
-    }
-    const mealDays = Array.from(weekMealsByDate.values());
-    const avgCalories =
-      mealDays.length > 0
-        ? Math.round(mealDays.reduce((s, d) => s + d.cal, 0) / mealDays.length)
-        : null;
-    const avgProtein =
-      mealDays.length > 0
-        ? Math.round(mealDays.reduce((s, d) => s + d.pro, 0) / mealDays.length)
-        : null;
+    const avgCalories = nutritionAvg.avgCalories;
+    const avgProtein = nutritionAvg.avgProteinG;
 
     const skinTasks = tasks.filter(
       (t) => t.enabled && !t.scheduledDate && (t.category === 'skin' || t.protocolId.includes('face-cleanse'))
@@ -161,7 +197,7 @@ export const WeeklyLeaderReviewModal: React.FC<WeeklyLeaderReviewModalProps> = (
       workoutCount: weekWorkouts.length,
       sleepLogsCount: weekSleep.length,
       sleepConsistencyPct,
-      mealDaysCount: mealDays.length,
+      mealDaysCount: nutritionAvg.countedDays,
       avgCalories,
       avgProtein,
       skinPct,
@@ -175,7 +211,7 @@ export const WeeklyLeaderReviewModal: React.FC<WeeklyLeaderReviewModalProps> = (
   }, [
     workouts,
     dailyLogs,
-    mealScans,
+    nutritionAvg,
     tasks,
     completions,
     bodyMetrics,
@@ -404,6 +440,144 @@ export const WeeklyLeaderReviewModal: React.FC<WeeklyLeaderReviewModalProps> = (
               </button>
             )}
           </div>
+        </div>
+
+        {/* 7 Status Dots + Quick Fill Missing Days */}
+        <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 space-y-2.5 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="font-bold">7-day food tracking dots</p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                Not tracked days are excluded from averages (never counted as 0 kcal)
+              </p>
+            </div>
+            {gapDays.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setStepIdx(0);
+                  setStepperOpen((v) => !v);
+                }}
+                className="px-2.5 py-1.5 rounded-xl bg-[var(--accent-soft)] text-[var(--accent)] font-bold text-[11px] min-h-[34px]"
+              >
+                {stepperOpen ? 'Close quick fill' : `Quick fill (${gapDays.length})`}
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-7 gap-1.5 text-center">
+            {nutritionAvg.summaries.map((s) => {
+              const dotCls =
+                s.status === 'complete'
+                  ? 'bg-emerald-500'
+                  : s.status === 'estimated'
+                  ? 'bg-sky-500'
+                  : s.status === 'partial'
+                  ? 'bg-amber-400'
+                  : 'bg-slate-300 dark:bg-white/20';
+              return (
+                <div key={s.date} className="flex flex-col items-center gap-1">
+                  <span className={`w-3.5 h-3.5 rounded-full ${dotCls}`} title={`${s.date}: ${s.label}`} />
+                  <span className="text-[10px] font-mono-num text-slate-500 dark:text-slate-400">
+                    {s.date.slice(5)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-[10px] text-slate-500 dark:text-slate-400">
+            Green = Complete · Sky = Estimated (0.65×) · Amber = Partial · Grey = Not tracked
+          </p>
+
+          {stepperOpen && activeGapDay && (
+            <div className="p-3 rounded-xl bg-white dark:bg-[#0D131F] border border-slate-200 dark:border-white/10 space-y-2">
+              <p className="font-bold">
+                Quick fill {activeGapDay.date} ({activeGapDay.label})
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const added = await logSameAsUsualMeal(activeGapDay.date, 'lunch');
+                    if (added) {
+                      showToast(`Filled ${activeGapDay.date} with "${added.mealTitle}"`);
+                    } else {
+                      showToast('No usual meal yet — pick Event or Say it on Food', 'info');
+                    }
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[var(--accent)] text-[var(--accent-contrast)] font-bold min-h-[34px]"
+                >
+                  <Repeat2 className="w-3 h-3" /> Same as usual
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await startEventModeForDay(activeGapDay.date, 'other');
+                    showToast(`Marked ${activeGapDay.date} as Event day (estimated)`);
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-white/10 font-bold min-h-[34px]"
+                >
+                  <PartyPopper className="w-3 h-3 text-[var(--accent)]" /> Event
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await saveSkippedGapDay(activeGapDay.date);
+                    showToast(`Skipped ${activeGapDay.date} cleanly`);
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-white/10 font-semibold text-slate-600 dark:text-slate-300 min-h-[34px]"
+                >
+                  <SkipForward className="w-3 h-3" /> Skip, don&apos;t track
+                </button>
+                {gapDays.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => setStepIdx((i) => (i + 1) % gapDays.length)}
+                    className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-[var(--accent)] min-h-[34px]"
+                  >
+                    Next day →
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Adaptive Maintenance Calibration (3+ weeks real data) */}
+        <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 space-y-1.5 text-xs">
+          <div className="flex items-center justify-between gap-2">
+            <p className="font-bold">Adaptive maintenance calibration</p>
+            <span className="px-2 py-0.5 rounded-md bg-sky-500/15 text-sky-600 dark:text-sky-300 text-[10px] font-bold">
+              Estimate, improves with data
+            </span>
+          </div>
+          {adaptiveCalib.ready && adaptiveCalib.allowed ? (
+            <>
+              <p className="text-slate-600 dark:text-slate-300">
+                Real-data maintenance ~{' '}
+                <strong className="font-mono-num">{adaptiveCalib.estimatedMaintenanceKcal} kcal</strong>{' '}
+                (formula: {adaptiveCalib.formulaMaintenanceKcal} kcal). {adaptiveCalib.reason}
+              </p>
+              {adaptiveCalib.suggestedTargetKcal !== null &&
+                adaptiveCalib.suggestedTargetKcal !== profile.calorieGoal && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await saveAndVerifyProfile({
+                        ...profile,
+                        calorieGoal: adaptiveCalib.suggestedTargetKcal ?? profile.calorieGoal,
+                      });
+                      showToast(`Calibrated daily target to ${adaptiveCalib.suggestedTargetKcal} kcal`);
+                    }}
+                    className="mt-1 px-3 py-1.5 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] font-bold min-h-[36px]"
+                  >
+                    Use calibrated target ({adaptiveCalib.suggestedTargetKcal} kcal)
+                  </button>
+                )}
+            </>
+          ) : (
+            <p className="text-slate-500 dark:text-slate-400">{adaptiveCalib.reason}</p>
+          )}
         </div>
 
         {/* What went well + ONE thing to fix */}

@@ -29,6 +29,7 @@ export interface DraftFoodItem {
   name: string;
   nameAr: string;
   icon: string;
+  mealType?: MealType;
   category: FoodCatalogCategory | string;
   portionLabel: string;
   quantity: number;
@@ -59,6 +60,7 @@ export interface FoodChatApiResponseItem {
   name: string;
   nameAr?: string;
   icon?: string;
+  mealType?: MealType;
   category?: string;
   portionLabel: string;
   quantity: number;

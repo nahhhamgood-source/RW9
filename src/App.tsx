@@ -29,14 +29,19 @@ import {
   ensureDatabaseReady,
   ensureMorningAutoPlan,
   getOrCreateDailyLog,
+  recalculateXpAndBadges,
   requestPersistentStorageAndCheck,
+  saveMealScanEntry,
+  saveOneQuestionDayOutcome,
+  toggleTaskCompletion,
 } from './db/database';
-import type { AppSettings, MealType, UserProfile } from './types';
+import type { AppSettings, EventOutcomeLevel, MealType, UserProfile } from './types';
 import { en } from './i18n/en';
 import { setDayStartHour4am, toLocalDateKey } from './lib/date';
 import { sha256Hex } from './lib/crypto';
 import { installGlobalErrorListeners } from './lib/errorLog';
-import { getInAppDueReminders } from './lib/notifications';
+import { getInAppDueReminders, syncLocalNotifications } from './lib/notifications';
+import { buildMealMemorySuggestions, getRealLifeSettings } from './lib/realLifeFood';
 import {
   getPedometerState,
   needsMotionPermission,
@@ -55,6 +60,9 @@ import { QuickLogSheet, type QuickLogTab } from './components/modals/QuickLogShe
 import { OnboardingModal } from './components/modals/OnboardingModal';
 import { CoachDrawer } from './components/modals/CoachDrawer';
 import { ReminderCenterModal } from './components/modals/ReminderCenterModal';
+import { EventModeModal } from './components/food/EventModeModal';
+import { DailyOneQuestionModal } from './components/food/DailyOneQuestionModal';
+import { GalleryImportModal } from './components/food/GalleryImportModal';
 
 const PlanScreen = lazy(() =>
   import('./screens/PlanScreen').then((m) => ({ default: m.PlanScreen }))
@@ -128,8 +136,15 @@ const AppShell: React.FC = () => {
 
   const [foodMealType, setFoodMealType] = useState<MealType | undefined>(undefined);
   const [foodMode, setFoodMode] = useState<'timeline' | 'scan' | 'quick' | undefined>(undefined);
+  const [foodDate, setFoodDate] = useState<string>(() => toLocalDateKey());
+  const [isSharedFoodInput, setIsSharedFoodInput] = useState(false);
+  const [autoFocusMic, setAutoFocusMic] = useState(false);
   const [sharedFoodNote, setSharedFoodNote] = useState<string | undefined>(undefined);
   const [sharedFoodFile, setSharedFoodFile] = useState<File | null>(null);
+
+  const [eventModalDate, setEventModalDate] = useState<string | null>(null);
+  const [oneQuestionDate, setOneQuestionDate] = useState<string | null>(null);
+  const [galleryModalOpen, setGalleryModalOpen] = useState(false);
 
   const [quickLogOpen, setQuickLogOpen] = useState(false);
   const [quickLogTab, setQuickLogTab] = useState<QuickLogTab>('water');
@@ -143,7 +158,15 @@ const AppShell: React.FC = () => {
   const stepsQueueRef = useRef(0);
   const flushTimerRef = useRef<number | null>(null);
 
-  const hasModalOpen = quickLogOpen || onboardingOpen || coachOpen || remindersOpen || navDrawerOpen;
+  const hasModalOpen =
+    quickLogOpen ||
+    onboardingOpen ||
+    coachOpen ||
+    remindersOpen ||
+    navDrawerOpen ||
+    Boolean(eventModalDate) ||
+    Boolean(oneQuestionDate) ||
+    galleryModalOpen;
   useEffect(() => {
     if (hasModalOpen) {
       document.body.classList.add('ascend-scroll-lock');
@@ -193,12 +216,18 @@ const AppShell: React.FC = () => {
       }
       setDbReady(true);
 
-      // Handle Web Share Target handoff (?share-target=1)
+      // Handle Web Share Target handoff (?share-target=1), PWA app shortcuts, and quick replies
       if (typeof window !== 'undefined') {
         const params = new URLSearchParams(window.location.search);
-        if (params.has('share-target')) {
+        const todayKeyNow = toLocalDateKey();
+        const rl = getRealLifeSettings(bootResult.settings);
+
+        if (params.has('share-target') && rl.shareIntoAscendEnabled !== false) {
           const noteParts = [params.get('title'), params.get('text'), params.get('url')]
             .filter((s): s is string => Boolean(s && s.trim()));
+          setIsSharedFoodInput(true);
+          setFoodDate(todayKeyNow);
+          setAutoFocusMic(false);
           if (noteParts.length > 0) {
             setSharedFoodNote(noteParts.join(' · '));
           }
@@ -218,9 +247,55 @@ const AppShell: React.FC = () => {
               .catch(() => {});
             setFoodMode('scan');
           } else {
-            setFoodMode(noteParts.length > 0 ? 'scan' : 'timeline');
+            setFoodMode(noteParts.length > 0 ? 'scan' : 'quick');
           }
           setScreen('food');
+          window.history.replaceState({}, '', '/');
+        } else if (params.has('shortcut')) {
+          const sc = params.get('shortcut');
+          if (sc === 'talk') {
+            setFoodDate(todayKeyNow);
+            setAutoFocusMic(true);
+            setFoodMode('quick');
+            setScreen('food');
+          } else if (sc === 'add-meal') {
+            setFoodDate(todayKeyNow);
+            setAutoFocusMic(false);
+            setFoodMode('quick');
+            setScreen('food');
+          } else if (sc === 'water') {
+            const cur = await getOrCreateDailyLog(todayKeyNow);
+            await db.dailyLogs.update(todayKeyNow, {
+              waterMl: (cur.waterMl || 0) + 250,
+              updatedAt: Date.now(),
+            });
+            showToast('+250 ml water logged');
+            setScreen('plan');
+          } else if (sc === 'trained') {
+            await db.workouts.add({
+              date: todayKeyNow,
+              name: 'Training check-in',
+              durationMin: 45,
+              exercises: [],
+              notes: 'Logged from app shortcut',
+              createdAt: Date.now(),
+            });
+            const workoutTask = await db.protocolTasks
+              .filter((t) => t.protocolId === 'body-workout-day' && t.enabled)
+              .first();
+            if (workoutTask) {
+              const existingComp = await db.taskCompletions.get(`${todayKeyNow}::${workoutTask.id}`);
+              if (!existingComp) {
+                await toggleTaskCompletion(todayKeyNow, workoutTask);
+              }
+            }
+            await recalculateXpAndBadges();
+            showToast('Workout checked in');
+            setScreen('plan');
+          }
+          window.history.replaceState({}, '', '/');
+        } else if (params.get('quick-reply') === 'food') {
+          setOneQuestionDate(todayKeyNow);
           window.history.replaceState({}, '', '/');
         }
       }
@@ -489,6 +564,132 @@ const AppShell: React.FC = () => {
       }),
     [settings, scans, todayLogForRem, profile.waterTargetMl, todayMealsCountForRem, profile.name]
   );
+
+  // Sync native notifications when reminder preferences or Event Mode change
+  useEffect(() => {
+    if (!dbReady) return;
+    syncLocalNotifications(settings, todayLogForRem ?? null).catch(() => {});
+  }, [dbReady, settings, todayLogForRem]);
+
+  // Capacitor deep links & notification quick-reply actions
+  useEffect(() => {
+    if (!dbReady || typeof window === 'undefined') return;
+    const cap = (window as unknown as {
+      Capacitor?: {
+        Plugins?: {
+          App?: {
+            addListener?: (
+              event: string,
+              cb: (data: { url?: string }) => void
+            ) => Promise<{ remove?: () => void }> | { remove?: () => void };
+          };
+          LocalNotifications?: {
+            addListener?: (
+              event: string,
+              cb: (ev: { actionId?: string; notification?: { extra?: { quickReply?: string } } }) => void
+            ) => Promise<{ remove?: () => void }> | { remove?: () => void };
+          };
+        };
+      };
+    }).Capacitor;
+    if (!cap?.Plugins) return;
+
+    let removed = false;
+    const cleanups: Array<() => void> = [];
+
+    const registerListeners = async () => {
+      try {
+        if (cap.Plugins?.App?.addListener) {
+          const handle = await cap.Plugins.App.addListener('appUrlOpen', ({ url }) => {
+            if (!url) return;
+            try {
+              const parsed = new URL(url);
+              const sc = parsed.searchParams.get('shortcut');
+              const qr = parsed.searchParams.get('quick-reply');
+              const todayKeyNow = toLocalDateKey();
+              if (sc === 'talk') {
+                setFoodDate(todayKeyNow);
+                setAutoFocusMic(true);
+                setFoodMode('quick');
+                setScreen('food');
+              } else if (sc === 'add-meal') {
+                setFoodDate(todayKeyNow);
+                setAutoFocusMic(false);
+                setFoodMode('quick');
+                setScreen('food');
+              } else if (qr === 'food') {
+                setOneQuestionDate(todayKeyNow);
+              }
+            } catch {
+              // ignore malformed deep links
+            }
+          });
+          if (!removed && handle?.remove) cleanups.push(() => handle.remove?.());
+        }
+
+        if (cap.Plugins?.LocalNotifications?.addListener) {
+          const handle = await cap.Plugins.LocalNotifications.addListener(
+            'localNotificationActionPerformed',
+            (ev) => {
+              const todayKeyNow = toLocalDateKey();
+              const aid = ev.actionId;
+              if (aid === 'light' || aid === 'normal' || aid === 'heavy' || aid === 'very_heavy') {
+                saveOneQuestionDayOutcome(todayKeyNow, aid as EventOutcomeLevel)
+                  .then(() => showToast('Saved quick eating estimate'))
+                  .catch(() => {});
+              } else if (ev.notification?.extra?.quickReply === 'food') {
+                setOneQuestionDate(todayKeyNow);
+              }
+            }
+          );
+          if (!removed && handle?.remove) cleanups.push(() => handle.remove?.());
+        }
+      } catch {
+        // Ignore outside Capacitor native APK
+      }
+    };
+    void registerListeners();
+
+    return () => {
+      removed = true;
+      cleanups.forEach((fn) => fn());
+    };
+  }, [dbReady, showToast]);
+
+  // Strictly OPT-IN auto-fill usual meals (OFF by default) — drafts at most once/day if empty & not event/skipped
+  useEffect(() => {
+    if (!dbReady || typeof window === 'undefined') return;
+    const rl = getRealLifeSettings(settings);
+    if (rl.autoFillUsualMeals !== true) return;
+    const todayKeyNow = toLocalDateKey();
+    const flagKey = `ascend_autofill_${todayKeyNow}`;
+    if (window.localStorage.getItem(flagKey)) return;
+    if (todayMealsCountForRem > 0) return;
+    if (todayLogForRem?.eventMode?.active) return;
+    if (settings.skippedGapCheckinDates?.includes(todayKeyNow)) return;
+
+    const suggestions = buildMealMemorySuggestions({
+      todayKey: todayKeyNow,
+      mealScans,
+      workouts,
+    });
+    const pick = suggestions[0];
+    if (!pick) return;
+
+    window.localStorage.setItem(flagKey, '1');
+    const { id: _ignoredId, ...sourceWithoutId } = pick.sourceMeal;
+    saveMealScanEntry({
+      ...sourceWithoutId,
+      date: todayKeyNow,
+      timestamp: Date.now(),
+      isEstimate: true,
+      summaryNote: `${pick.reason} (auto-filled draft — edit or delete anytime)`,
+    })
+      .then(() => {
+        showToast(`Drafted usual meal: ${pick.label} (edit anytime)`, 'info');
+      })
+      .catch(() => {});
+  }, [dbReady, settings, todayMealsCountForRem, todayLogForRem, mealScans, workouts, showToast]);
 
   const navigate = useCallback((nextScreen: string, nextSubTab?: string) => {
     let target: ScreenId = 'plan';
@@ -799,9 +1000,20 @@ const AppShell: React.FC = () => {
                     initialTab={subTab}
                     onOpenQuickLog={(t) => openQuickLogWithTab(t)}
                     onOpenFoodBreakfast={() => {
+                      setFoodDate(toLocalDateKey());
                       setFoodMealType('breakfast');
+                      setAutoFocusMic(false);
                       navigate('food', 'quick');
                     }}
+                    onOpenFoodForDate={(dateKey, slot) => {
+                      setFoodDate(dateKey);
+                      setFoodMealType(slot);
+                      setAutoFocusMic(false);
+                      navigate('food', 'quick');
+                    }}
+                    onOpenEventModal={(dateKey) => setEventModalDate(dateKey)}
+                    onOpenOneQuestionModal={(dateKey) => setOneQuestionDate(dateKey)}
+                    onOpenGalleryImport={() => setGalleryModalOpen(true)}
                     onNavigate={navigate}
                     onOpenCoach={(prompt) => openCoach(prompt)}
                   />
@@ -816,12 +1028,19 @@ const AppShell: React.FC = () => {
                     dailyLogs={dailyLogs}
                     mealScans={mealScans}
                     bodyMetrics={bodyMetrics}
+                    workouts={workouts}
                     initialMealType={foodMealType}
                     initialMode={foodMode}
+                    initialDate={foodDate}
                     initialPrefillNote={sharedFoodNote}
+                    initialIsSharedInput={isSharedFoodInput}
                     initialSharedFile={sharedFoodFile}
+                    autoFocusMic={autoFocusMic}
                     onConsumeSharedInput={() => {
                       setSharedFoodFile(null);
+                      setSharedFoodNote(undefined);
+                      setIsSharedFoodInput(false);
+                      setAutoFocusMic(false);
                     }}
                     onOpenNutritionVault={() => navigate('health', 'meals')}
                     onOpenDiet={() => navigate('diet')}
@@ -1154,10 +1373,45 @@ const AppShell: React.FC = () => {
         onClose={() => setQuickLogOpen(false)}
         onOpenSkinLab={() => navigate('face', 'skin')}
         onOpenMealScanner={(mType) => {
+          setFoodDate(selectedDate);
           setFoodMealType(mType);
+          setAutoFocusMic(false);
           navigate('food', 'scan');
         }}
         onOpenQuitHabits={() => navigate('health', 'quit')}
+        onOpenEventMode={(dk) => setEventModalDate(dk)}
+      />
+
+      <EventModeModal
+        open={Boolean(eventModalDate)}
+        dateKey={eventModalDate ?? toLocalDateKey()}
+        dailyLog={dailyLogs.find((l) => l.date === eventModalDate) ?? null}
+        settings={settings}
+        onClose={() => setEventModalDate(null)}
+        onOpenDetailsFlow={(mode) => {
+          const targetDate = eventModalDate ?? toLocalDateKey();
+          setEventModalDate(null);
+          if (mode === 'gallery') {
+            setGalleryModalOpen(true);
+          } else {
+            setFoodDate(targetDate);
+            setAutoFocusMic(true);
+            navigate('food', 'quick');
+          }
+        }}
+      />
+
+      <DailyOneQuestionModal
+        open={Boolean(oneQuestionDate)}
+        settings={settings}
+        dateKey={oneQuestionDate ?? toLocalDateKey()}
+        onClose={() => setOneQuestionDate(null)}
+      />
+
+      <GalleryImportModal
+        open={galleryModalOpen}
+        settings={settings}
+        onClose={() => setGalleryModalOpen(false)}
       />
 
       {onboardingOpen && (

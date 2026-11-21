@@ -29,6 +29,7 @@ import { getDailyMotivationalLine } from '../data/motivation';
 import { addDays, formatDisplayDate, getGreeting, toLocalDateKey } from '../lib/date';
 import { computeSleepStages, estimateHealthAndMetabolicAge } from '../lib/fitness';
 import { getScannerState, subscribeScannerStatus } from '../lib/faceAnalysis';
+import { getRealLifeSettings } from '../lib/realLifeFood';
 import { CircularRing } from '../components/ui/ProgressRings';
 import {
   DotMatrixProgress,
@@ -331,8 +332,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     () => scans.filter((s) => s.date === todayKey).length,
     [scans, todayKey]
   );
+  const realLife = useMemo(() => getRealLifeSettings(settings), [settings]);
+  const isEventDay = Boolean(currentLog?.eventMode?.active);
   const lowCalorieWarning =
-    currentLog && currentLog.calories > 0 && currentLog.calories < 1200;
+    !isEventDay && currentLog && currentLog.calories > 0 && currentLog.calories < 1200;
 
   const levelProgress = useMemo(() => {
     let rem = xpState.totalXp;
@@ -1052,7 +1055,17 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             </span>
             <span className="text-[11px] font-semibold truncate w-full">Meal AI</span>
             <span className="font-mono-num text-[10px] text-slate-500 dark:text-slate-400 truncate w-full">
-              {currentLog?.calories ? `${currentLog.calories} kcal` : 'Scan'}
+              {realLife.showNumbers === 'hidden_today'
+                ? 'Open'
+                : isEventDay
+                ? 'Event day'
+                : realLife.showNumbers === 'simple'
+                ? currentLog?.calories
+                  ? 'Logged'
+                  : 'Scan'
+                : currentLog?.calories
+                ? `${currentLog.calories} kcal`
+                : 'Scan'}
             </span>
           </button>
 

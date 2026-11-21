@@ -6,6 +6,7 @@ import {
   HelpCircle,
   Lock,
   MessageSquareText,
+  PartyPopper,
   PenLine,
   Search,
   Shield,
@@ -35,6 +36,11 @@ import {
   evaluateWeeklyWeightAdjustment,
   resolveSafeDietGoal,
 } from '../lib/nutrition';
+import {
+  computeWeeklyCalorieBudget,
+  getRealLifeSettings,
+  resolveNextDayTargetNoCompensation,
+} from '../lib/realLifeFood';
 import { CircularRing } from '../components/ui/ProgressRings';
 import { useToast } from '../components/ui/ToastProvider';
 import type {
@@ -122,6 +128,42 @@ export const DietScreen: React.FC<DietScreenProps> = ({
   const calPct = Math.min(100, Math.round((totals.calories / Math.max(1, calTarget)) * 100));
   const proPct = Math.min(100, Math.round((totals.proteinG / Math.max(1, proteinTarget)) * 100));
   const kcalLeft = Math.max(0, calTarget - totals.calories);
+
+  const realLife = useMemo(() => getRealLifeSettings(settings), [settings]);
+  const isEventDay = Boolean(todayLog?.eventMode?.active);
+  const yesterdayKey = useMemo(() => addDays(todayKey, -1), [todayKey]);
+  const yesterdayLog = useMemo(
+    () => dailyLogs.find((l) => l.date === yesterdayKey),
+    [dailyLogs, yesterdayKey]
+  );
+  const nextDayNoComp = useMemo(
+    () =>
+      resolveNextDayTargetNoCompensation({
+        baseDailyTargetKcal: calTarget,
+        yesterdayLog,
+      }),
+    [calTarget, yesterdayLog]
+  );
+  const weeklyBudget = useMemo(
+    () =>
+      computeWeeklyCalorieBudget({
+        todayKey,
+        dailyTargetKcal: calTarget,
+        dailyLogs,
+        mealScans,
+        settings,
+      }),
+    [todayKey, calTarget, dailyLogs, mealScans, settings]
+  );
+  const qualitativeStatus = isEventDay
+    ? en.realLife.eventActiveLabel
+    : totals.calories <= 0
+    ? 'Ready'
+    : totals.calories < calTarget * 0.65
+    ? 'Light'
+    : totals.calories <= calTarget * 1.08
+    ? 'On track'
+    : 'Full day';
 
   const fightCampActive =
     !hideCut &&
@@ -438,12 +480,27 @@ export const DietScreen: React.FC<DietScreenProps> = ({
           </div>
         )}
 
+        {/* Event day / No-Compensation calm note (never red) */}
+        {(isEventDay || yesterdayLog?.eventMode?.active || yesterdayLog?.eventMode?.outcome) && (
+          <div className="p-3.5 rounded-2xl bg-sky-500/12 border border-sky-500/30 text-xs space-y-1">
+            <p className="font-bold text-sky-700 dark:text-sky-200 flex items-center gap-1.5">
+              <PartyPopper className="w-4 h-4 shrink-0" />
+              {isEventDay ? en.realLife.eventActiveLabel : 'Post-event normal day'}
+            </p>
+            <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+              {isEventDay ? `${en.realLife.eventActiveSub} ${en.realLife.noCompensationNote}` : nextDayNoComp.note}
+            </p>
+          </div>
+        )}
+
         {/* Daily Calorie & Protein Target Rings */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
           <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 flex items-center gap-3.5">
             <CircularRing value={calPct} size={68} strokeWidth={7} color="var(--accent)">
               <span className="font-mono-num text-xs font-bold">
-                {formatDisplayNumber(`${calPct}%`, arabicDigits)}
+                {realLife.showNumbers === 'simple'
+                  ? qualitativeStatus
+                  : formatDisplayNumber(`${calPct}%`, arabicDigits)}
               </span>
             </CircularRing>
             <div className="min-w-0">
@@ -451,14 +508,24 @@ export const DietScreen: React.FC<DietScreenProps> = ({
                 <Flame className="w-3.5 h-3.5 text-[var(--accent)]" /> Daily Calories
               </p>
               <p className="font-mono-num text-lg font-bold">
-                {formatDisplayNumber(totals.calories, arabicDigits)}{' '}
-                <span className="text-xs font-normal text-slate-500">
-                  / {formatDisplayNumber(calTarget, arabicDigits)} kcal
-                </span>
+                {realLife.showNumbers === 'simple' ? (
+                  qualitativeStatus
+                ) : (
+                  <>
+                    {formatDisplayNumber(totals.calories, arabicDigits)}{' '}
+                    <span className="text-xs font-normal text-slate-500">
+                      / {formatDisplayNumber(calTarget, arabicDigits)} kcal
+                    </span>
+                  </>
+                )}
               </p>
               <p className="text-xs font-mono-num text-[var(--accent)]">
-                {hideCut
+                {isEventDay
+                  ? 'Event day — zero overshoot'
+                  : hideCut
                   ? 'Steady fuel target'
+                  : realLife.showNumbers === 'simple'
+                  ? 'Steady pace'
                   : `${formatDisplayNumber(kcalLeft, arabicDigits)} kcal left`}
               </p>
             </div>
@@ -467,7 +534,11 @@ export const DietScreen: React.FC<DietScreenProps> = ({
           <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 flex items-center gap-3.5">
             <CircularRing value={proPct} size={68} strokeWidth={7} color="#10B981">
               <span className="font-mono-num text-xs font-bold">
-                {formatDisplayNumber(`${proPct}%`, arabicDigits)}
+                {realLife.showNumbers === 'simple'
+                  ? proPct >= 75
+                    ? 'Strong'
+                    : 'Steady'
+                  : formatDisplayNumber(`${proPct}%`, arabicDigits)}
               </span>
             </CircularRing>
             <div className="min-w-0">
@@ -475,17 +546,47 @@ export const DietScreen: React.FC<DietScreenProps> = ({
                 Daily Protein Target
               </p>
               <p className="font-mono-num text-lg font-bold">
-                {formatDisplayNumber(`${totals.proteinG}g`, arabicDigits)}{' '}
-                <span className="text-xs font-normal text-slate-500">
-                  / {formatDisplayNumber(`${proteinTarget}g`, arabicDigits)}
-                </span>
+                {realLife.showNumbers === 'simple' ? (
+                  proPct >= 75 ? 'High protein' : 'Building up'
+                ) : (
+                  <>
+                    {formatDisplayNumber(`${totals.proteinG}g`, arabicDigits)}{' '}
+                    <span className="text-xs font-normal text-slate-500">
+                      / {formatDisplayNumber(`${proteinTarget}g`, arabicDigits)}
+                    </span>
+                  </>
+                )}
               </p>
               <p className="text-xs font-mono-num text-emerald-500">
-                {formatDisplayNumber(`${Math.max(0, Math.round(proteinTarget - totals.proteinG))}g left`, arabicDigits)}
+                {realLife.showNumbers === 'simple'
+                  ? 'Protein supports recovery'
+                  : formatDisplayNumber(`${Math.max(0, Math.round(proteinTarget - totals.proteinG))}g left`, arabicDigits)}
               </p>
             </div>
           </div>
         </div>
+
+        {/* 7-day rolling weekly calorie budget (when Budget View = Weekly) */}
+        {realLife.budgetView === 'weekly' && (
+          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 space-y-2 text-xs">
+            <div className="flex items-center justify-between gap-2">
+              <p className="font-bold">7-day rolling calorie budget</p>
+              <span className="font-mono-num font-bold text-[var(--accent)]">
+                {formatDisplayNumber(weeklyBudget.spentKcal, arabicDigits)} /{' '}
+                {formatDisplayNumber(weeklyBudget.weeklyTargetKcal, arabicDigits)} kcal
+              </span>
+            </div>
+            <div className="h-2 rounded-full bg-slate-200 dark:bg-white/10 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-[var(--accent)] transition-all duration-300"
+                style={{ width: `${weeklyBudget.progressPct}%` }}
+              />
+            </div>
+            <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+              {weeklyBudget.plainSummary}
+            </p>
+          </div>
+        )}
       </section>
 
       {/* Weekly Weight Trend + Weekly Auto-Adjust Note */}

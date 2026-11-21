@@ -13,6 +13,10 @@ import {
   Cloud,
   RefreshCw,
   AlertTriangle,
+  ChevronDown,
+  ChevronUp,
+  Utensils,
+  Shield,
 } from 'lucide-react';
 import {
   db,
@@ -39,12 +43,19 @@ import {
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { Monitor, Volume2, VolumeX, Sparkles, Check } from 'lucide-react';
 import { en } from '../i18n/en';
+import {
+  createDefaultRealLifeSettings,
+  getRealLifeSettings,
+  isAdultFoodCalorieToolAllowed,
+} from '../lib/realLifeFood';
+import { computeDailyNutritionTargets, resolveSafeDietGoal } from '../lib/nutrition';
 import type {
   AccentPreset,
   AppSettings,
   FocusAreaId,
   MindSubGoalId,
   PrayerKey,
+  RealLifeFoodSettings,
   ThemeMode,
   ToneMode,
   UserProfile,
@@ -139,6 +150,25 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     });
   }, []);
 
+  const realLife = getRealLifeSettings(settings);
+  const adultFoodAllowed = isAdultFoodCalorieToolAllowed(profile);
+  const safeAutoTargets = computeDailyNutritionTargets(
+    profile,
+    resolveSafeDietGoal(profile, profile.dietGoal ?? 'maintain').goal
+  );
+  const [showAskWhyRealLife, setShowAskWhyRealLife] = useState(false);
+  const [manualCalDraft, setManualCalDraft] = useState<string>(
+    String(profile.calorieGoal || safeAutoTargets.calories)
+  );
+  const [manualProDraft, setManualProDraft] = useState<string>(
+    String(profile.proteinTargetG || safeAutoTargets.proteinG)
+  );
+
+  useEffect(() => {
+    setManualCalDraft(String(profile.calorieGoal || safeAutoTargets.calories));
+    setManualProDraft(String(profile.proteinTargetG || safeAutoTargets.proteinG));
+  }, [profile.calorieGoal, profile.proteinTargetG, safeAutoTargets.calories, safeAutoTargets.proteinG]);
+
   const updateSettings = async (patch: Partial<AppSettings>, rebuildTasks = false) => {
     const next = { ...settings, ...patch };
     if (patch.dayStartsAt4am !== undefined) {
@@ -149,6 +179,37 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     if (rebuildTasks) {
       await regenerateProtocolFromProfile(profile);
     }
+  };
+
+  const updateRealLife = async (patch: Partial<RealLifeFoodSettings>) => {
+    await updateSettings({
+      realLifeFood: {
+        ...realLife,
+        ...patch,
+      },
+    });
+  };
+
+  const handleSaveManualFoodTargets = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!adultFoodAllowed) return;
+    const kcal = Math.round(Number(manualCalDraft));
+    const pro = Math.round(Number(manualProDraft));
+    if (!Number.isFinite(kcal) || kcal < 1200 || kcal > 5500) {
+      showToast('Enter a daily calorie target between 1200 and 5500 kcal', 'warning');
+      return;
+    }
+    if (!Number.isFinite(pro) || pro < 40 || pro > 320) {
+      showToast('Enter a daily protein target between 40 and 320 g', 'warning');
+      return;
+    }
+    await saveAndVerifyProfile({
+      ...profile,
+      calorieGoal: kcal,
+      proteinTargetG: pro,
+      updatedAt: Date.now(),
+    });
+    showToast(`Saved custom food targets: ${kcal} kcal · ${pro} g protein`);
   };
 
   const activeFocusAreas: FocusAreaId[] =
@@ -820,6 +881,421 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                 >
                   {settings.onlineCoachEnabled ? 'Enabled' : 'Off'}
                 </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Food & Calories > Real life */}
+          <div className="ascend-card p-4 space-y-3.5" id="food-real-life-settings">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-start gap-2">
+                <Utensils className="w-4 h-4 text-[var(--accent)] mt-0.5 shrink-0" />
+                <div>
+                  <h2 className="font-display text-base font-bold">Food &amp; Calories &middot; Real life</h2>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Shape how easy, flexible, or detailed food logging feels on real days.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  const defaults = createDefaultRealLifeSettings();
+                  await updateSettings({ realLifeFood: defaults });
+                  showToast('Real life food settings reset to defaults', 'info');
+                }}
+                className="px-2.5 py-1.5 rounded-xl bg-slate-100 dark:bg-white/5 text-[11px] font-semibold shrink-0 min-h-[34px]"
+              >
+                Reset to defaults
+              </button>
+            </div>
+
+            <div className="p-2.5 rounded-xl bg-sky-500/10 border border-sky-500/20 text-[11px] text-slate-700 dark:text-slate-200 leading-relaxed">
+              {en.realLife.honestAccuracy}
+            </div>
+
+            {/* Logging detail */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-semibold">Logging detail</span>
+                <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Precise is always optional
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-1.5">
+                {([
+                  { id: 'easy', label: 'Easy', hint: 'Fast picks & presets' },
+                  { id: 'balanced', label: 'Balanced', hint: 'Normal portions' },
+                  { id: 'precise', label: 'Precise', hint: 'Grams & label detail' },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => updateRealLife({ loggingDetail: opt.id })}
+                    className={`p-2 rounded-xl text-left border min-h-[48px] transition ${
+                      realLife.loggingDetail === opt.id
+                        ? 'bg-[var(--accent-soft)] text-[var(--accent)] border-[var(--accent)]/40'
+                        : 'bg-slate-100 dark:bg-white/5 border-transparent'
+                    }`}
+                  >
+                    <span className="block text-xs font-bold">{opt.label}</span>
+                    <span className="block text-[10px] opacity-80 leading-tight mt-0.5">{opt.hint}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Budget view & Show numbers */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-200 dark:border-white/10">
+              <div className="space-y-1.5">
+                <span className="text-xs font-semibold block">Budget view</span>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {([
+                    { id: 'daily', label: 'Daily' },
+                    { id: 'weekly', label: 'Weekly 7-day' },
+                  ] as const).map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => updateRealLife({ budgetView: opt.id })}
+                      className={`py-2 px-2.5 rounded-xl text-xs font-semibold border min-h-[40px] transition ${
+                        realLife.budgetView === opt.id
+                          ? 'bg-[var(--accent-soft)] text-[var(--accent)] border-[var(--accent)]/40'
+                          : 'bg-slate-100 dark:bg-white/5 border-transparent'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <span className="text-xs font-semibold block">Show numbers</span>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {([
+                    { id: 'full', label: 'Full' },
+                    { id: 'simple', label: 'Simple' },
+                    { id: 'hidden_today', label: 'Hide today' },
+                  ] as const).map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => updateRealLife({ showNumbers: opt.id })}
+                      className={`py-2 px-1.5 rounded-xl text-[11px] font-semibold border min-h-[40px] transition ${
+                        realLife.showNumbers === opt.id
+                          ? 'bg-[var(--accent-soft)] text-[var(--accent)] border-[var(--accent)]/40'
+                          : 'bg-slate-100 dark:bg-white/5 border-transparent'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Real-life toggles */}
+            <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-white/10 text-xs">
+              {([
+                {
+                  key: 'eventModeEnabled',
+                  label: 'Event mode ("I’m out today")',
+                  sub: 'Pause food nudges cleanly for weddings, outings & travel',
+                },
+                {
+                  key: 'galleryImportEnabled',
+                  label: 'Gallery photo batch import',
+                  sub: 'Manual foreground pick only — clusters photos by meal time',
+                },
+                {
+                  key: 'nextMorningCheckinEnabled',
+                  label: 'Next-morning gentle check-in',
+                  sub: 'One-tap fill for missed yesterday meals, or Skip with zero penalty',
+                },
+                {
+                  key: 'shareIntoAscendEnabled',
+                  label: 'Share into ASCEND',
+                  sub: 'Accept shared meal screenshots or delivery order text you send in',
+                },
+                {
+                  key: 'includeEstimatedInAverages',
+                  label: 'Include estimated days in averages',
+                  sub: 'Weighted 0.65× in 7-day averages; skipped days are never counted as 0',
+                },
+                {
+                  key: 'autoFillUsualMeals',
+                  label: 'Auto-fill usual meals (opt-in draft)',
+                  sub: 'Off by default. When on, offers your usual breakfast/lunch draft once/day',
+                },
+                {
+                  key: 'justTakePhotosMode',
+                  label: 'Just take photos mode',
+                  sub: 'Foreground manual photo-first workflow — zero background gallery scanning',
+                },
+                {
+                  key: 'kitchenScaleMode',
+                  label: 'Kitchen scale g/ml hints',
+                  sub: 'Shows exact gram & ml hints beside food portions when logging',
+                },
+              ] as const).map((item) => {
+                const active = Boolean(realLife[item.key]);
+                return (
+                  <div key={item.key} className="flex items-center justify-between gap-3 py-1">
+                    <div>
+                      <span className="font-medium block">{item.label}</span>
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
+                        {item.sub}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => updateRealLife({ [item.key]: !active })}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-semibold border shrink-0 min-h-[38px] transition ${
+                        active
+                          ? 'bg-[var(--accent-soft)] text-[var(--accent)] border-[var(--accent)]/35'
+                          : 'bg-slate-100 dark:bg-white/5 border-transparent'
+                      }`}
+                    >
+                      {active ? 'On' : 'Off'}
+                    </button>
+                  </div>
+                );
+              })}
+
+              {/* Daily one-question check-in + time */}
+              <div className="pt-1.5 border-t border-slate-200 dark:border-white/10 space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <span className="font-medium block">Daily one-question evening check-in</span>
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
+                      Max 1 food prompt/day when no meals are logged
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      updateRealLife({ dailyOneQuestionEnabled: !realLife.dailyOneQuestionEnabled })
+                    }
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold border shrink-0 min-h-[38px] transition ${
+                      realLife.dailyOneQuestionEnabled
+                        ? 'bg-[var(--accent-soft)] text-[var(--accent)] border-[var(--accent)]/35'
+                        : 'bg-slate-100 dark:bg-white/5 border-transparent'
+                    }`}
+                  >
+                    {realLife.dailyOneQuestionEnabled ? 'On' : 'Off'}
+                  </button>
+                </div>
+                {realLife.dailyOneQuestionEnabled && (
+                  <div className="flex items-center justify-between gap-2 pl-2">
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Check-in time
+                    </span>
+                    <input
+                      type="time"
+                      value={realLife.dailyOneQuestionTime}
+                      onChange={(e) => updateRealLife({ dailyOneQuestionTime: e.target.value })}
+                      className="px-2.5 py-1.5 rounded-xl bg-slate-100 dark:bg-white/5 font-mono-num text-xs"
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Food reminders */}
+            <div className="pt-2 border-t border-slate-200 dark:border-white/10 space-y-2 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-semibold">Food reminders</span>
+                <span className="text-[10px] text-sky-600 dark:text-sky-300 font-medium">
+                  Quiet automatically during events
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-1.5">
+                {([
+                  { id: 'off', label: 'Off' },
+                  { id: 'if_empty_by_time', label: 'If empty by...' },
+                  { id: 'mealtime_nudges', label: 'Meal nudges' },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => updateRealLife({ foodReminderMode: opt.id })}
+                    className={`py-2 px-2 rounded-xl text-[11px] font-semibold border min-h-[40px] transition ${
+                      realLife.foodReminderMode === opt.id
+                        ? 'bg-[var(--accent-soft)] text-[var(--accent)] border-[var(--accent)]/40'
+                        : 'bg-slate-100 dark:bg-white/5 border-transparent'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              {realLife.foodReminderMode === 'if_empty_by_time' && (
+                <div className="flex items-center justify-between gap-2 pl-2">
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Remind only if 0 meals logged by
+                  </span>
+                  <input
+                    type="time"
+                    value={realLife.foodReminderEmptyTime}
+                    onChange={(e) => updateRealLife({ foodReminderEmptyTime: e.target.value })}
+                    className="px-2.5 py-1.5 rounded-xl bg-slate-100 dark:bg-white/5 font-mono-num text-xs"
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Habit stacking cue */}
+            <div className="pt-2 border-t border-slate-200 dark:border-white/10 space-y-2 text-xs">
+              <span className="font-semibold block">Habit stacking cue</span>
+              <div className="flex flex-wrap gap-1.5">
+                {([
+                  { id: 'none', label: 'None' },
+                  { id: 'after_nescafe', label: 'After Nescafé' },
+                  { id: 'after_dinner', label: 'After dinner' },
+                  { id: 'after_gym', label: 'After gym' },
+                  { id: 'custom', label: 'Custom' },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => updateRealLife({ habitStackCue: opt.id })}
+                    className={`px-3 py-1.5 rounded-xl text-[11px] font-semibold border min-h-[36px] transition ${
+                      realLife.habitStackCue === opt.id
+                        ? 'bg-[var(--accent-soft)] text-[var(--accent)] border-[var(--accent)]/40'
+                        : 'bg-slate-100 dark:bg-white/5 border-transparent'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              {realLife.habitStackCue === 'custom' && (
+                <input
+                  type="text"
+                  placeholder="e.g. Right after Maghrib prayer"
+                  value={realLife.habitStackCustomText ?? ''}
+                  onChange={(e) => updateRealLife({ habitStackCustomText: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-white/5 text-xs min-h-[40px]"
+                />
+              )}
+            </div>
+
+            {/* Protein & Calorie Targets (Age-gated) */}
+            <div className="pt-2 border-t border-slate-200 dark:border-white/10 space-y-2 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-semibold">Protein &amp; calorie targets</span>
+                <div className="flex gap-1.5">
+                  {([
+                    { id: 'auto', label: 'Auto' },
+                    { id: 'manual', label: 'Manual' },
+                  ] as const).map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={async () => {
+                        await updateRealLife({ targetSource: opt.id });
+                        if (opt.id === 'auto') {
+                          await saveAndVerifyProfile({
+                            ...profile,
+                            calorieGoal: safeAutoTargets.calories,
+                            proteinTargetG: safeAutoTargets.proteinG,
+                            updatedAt: Date.now(),
+                          });
+                          showToast('Targets set to automatic safe calculation', 'info');
+                        }
+                      }}
+                      className={`px-3 py-1 rounded-xl text-[11px] font-semibold border min-h-[34px] transition ${
+                        (realLife.targetSource ?? 'auto') === opt.id
+                          ? 'bg-[var(--accent-soft)] text-[var(--accent)] border-[var(--accent)]/40'
+                          : 'bg-slate-100 dark:bg-white/5 border-transparent'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {(realLife.targetSource ?? 'auto') === 'manual' && (
+                adultFoodAllowed ? (
+                  <form onSubmit={handleSaveManualFoodTargets} className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+                    <div>
+                      <label className="block text-[10px] text-slate-500 dark:text-slate-400 mb-1">
+                        Daily kcal
+                      </label>
+                      <input
+                        type="number"
+                        min={1200}
+                        max={5500}
+                        value={manualCalDraft}
+                        onChange={(e) => setManualCalDraft(e.target.value)}
+                        className="w-full px-2.5 py-2 rounded-xl bg-slate-100 dark:bg-white/5 font-mono-num text-xs min-h-[40px]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-slate-500 dark:text-slate-400 mb-1">
+                        Protein (g)
+                      </label>
+                      <input
+                        type="number"
+                        min={40}
+                        max={320}
+                        value={manualProDraft}
+                        onChange={(e) => setManualProDraft(e.target.value)}
+                        className="w-full px-2.5 py-2 rounded-xl bg-slate-100 dark:bg-white/5 font-mono-num text-xs min-h-[40px]"
+                      />
+                    </div>
+                    <div className="flex items-end">
+                      <button
+                        type="submit"
+                        className="w-full py-2 px-3 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-bold min-h-[40px]"
+                      >
+                        Save targets
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/25 text-[11px] text-amber-800 dark:text-amber-200">
+                    Set an adult age (18+) above to customize calorie targets. Safe automatic growth targets stay active ({safeAutoTargets.calories} kcal · {safeAutoTargets.proteinG} g protein).
+                  </div>
+                )
+              )}
+            </div>
+
+            {/* Expandable Ask why accordion */}
+            <div className="pt-2 border-t border-slate-200 dark:border-white/10">
+              <button
+                type="button"
+                onClick={() => setShowAskWhyRealLife((v) => !v)}
+                className="w-full flex items-center justify-between text-xs font-semibold py-1"
+              >
+                <span>Ask why these options exist</span>
+                {showAskWhyRealLife ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+              </button>
+              {showAskWhyRealLife && (
+                <div className="mt-2 space-y-1.5 text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                  <p>
+                    <strong>No guilt, no red days:</strong> Weddings, family lunches, and skipped days are part of normal life. Unlogged days are never treated as 0 kcal and never break your streak.
+                  </p>
+                  <p>
+                    <strong>No payback cuts:</strong> After a big event, tomorrow stays a normal day — cutting calories after a social meal backfires and drives burnout.
+                  </p>
+                  <p>
+                    <strong>Weekly view + rough days count:</strong> Weekly budgets smooth out single social days naturally, and quick estimates weight 0.65× so averages stay honest without manual weighing.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* What leaves your phone privacy box */}
+            <div className="p-2.5 rounded-xl bg-slate-100/80 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-[11px] text-slate-600 dark:text-slate-300 flex items-start gap-2">
+              <Shield className="w-3.5 h-3.5 text-[var(--accent)] shrink-0 mt-0.5" />
+              <div>
+                <span className="font-semibold block text-slate-800 dark:text-slate-100">
+                  What leaves your phone
+                </span>
+                <span>{en.realLife.privacyLeavesPhone}</span>
               </div>
             </div>
           </div>

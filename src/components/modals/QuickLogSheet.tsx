@@ -11,6 +11,7 @@ import {
   AlertTriangle,
   Wind,
   ShieldCheck,
+  PartyPopper,
 } from 'lucide-react';
 import {
   createDefaultSettings,
@@ -19,7 +20,9 @@ import {
   isUnder18OrGrowing,
   recalculateXpAndBadges,
   saveHeightLog,
+  startEventModeForDay,
 } from '../../db/database';
+import { EVENT_TYPE_META, getEventTypeMeta } from '../../data/eventPresets';
 import { toLocalDateKey } from '../../lib/date';
 import { calculateUSNavyBodyFat, computeBmi } from '../../lib/fitness';
 import { en, getMealTypeByHour } from '../../i18n/en';
@@ -36,6 +39,7 @@ import { useToast } from '../ui/ToastProvider';
 export type QuickLogTab =
   | 'water'
   | 'nutrition'
+  | 'event'
   | 'body'
   | 'sleep'
   | 'mood'
@@ -55,6 +59,7 @@ interface QuickLogSheetProps {
   onOpenSkinLab?: () => void;
   onOpenMealScanner?: (mealType?: MealType) => void;
   onOpenQuitHabits?: () => void;
+  onOpenEventMode?: (dateKey: string) => void;
 }
 
 const MOOD_FACES = [
@@ -77,6 +82,7 @@ export const QuickLogSheet: React.FC<QuickLogSheetProps> = ({
   onOpenSkinLab,
   onOpenMealScanner,
   onOpenQuitHabits,
+  onOpenEventMode,
 }) => {
   const { showToast } = useToast();
   const normalizedInitial: QuickLogTab = initialTab === 'skin' ? 'photo' : initialTab;
@@ -316,6 +322,7 @@ export const QuickLogSheet: React.FC<QuickLogSheetProps> = ({
   const tabs: Array<{ id: QuickLogTab; label: string; icon: React.ReactNode }> = [
     { id: 'water', label: en.quickAdd.water, icon: <Droplets className="w-4 h-4" /> },
     { id: 'nutrition', label: en.quickAdd.meal, icon: <Utensils className="w-4 h-4" /> },
+    { id: 'event', label: 'Event', icon: <PartyPopper className="w-4 h-4" /> },
     { id: 'body', label: en.quickAdd.weight, icon: <Scale className="w-4 h-4" /> },
     { id: 'sleep', label: en.quickAdd.sleep, icon: <Moon className="w-4 h-4" /> },
     { id: 'mood', label: en.quickAdd.mood, icon: <Smile className="w-4 h-4" /> },
@@ -453,6 +460,52 @@ export const QuickLogSheet: React.FC<QuickLogSheetProps> = ({
                   : undefined
               }
             />
+          </div>
+        )}
+
+        {tab === 'event' && (
+          <div className="space-y-3">
+            <div className="p-3 rounded-2xl bg-sky-500/10 border border-sky-500/25 text-xs text-slate-700 dark:text-slate-200">
+              <p className="font-bold">Out today or at an event?</p>
+              <p className="text-[11px] opacity-85 mt-0.5">
+                Tap any option to turn on Event mode for {dateKey}. Food reminders pause and there is zero red or overshoot UI today.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {EVENT_TYPE_META.map((ev) => (
+                <button
+                  key={ev.id}
+                  type="button"
+                  onClick={async () => {
+                    await startEventModeForDay(dateKey, ev.id);
+                    const meta = getEventTypeMeta(ev.id);
+                    showToast(`${meta.label} event mode ON — have fun`);
+                    onClose();
+                  }}
+                  className="p-3 rounded-2xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-left hover:border-[var(--accent)] min-h-[56px]"
+                >
+                  <p className="text-xs font-bold flex items-center gap-1.5">
+                    <span>{ev.icon}</span>
+                    <span>{ev.label}</span>
+                  </p>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                    {ev.shortHint}
+                  </p>
+                </button>
+              ))}
+            </div>
+            {onOpenEventMode && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenEventMode(dateKey);
+                }}
+                className="w-full py-3 rounded-2xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-bold min-h-[44px]"
+              >
+                Open full Event mode (outcome &amp; preset plates)
+              </button>
+            )}
           </div>
         )}
 

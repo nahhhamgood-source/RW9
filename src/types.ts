@@ -26,6 +26,96 @@ export type MealType = 'breakfast' | 'lunch' | 'dinner' | 'snack';
 
 export type MealFullness = 'still_hungry' | 'good' | 'very_full';
 
+export type EventType =
+  | 'wedding'
+  | 'birthday'
+  | 'family_lunch'
+  | 'restaurant'
+  | 'street_food'
+  | 'travel'
+  | 'other';
+
+export type EventOutcomeLevel = 'light' | 'normal' | 'heavy' | 'very_heavy';
+
+export type DayTrackingStatus = 'complete' | 'partial' | 'estimated' | 'not_tracked';
+
+export type LoggingDetailLevel = 'easy' | 'balanced' | 'precise';
+
+export type BudgetViewMode = 'daily' | 'weekly';
+
+export type NumbersDisplayMode = 'full' | 'simple' | 'hidden_today';
+
+export type FoodReminderMode = 'off' | 'if_empty_by_time' | 'mealtime_nudges';
+
+export type HabitStackCue = 'none' | 'after_nescafe' | 'after_dinner' | 'after_gym' | 'custom';
+
+export type MealSourceKind =
+  | 'normal'
+  | 'event_quick'
+  | 'event_preset'
+  | 'gallery_import'
+  | 'share_target'
+  | 'recall'
+  | 'template'
+  | 'one_question'
+  | 'barcode'
+  | 'label';
+
+export interface RealLifeFoodSettings {
+  loggingDetail: LoggingDetailLevel;
+  budgetView: BudgetViewMode;
+  showNumbers: NumbersDisplayMode;
+  eventModeEnabled: boolean;
+  galleryImportEnabled: boolean;
+  nextMorningCheckinEnabled: boolean;
+  dailyOneQuestionEnabled: boolean;
+  dailyOneQuestionTime: string;
+  autoFillUsualMeals: boolean;
+  shareIntoAscendEnabled: boolean;
+  includeEstimatedInAverages: boolean;
+  justTakePhotosMode: boolean;
+  foodReminderMode: FoodReminderMode;
+  foodReminderEmptyTime: string;
+  habitStackCue: HabitStackCue;
+  habitStackCustomText?: string;
+  targetSource?: 'auto' | 'manual';
+  kitchenScaleMode?: boolean;
+}
+
+export interface EventModeState {
+  active: boolean;
+  type: EventType;
+  startedAt: number;
+  endedAt?: number;
+  reminderQuietUntilMidnight: boolean;
+  outcome?: EventOutcomeLevel;
+  platesCount?: number;
+  hadDessert?: boolean;
+  note?: string;
+}
+
+export interface SavedMealTemplate {
+  id: string;
+  title: string;
+  mealType: MealType;
+  icon: string;
+  portionLabel: string;
+  kcal: number;
+  kcalRange?: string;
+  proteinG: number;
+  sodiumMg: number;
+  items: Array<{
+    name: string;
+    portionLabel: string;
+    kcal: number;
+    proteinG: number;
+    sodiumMg: number;
+    icon?: string;
+  }>;
+  createdAt: number;
+  lastUsedAt?: number;
+}
+
 export type DietGoalMode = 'cut' | 'maintain' | 'lean_gain';
 
 export type StillGrowingStatus = 'yes' | 'no' | 'unsure';
@@ -188,6 +278,10 @@ export interface AppSettings {
   favoriteFoodIds?: string[];
   recentFoodIds?: string[];
   customFoodCatalog?: CustomFoodEntry[];
+  realLifeFood?: RealLifeFoodSettings;
+  mealTemplates?: SavedMealTemplate[];
+  skippedGapCheckinDates?: string[];
+  dailyCheckinAskedDates?: Record<string, string>;
   pinHash: string | null;
   reminders: ReminderPreferences;
   lastWeeklyReviewDate: string | null;
@@ -334,6 +428,8 @@ export interface DailyLog {
   prayersCompleted?: Partial<Record<PrayerKey, boolean>>;
   minimumsDone?: boolean;
   gratitudeLine?: string;
+  dayStatus?: DayTrackingStatus;
+  eventMode?: EventModeState;
   notes: string;
   updatedAt: number;
 }
@@ -625,6 +721,9 @@ export interface MealScanEntry {
   fullness?: MealFullness;
   photoThumbnail?: string;
   isManual?: boolean;
+  isEstimate?: boolean;
+  estimateRangeLabel?: string;
+  sourceKind?: MealSourceKind;
 }
 
 export interface PuffinessLogEntry {

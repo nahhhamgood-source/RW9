@@ -183,6 +183,23 @@ export const en = {
     fitsToday: 'Fits today',
     swapLabel: 'Lighter swap',
   },
+  realLife: {
+    outTodayBtn: "I'm out today",
+    eventActiveLabel: 'Event day (estimated)',
+    eventActiveSub: 'Have fun. Tell me roughly how it went later.',
+    noCompensationNote: 'Tomorrow stays a normal day. Never cut calories to pay back an event.',
+    skipDontTrack: "Skip, don't track",
+    sameAsUsual: 'Same as usual',
+    yesterdayGapsTitle: 'Yesterday has gaps. Fill in?',
+    oneQuestionPrompt: 'Quick one: how was eating today?',
+    honestAccuracy:
+      'Photo and voice logging is an estimate (often within 15–30%). More detail gives better numbers.',
+    privacyLeavesPhone:
+      'Only sent when you use an online feature with Food AI turned on: food text, nutrition-label or meal photos (location/EXIF stripped first), barcode digits (to Open Food Facts), or menu text. Nothing is stored on a server.',
+    shareHonestNote:
+      'Reads only what is on this screenshot or shared text — ASCEND cannot see inside other apps.',
+    adaptiveLabel: 'Estimate, improves with data',
+  },
 };
 
 export function getMealTypeByHour(date: Date = new Date()): MealType {

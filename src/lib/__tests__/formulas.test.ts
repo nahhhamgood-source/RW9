@@ -35,9 +35,27 @@ import {
   estimateCustomFoodLocally,
   formatKcalEstimate,
   parseFoodTextLocally,
+  parseMultiMealTextLocally,
   roundKcal,
   roundProtein,
 } from '../foodChatParser';
+import {
+  EVENT_OUTCOME_OPTIONS,
+  EVENT_PRESET_PLATES,
+  getEventTypeMeta,
+} from '../../data/eventPresets';
+import {
+  buildEventOutcomeDraftMeal,
+  classifyDayTrackingStatus,
+  computeAdaptiveMaintenanceCalibration,
+  computeNutritionAverages,
+  computeWeeklyCalorieBudget,
+  createDefaultRealLifeSettings,
+  detectContextFoodPrompt,
+  groupGalleryFilesByMealTime,
+  isAdultFoodCalorieToolAllowed,
+  resolveNextDayTargetNoCompensation,
+} from '../realLifeFood';
 
 describe('Fitness & Anthropometry formulas', () => {
   it('computes Mifflin-St Jeor BMR & TDEE realistically', () => {
@@ -268,7 +286,7 @@ import {
 } from '../notifications';
 import { CCW_TEMPORALIS_INFO_CARD, GLOSSARY_TERMS } from '../../data/academy';
 import { computeHonestDailyLine, detectUserPatterns } from '../patterns';
-import type { ActiveProtocolTask, DailyLog, ExerciseSessionLog, MealScanEntry, TaskCompletion, WorkoutSession } from '../../types';
+import type { ActiveProtocolTask, BodyMetricEntry, DailyLog, ExerciseSessionLog, MealScanEntry, TaskCompletion, WorkoutSession } from '../../types';
 
 describe('Understand Me: Pattern engine, About Me confirmations & Arabic-Indic digits (Part 8)', () => {
   it('detects breakfast-gap, big-lunch, load-vs-sleep, weight-trend-honesty & time-of-day consistency with 2-card cap and dismiss filtering', () => {
@@ -977,6 +995,314 @@ describe('Food Chat ("Just tell me what you ate") — Part 8', () => {
     const fullnessCard = detected.cards.find((c) => c.id === 'meal-fullness');
     expect(fullnessCard).toBeDefined();
     expect(fullnessCard!.headline).toContain('Lunch makes you very full 3 days this week');
+  });
+});
+
+describe('Real Life Food Patch ("I\'m at a wedding, I\'m not touching my phone")', () => {
+  const makeMeal = (
+    date: string,
+    kcal: number,
+    proteinG: number,
+    overrides: Partial<MealScanEntry> = {}
+  ): MealScanEntry => ({
+    id: Math.floor(Math.random() * 100000),
+    date,
+    timestamp: Date.parse(`${date}T13:00:00Z`),
+    mealTitle: 'Sample meal',
+    mealType: 'lunch',
+    confidence: 'Medium',
+    items: [],
+    totalCalories: kcal,
+    totalProteinG: proteinG,
+    totalCarbsG: 60,
+    totalFatsG: 20,
+    totalSodiumMg: 500,
+    totalAddedSugarG: 4,
+    debloatStatus: 'optimal',
+    debloatHeadline: 'Optimal',
+    summaryNote: '',
+    isManual: true,
+    ...overrides,
+  });
+
+  const makeLog = (date: string, calories: number, proteinG: number, overrides: Partial<DailyLog> = {}): DailyLog => ({
+    date,
+    waterMl: 2500,
+    proteinG,
+    calories,
+    sleepHours: 8,
+    sleepQuality: 4,
+    bedtime: '23:30',
+    wakeTime: '07:30',
+    mood: 4,
+    energy: 4,
+    steps: 8000,
+    restingHr: null,
+    notes: '',
+    updatedAt: 1,
+    ...overrides,
+  });
+
+  it('classifies complete, partial, estimated, and not_tracked days accurately', () => {
+    const empty = classifyDayTrackingStatus({ dateKey: '2026-11-10', meals: [] });
+    expect(empty.status).toBe('not_tracked');
+    expect(empty.confidenceWeight).toBe(0);
+
+    const partial = classifyDayTrackingStatus({
+      dateKey: '2026-11-11',
+      meals: [makeMeal('2026-11-11', 420, 22, { mealType: 'breakfast' })],
+    });
+    expect(partial.status).toBe('partial');
+
+    const estimated = classifyDayTrackingStatus({
+      dateKey: '2026-11-12',
+      dailyLog: makeLog('2026-11-12', 1200, 38, {
+        eventMode: { active: false, type: 'wedding', startedAt: 1, reminderQuietUntilMidnight: true, outcome: 'heavy' },
+      }),
+      meals: [makeMeal('2026-11-12', 1200, 38, { sourceKind: 'event_quick', isEstimate: true, confidence: 'Low' })],
+    });
+    expect(estimated.status).toBe('estimated');
+    expect(estimated.confidenceWeight).toBe(0.65);
+
+    const complete = classifyDayTrackingStatus({
+      dateKey: '2026-11-13',
+      meals: [
+        makeMeal('2026-11-13', 500, 30, { mealType: 'breakfast' }),
+        makeMeal('2026-11-13', 850, 50, { mealType: 'lunch' }),
+        makeMeal('2026-11-13', 750, 45, { mealType: 'dinner' }),
+      ],
+    });
+    expect(complete.status).toBe('complete');
+    expect(complete.confidenceWeight).toBe(1);
+  });
+
+  it('excludes not_tracked days (never 0 kcal) and weights estimated days at 0.65x in computeNutritionAverages', () => {
+    const today = '2026-11-15';
+    // Day 0: complete (2000 kcal, 140g)
+    // Day -1: estimated (1000 kcal, 40g) -> weight 0.65
+    // Days -2..-6: not_tracked -> NEVER counted as 0
+    const meals: MealScanEntry[] = [
+      makeMeal(today, 600, 40, { mealType: 'breakfast' }),
+      makeMeal(today, 800, 55, { mealType: 'lunch' }),
+      makeMeal(today, 600, 45, { mealType: 'dinner' }),
+      makeMeal(addDays(today, -1), 1000, 40, { sourceKind: 'event_quick', isEstimate: true, confidence: 'Low' }),
+    ];
+    const logs: DailyLog[] = [
+      makeLog(today, 2000, 140, { dayStatus: 'complete' }),
+      makeLog(addDays(today, -1), 1000, 40, { dayStatus: 'estimated' }),
+    ];
+
+    const res = computeNutritionAverages({
+      todayKey: today,
+      daysBack: 7,
+      dailyLogs: logs,
+      mealScans: meals,
+      includeEstimated: true,
+    });
+    expect(res.completeDays).toBe(1);
+    expect(res.estimatedDays).toBe(1);
+    expect(res.notTrackedDays).toBe(5);
+    expect(res.avgCalories).toBe(Math.round((2000 * 1 + 1000 * 0.65) / 1.65));
+    expect(res.avgProteinG).toBe(Math.round((140 * 1 + 40 * 0.65) / 1.65));
+
+    // When includeEstimated=false, only the complete day contributes
+    const strictRes = computeNutritionAverages({
+      todayKey: today,
+      daysBack: 7,
+      dailyLogs: logs,
+      mealScans: meals,
+      includeEstimated: false,
+    });
+    expect(strictRes.avgCalories).toBe(2000);
+  });
+
+  it('provides valid event presets, wedding defaultOutcome, and low-confidence event draft meals', () => {
+    expect(EVENT_PRESET_PLATES.length).toBeGreaterThanOrEqual(6);
+    for (const p of EVENT_PRESET_PLATES) {
+      expect(p.kcalMin).toBeGreaterThan(0);
+      expect(p.kcalMax).toBeGreaterThan(p.kcalMin);
+      expect(p.kcalAvg).toBeGreaterThanOrEqual(p.kcalMin);
+      expect(p.kcalAvg).toBeLessThanOrEqual(p.kcalMax);
+      expect(p.proteinAvgG).toBeGreaterThan(0);
+    }
+    expect(getEventTypeMeta('wedding').defaultOutcome).toBe('heavy');
+    expect(EVENT_OUTCOME_OPTIONS.map((o) => o.id)).toEqual(['light', 'normal', 'heavy', 'very_heavy']);
+
+    const draft = buildEventOutcomeDraftMeal({
+      dateKey: '2026-11-14',
+      eventTypeLabel: 'Wedding',
+      outcome: 'heavy',
+      platesCount: 2,
+      hadDessert: true,
+    });
+    expect(draft.confidence).toBe('Low');
+    expect(draft.isEstimate).toBe(true);
+    expect(draft.sourceKind).toBe('event_quick');
+    expect(draft.estimateRangeLabel).toMatch(/^about \d+–\d+ kcal$/);
+    expect(draft.totalCalories).toBeGreaterThan(1400);
+  });
+
+  it('guarantees zero post-event payback cuts via resolveNextDayTargetNoCompensation', () => {
+    const res = resolveNextDayTargetNoCompensation({
+      baseDailyTargetKcal: 2350,
+      yesterdayLog: makeLog('2026-11-14', 3400, 120, {
+        eventMode: { active: false, type: 'wedding', startedAt: 1, reminderQuietUntilMidnight: true, outcome: 'very_heavy' },
+      }),
+    });
+    expect(res.compensationApplied).toBe(false);
+    expect(res.targetKcal).toBe(2350);
+    expect(res.note.toLowerCase()).toContain('never cut');
+  });
+
+  it('requires 3+ weeks & >=14 valid calorie days for adaptive maintenance calibration and blocks minors/unknown age', () => {
+    const today = '2026-11-28';
+    const adultProfile = { ...createDefaultProfile(), age: 23, ageExplicitlySet: true, stillGrowing: 'no' as const };
+    const minorProfile = { ...createDefaultProfile(), age: 16, ageExplicitlySet: true, stillGrowing: 'yes' as const };
+
+    const blocked = computeAdaptiveMaintenanceCalibration({
+      todayKey: today,
+      profile: minorProfile,
+      dailyLogs: [],
+      mealScans: [],
+      bodyMetrics: [],
+    });
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.ready).toBe(false);
+
+    // Build 16 complete days + 5 weights across 21 days (weight flat -> maintenance ~ intake)
+    const logs: DailyLog[] = [];
+    const meals: MealScanEntry[] = [];
+    for (let i = 0; i < 16; i++) {
+      const dt = addDays(today, -i);
+      logs.push(makeLog(dt, 2400, 145, { dayStatus: 'complete' }));
+      meals.push(
+        makeMeal(dt, 1200, 75, { mealType: 'lunch' }),
+        makeMeal(dt, 1200, 70, { mealType: 'dinner' })
+      );
+    }
+    const weights: BodyMetricEntry[] = [
+      { date: addDays(today, -21), weightKg: 74.2, waistCm: null, neckCm: null, bodyFatPct: null, createdAt: 1 },
+      { date: addDays(today, -14), weightKg: 74.1, waistCm: null, neckCm: null, bodyFatPct: null, createdAt: 2 },
+      { date: addDays(today, -7), weightKg: 74.2, waistCm: null, neckCm: null, bodyFatPct: null, createdAt: 3 },
+      { date: today, weightKg: 74.1, waistCm: null, neckCm: null, bodyFatPct: null, createdAt: 4 },
+    ];
+
+    const readyCal = computeAdaptiveMaintenanceCalibration({
+      todayKey: today,
+      profile: adultProfile,
+      dailyLogs: logs,
+      mealScans: meals,
+      bodyMetrics: weights,
+    });
+    expect(readyCal.allowed).toBe(true);
+    expect(readyCal.ready).toBe(true);
+    expect(readyCal.label).toBe('estimate, improves with data');
+    expect(readyCal.estimatedMaintenanceKcal).toBeGreaterThan(1900);
+    expect(readyCal.suggestedTargetKcal).not.toBeNull();
+  });
+
+  it('computes 7-day rolling weekly calorie budget without shrinking tomorrow', () => {
+    const today = '2026-11-15';
+    const res = computeWeeklyCalorieBudget({
+      todayKey: today,
+      dailyTargetKcal: 2200,
+      dailyLogs: [
+        makeLog(today, 2100, 140, { dayStatus: 'complete' }),
+        makeLog(addDays(today, -1), 3200, 110, {
+          dayStatus: 'estimated',
+          eventMode: { active: false, type: 'wedding', startedAt: 1, reminderQuietUntilMidnight: true, outcome: 'very_heavy' },
+        }),
+      ],
+      mealScans: [
+        makeMeal(today, 2100, 140, { mealType: 'lunch' }),
+        makeMeal(addDays(today, -1), 3200, 110, { sourceKind: 'event_quick', isEstimate: true }),
+      ],
+    });
+    expect(res.weeklyTargetKcal).toBe(2200 * 7);
+    expect(res.spentKcal).toBe(5300);
+    expect(res.remainingKcal).toBe(2200 * 7 - 5300);
+    expect(res.projectedRemainingDailyAvg).toBe(2200);
+    expect(res.hasEventThisWeek).toBe(true);
+  });
+
+  it('clusters gallery photos by 90-min window and clamps older photos cleanly within 7 days', () => {
+    const today = '2026-11-15';
+    const morningTs = new Date(2026, 10, 15, 9, 10, 0).getTime();
+    const morningTs2 = new Date(2026, 10, 15, 9, 35, 0).getTime();
+    const dinnerTs = new Date(2026, 10, 15, 20, 5, 0).getTime();
+    const ancientTs = new Date(2025, 0, 5, 12, 0, 0).getTime();
+
+    const files = [
+      { name: 'a.jpg', lastModified: morningTs } as File,
+      { name: 'b.jpg', lastModified: morningTs2 } as File,
+      { name: 'c.jpg', lastModified: dinnerTs } as File,
+      { name: 'old.jpg', lastModified: ancientTs } as File,
+    ];
+    const clusters = groupGalleryFilesByMealTime(files, today);
+    expect(clusters).toHaveLength(3);
+    const clampedCluster = clusters.find((c) => c.files.some((f) => f.name === 'old.jpg'))!;
+    expect(clampedCluster.dateKey).toBe(today);
+    const breakfastCluster = clusters.find((c) => c.files.some((f) => f.name === 'a.jpg'))!;
+    expect(breakfastCluster.files).toHaveLength(2);
+    expect(breakfastCluster.mealType).toBe('breakfast');
+  });
+
+  it('enforces real-life settings defaults and adult calorie/tool gating', () => {
+    const defaults = createDefaultRealLifeSettings();
+    expect(defaults.autoFillUsualMeals).toBe(false);
+    expect(defaults.justTakePhotosMode).toBe(false);
+    expect(defaults.includeEstimatedInAverages).toBe(true);
+
+    expect(isAdultFoodCalorieToolAllowed(createDefaultProfile())).toBe(false);
+    expect(
+      isAdultFoodCalorieToolAllowed({
+        ...createDefaultProfile(),
+        age: 17,
+        ageExplicitlySet: true,
+        stillGrowing: 'no',
+      })
+    ).toBe(false);
+    expect(
+      isAdultFoodCalorieToolAllowed({
+        ...createDefaultProfile(),
+        age: 22,
+        ageExplicitlySet: true,
+        stillGrowing: 'no',
+      })
+    ).toBe(true);
+  });
+
+  it('splits multi-meal free-text locally and detects post-workout & Friday context prompts', () => {
+    const groups = parseMultiMealTextLocally(
+      'breakfast: 2 boiled eggs and lunch: koshari',
+      'lunch'
+    );
+    expect(groups.length).toBeGreaterThanOrEqual(2);
+    expect(groups[0].mealType).toBe('breakfast');
+    expect(groups[1].mealType).toBe('lunch');
+
+    const today = '2026-11-13'; // Friday
+    const workoutCtx = detectContextFoodPrompt({
+      todayKey: today,
+      now: new Date(2026, 10, 13, 19, 30, 0),
+      workouts: [{ id: 1, date: today, name: 'MMA', durationMin: 60, exercises: [], notes: '', createdAt: 1 }],
+      mealScans: [],
+      dailyLog: null,
+    });
+    expect(workoutCtx).not.toBeNull();
+    expect(workoutCtx!.slot).toBe('dinner');
+
+    // Event mode suppresses context food prompt
+    const quietCtx = detectContextFoodPrompt({
+      todayKey: today,
+      now: new Date(2026, 10, 13, 19, 30, 0),
+      workouts: [{ id: 1, date: today, name: 'MMA', durationMin: 60, exercises: [], notes: '', createdAt: 1 }],
+      mealScans: [],
+      dailyLog: makeLog(today, 0, 0, {
+        eventMode: { active: true, type: 'wedding', startedAt: 1, reminderQuietUntilMidnight: true },
+      }),
+    });
+    expect(quietCtx).toBeNull();
   });
 });
 

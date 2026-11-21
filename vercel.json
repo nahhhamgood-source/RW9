@@ -8,6 +8,9 @@
     },
     "api/food-chat.ts": {
       "maxDuration": 30
+    },
+    "api/food-helper.ts": {
+      "maxDuration": 30
     }
   },
   "headers": [

@@ -1,4 +1,5 @@
 import { addDays } from './date';
+import { getRealLifeSettings } from './realLifeFood';
 import type { AppSettings, DailyLog, ExerciseSessionLog, ToneMode } from '../types';
 
 export interface DueReminder {
@@ -138,11 +139,19 @@ export function computeMewingWeeklyCount(
 
 interface CapacitorLocalNotificationsPlugin {
   requestPermissions?: () => Promise<{ display: string }>;
+  registerActionTypes?: (options: {
+    types: Array<{
+      id: string;
+      actions: Array<{ id: string; title: string }>;
+    }>;
+  }) => Promise<void>;
   schedule?: (options: {
     notifications: Array<{
       id: number;
       title: string;
       body: string;
+      actionTypeId?: string;
+      extra?: Record<string, unknown>;
       schedule?: { on?: { hour: number; minute: number }; repeats?: boolean };
     }>;
   }) => Promise<void>;
@@ -155,6 +164,28 @@ function getCapacitorLocalNotifications(): CapacitorLocalNotificationsPlugin | n
     Capacitor?: { Plugins?: { LocalNotifications?: CapacitorLocalNotificationsPlugin } };
   };
   return w.Capacitor?.Plugins?.LocalNotifications ?? null;
+}
+
+export async function registerCapacitorFoodActions(): Promise<void> {
+  const cap = getCapacitorLocalNotifications();
+  if (!cap?.registerActionTypes) return;
+  try {
+    await cap.registerActionTypes({
+      types: [
+        {
+          id: 'FOOD_QUICK_REPLY',
+          actions: [
+            { id: 'light', title: 'Light' },
+            { id: 'normal', title: 'Normal' },
+            { id: 'heavy', title: 'Heavy' },
+            { id: 'very_heavy', title: 'Big event' },
+          ],
+        },
+      ],
+    });
+  } catch {
+    // Graceful no-op outside Capacitor native APK
+  }
 }
 
 export function isCapacitorNativeAlertsAvailable(): boolean {
@@ -274,7 +305,10 @@ export function isWithinQuietHours(nowMin: number, startStr?: string, endStr?: s
   return nowMin >= start || nowMin < end;
 }
 
-export async function syncLocalNotifications(settings: AppSettings): Promise<void> {
+export async function syncLocalNotifications(
+  settings: AppSettings,
+  todayLog?: DailyLog | null
+): Promise<void> {
   const cap = getCapacitorLocalNotifications();
   if (!cap?.schedule) return;
 
@@ -283,21 +317,32 @@ export async function syncLocalNotifications(settings: AppSettings): Promise<voi
   const safeBody = (detailBody: string) =>
     showDetails ? detailBody : 'Open ASCEND for your check-in.';
 
+  const isEventQuiet = Boolean(
+    todayLog?.eventMode?.active &&
+      (todayLog.eventMode.reminderQuietUntilMidnight !== false ||
+        todayLog.eventMode.type === 'travel')
+  );
+  const realLife = getRealLifeSettings(settings);
+
   try {
-    const ids = [101, 102, 103, 104, 105, 106, 107, 108, 109, 110];
+    const ids = [101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111];
     if (cap.cancel) {
       await cap.cancel({ notifications: ids.map((id) => ({ id })) });
     }
     if (!settings.reminders.enabled) return;
 
+    await registerCapacitorFoodActions();
+
     const notifications: Array<{
       id: number;
       title: string;
       body: string;
+      actionTypeId?: string;
+      extra?: Record<string, unknown>;
       schedule: { on: { hour: number; minute: number }; repeats: boolean };
     }> = [];
 
-    if (settings.reminders.mewingCheckEnabled !== false) {
+    if (!isEventQuiet && settings.reminders.mewingCheckEnabled !== false) {
       const mewingTimes = (settings.tongueReminderTimes ?? ['11:00', '15:30', '20:00'])
         .filter(Boolean)
         .slice(0, 3);
@@ -311,7 +356,7 @@ export async function syncLocalNotifications(settings: AppSettings): Promise<voi
       });
     }
 
-    if (settings.reminders.neckSetEnabled !== false) {
+    if (!isEventQuiet && settings.reminders.neckSetEnabled !== false) {
       notifications.push({
         id: 110,
         title: safeTitle('ASCEND: Neck set'),
@@ -320,52 +365,69 @@ export async function syncLocalNotifications(settings: AppSettings): Promise<voi
       });
     }
 
-    notifications.push(
-      {
-        id: 101,
-        title: safeTitle('ASCEND Morning Routine'),
-        body: safeBody('Cleanse, hydrate, and start your daily check-in.'),
-        schedule: { on: parseHm(settings.reminders.morning), repeats: true },
-      },
-      {
-        id: 102,
-        title: safeTitle('SPF Check'),
-        body: safeBody('Reapply SPF 30–50 if spending time outdoors.'),
-        schedule: { on: parseHm(settings.reminders.spf), repeats: true },
-      },
-      {
-        id: 103,
-        title: safeTitle('Movement Window'),
-        body: safeBody('Log your workout, steps, or face/posture exercises.'),
-        schedule: { on: parseHm(settings.reminders.workout), repeats: true },
-      },
-      {
-        id: 104,
-        title: safeTitle('Sleep Wind-Down'),
-        body: safeBody('Dim screens and wind down for recovery.'),
-        schedule: { on: parseHm(settings.reminders.sleep), repeats: true },
-      }
-    );
+    if (!isEventQuiet) {
+      notifications.push(
+        {
+          id: 101,
+          title: safeTitle('ASCEND Morning Routine'),
+          body: safeBody('Cleanse, hydrate, and start your daily check-in.'),
+          schedule: { on: parseHm(settings.reminders.morning), repeats: true },
+        },
+        {
+          id: 102,
+          title: safeTitle('SPF Check'),
+          body: safeBody('Reapply SPF 30–50 if spending time outdoors.'),
+          schedule: { on: parseHm(settings.reminders.spf), repeats: true },
+        },
+        {
+          id: 103,
+          title: safeTitle('Movement Window'),
+          body: safeBody('Log your workout, steps, or face/posture exercises.'),
+          schedule: { on: parseHm(settings.reminders.workout), repeats: true },
+        },
+        {
+          id: 104,
+          title: safeTitle('Sleep Wind-Down'),
+          body: safeBody('Dim screens and wind down for recovery.'),
+          schedule: { on: parseHm(settings.reminders.sleep), repeats: true },
+        }
+      );
 
-    if (settings.reminders.exerciseReminder && settings.reminders.exerciseTime) {
-      notifications.push({
-        id: 105,
-        title: safeTitle('Face & Posture'),
-        body: safeBody('3-minute gentle jawline release and posture reset.'),
-        schedule: { on: parseHm(settings.reminders.exerciseTime), repeats: true },
-      });
-    }
-    if (settings.reminders.studyReminderEnabled && settings.reminders.studyReminderTime) {
-      notifications.push({
-        id: 106,
-        title: safeTitle('Focus Block'),
-        body: safeBody('Short focused session ready in Plan.'),
-        schedule: { on: parseHm(settings.reminders.studyReminderTime), repeats: true },
-      });
+      if (settings.reminders.exerciseReminder && settings.reminders.exerciseTime) {
+        notifications.push({
+          id: 105,
+          title: safeTitle('Face & Posture'),
+          body: safeBody('3-minute gentle jawline release and posture reset.'),
+          schedule: { on: parseHm(settings.reminders.exerciseTime), repeats: true },
+        });
+      }
+      if (settings.reminders.studyReminderEnabled && settings.reminders.studyReminderTime) {
+        notifications.push({
+          id: 106,
+          title: safeTitle('Focus Block'),
+          body: safeBody('Short focused session ready in Plan.'),
+          schedule: { on: parseHm(settings.reminders.studyReminderTime), repeats: true },
+        });
+      }
+      if (realLife.dailyOneQuestionEnabled && realLife.foodReminderMode !== 'off') {
+        notifications.push({
+          id: 111,
+          title: safeTitle('Quick one: how was eating today?'),
+          body: safeBody('Tap Light, Normal, Heavy, or Big event — 1 tap.'),
+          actionTypeId: 'FOOD_QUICK_REPLY',
+          extra: { quickReply: 'food' },
+          schedule: {
+            on: parseHm(realLife.dailyOneQuestionTime || '21:00'),
+            repeats: true,
+          },
+        });
+      }
     }
 
     const capLimit = Math.max(1, Math.min(6, settings.reminders.maxPerDay ?? 6));
-    await cap.schedule({ notifications: notifications.slice(0, capLimit) });
+    if (notifications.length > 0) {
+      await cap.schedule({ notifications: notifications.slice(0, capLimit) });
+    }
   } catch {
     // Graceful fallback to in-app reminders
   }
@@ -405,6 +467,12 @@ export function getInAppDueReminders(
   }
 
   const isRelaxedFriday = Boolean(settings.relaxedFridayMode && now.getDay() === 5);
+  const isEventQuiet = Boolean(
+    adaptiveContext?.todayLog?.eventMode?.active &&
+      (adaptiveContext.todayLog.eventMode.reminderQuietUntilMidnight !== false ||
+        adaptiveContext.todayLog.eventMode.type === 'travel')
+  );
+  const realLife = getRealLifeSettings(settings);
   const tone = settings.tone ?? 'normal';
   const userName = adaptiveContext?.userName;
 
@@ -415,6 +483,11 @@ export function getInAppDueReminders(
   const due: DueReminder[] = [];
 
   const pushIfActive = (item: DueReminder) => {
+    if (isEventQuiet) {
+      if (item.category === 'meals' || item.category === 'routine' || item.category === 'study' || item.category === 'exercise') {
+        return;
+      }
+    }
     if (
       isRelaxedFriday &&
       ['water', 'posture-break', 'study'].includes(item.id)
@@ -490,23 +563,44 @@ export function getInAppDueReminders(
   }
 
   const mealsCount = adaptiveContext?.todayMealsCount ?? 0;
-  if (settings.reminders.mealLogReminder && mealsCount < 3) {
-    const lunch = settings.reminders.lunchTime ?? '13:30';
-    const dinner = settings.reminders.dinnerTime ?? '19:30';
-    if (hhmm >= lunch && hhmm < '16:30' && mealsCount < 2) {
+  const alreadyAskedFoodToday = Boolean(
+    settings.dailyCheckinAskedDates?.[todayKey] ||
+      settings.skippedGapCheckinDates?.includes(todayKey)
+  );
+  if (!isEventQuiet && !alreadyAskedFoodToday && realLife.foodReminderMode !== 'off') {
+    if (realLife.foodReminderMode === 'mealtime_nudges' && settings.reminders.mealLogReminder && mealsCount < 3) {
+      const lunch = settings.reminders.lunchTime ?? '13:30';
+      const dinner = settings.reminders.dinnerTime ?? '19:30';
+      if (hhmm >= lunch && hhmm < '16:30' && mealsCount < 2) {
+        pushIfActive({
+          id: 'meal-lunch',
+          title: 'Log Midday Meal',
+          body: 'Quick add or scan your lunch so protein stays on track.',
+          time: lunch,
+          category: 'meals',
+        });
+      } else if (hhmm >= dinner && hhmm < '22:00') {
+        pushIfActive({
+          id: 'meal-dinner',
+          title: 'Log Evening Meal',
+          body: 'Keep sodium gentle in the evening to reduce morning puffiness.',
+          time: dinner,
+          category: 'meals',
+        });
+      }
+    } else if (
+      realLife.foodReminderMode === 'if_empty_by_time' &&
+      mealsCount === 0 &&
+      hhmm >= (realLife.foodReminderEmptyTime || '20:00') &&
+      hhmm < '23:00'
+    ) {
       pushIfActive({
-        id: 'meal-lunch',
-        title: 'Log Midday Meal',
-        body: 'Quick add or scan your lunch so protein stays on track.',
-        time: lunch,
-        category: 'meals',
-      });
-    } else if (hhmm >= dinner && hhmm < '22:00') {
-      pushIfActive({
-        id: 'meal-dinner',
-        title: 'Log Evening Meal',
-        body: 'Keep sodium gentle in the evening to reduce morning puffiness.',
-        time: dinner,
+        id: 'meal-empty-check',
+        title: realLife.dailyOneQuestionEnabled
+          ? 'Quick one: how was eating today?'
+          : 'Log food when ready',
+        body: 'Tap once for Light/Normal/Heavy, Event, or Skip — gaps never break your streak.',
+        time: realLife.foodReminderEmptyTime || '20:00',
         category: 'meals',
       });
     }

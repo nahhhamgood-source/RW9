@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import healthHandler from './api/health.ts';
 import analyzeFoodHandler from './api/analyze-food.ts';
 import foodChatHandler from './api/food-chat.ts';
+import foodHelperHandler from './api/food-helper.ts';
 import coachHandler from './api/coach.ts';
 import pushHandler from './api/push.ts';
 import sendRemindersHandler from './api/send-reminders.ts';
@@ -27,6 +28,10 @@ async function startServer() {
 
   app.all('/api/food-chat', async (req: Request, res: Response) => {
     await foodChatHandler(req, res);
+  });
+
+  app.all('/api/food-helper', async (req: Request, res: Response) => {
+    await foodHelperHandler(req, res);
   });
 
   app.all('/api/coach', async (req: Request, res: Response) => {

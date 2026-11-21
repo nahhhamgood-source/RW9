@@ -70,6 +70,36 @@ export default defineConfig(() => {
               ],
             },
           },
+          shortcuts: [
+            {
+              name: 'Talk to ASCEND',
+              short_name: 'Talk',
+              description: 'Open food voice note right away',
+              url: '/?shortcut=talk',
+              icons: [{ src: '/pwa-192x192.png', sizes: '192x192' }],
+            },
+            {
+              name: 'Add meal',
+              short_name: 'Add meal',
+              description: 'Log what you ate in seconds',
+              url: '/?shortcut=add-meal',
+              icons: [{ src: '/pwa-192x192.png', sizes: '192x192' }],
+            },
+            {
+              name: 'Water +1',
+              short_name: 'Water +1',
+              description: 'Add 250 ml water right away',
+              url: '/?shortcut=water',
+              icons: [{ src: '/pwa-192x192.png', sizes: '192x192' }],
+            },
+            {
+              name: 'Trained',
+              short_name: 'Trained',
+              description: 'Log today training session',
+              url: '/?shortcut=trained',
+              icons: [{ src: '/pwa-192x192.png', sizes: '192x192' }],
+            },
+          ],
         },
         workbox: {
           importScripts: ['/sw-share-target.js'],

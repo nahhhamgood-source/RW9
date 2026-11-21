@@ -1,7 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Barcode,
+  BookmarkPlus,
+  Calendar,
   Camera,
   Check,
+  ImagePlus,
   ListFilter,
   Loader2,
   Mic,
@@ -9,37 +13,44 @@ import {
   Send,
   Sparkles,
   Square,
+  Trash2,
+  UtensilsCrossed,
   X,
 } from 'lucide-react';
 import {
   db,
+  deleteMealTemplate,
   isAgeUnknown,
   isUnder18OrGrowing,
   saveMealScanEntry,
+  saveMealTemplate,
 } from '../../db/database';
 import { en } from '../../i18n/en';
 import { apiRequest, hasOnlineConsent } from '../../lib/api';
-import { toLocalDateKey } from '../../lib/date';
+import { addDays, toLocalDateKey } from '../../lib/date';
 import {
   apiResponseToDraftItems,
   applyFollowUpChip,
   draftItemToMealFoodItem,
-  formatKcalEstimate,
-  parseFoodTextLocally,
+  parseMultiMealTextLocally,
   roundKcal,
   roundProtein,
 } from '../../lib/foodChatParser';
-import { computeDebloatImpact } from '../../lib/nutrition';
+import { computeDebloatImpact, prepareMealImageAssets } from '../../lib/nutrition';
+import { getRealLifeSettings, parseDeliveryOrSharedText } from '../../lib/realLifeFood';
 import { OnlineConsentModal } from '../modals/OnlineConsentModal';
 import { useToast } from '../ui/ToastProvider';
 import { FoodFinderModal } from './FoodFinderModal';
 import { FoodResultCard } from './FoodResultCard';
+import { MenuHelperModal } from './MenuHelperModal';
+import { QuickRecallModal } from './QuickRecallModal';
 import type { DraftFoodItem, FoodChatApiResponse, FollowUpChip } from './foodChatTypes';
 import type {
   AppSettings,
   MealFullness,
   MealScanEntry,
   MealType,
+  SavedMealTemplate,
   UserProfile,
 } from '../../types';
 
@@ -71,9 +82,17 @@ interface TellMeFoodBoxProps {
   settings: AppSettings;
   mealScans: MealScanEntry[];
   selectedSlot: MealType;
+  selectedDate?: string;
+  onChangeDate?: (dateKey: string) => void;
   onChangeSlot?: (slot: MealType) => void;
   onOpenCamera?: (slot: MealType) => void;
+  onOpenGalleryImport?: () => void;
   onSaved?: (entryId: number, slot: MealType) => void;
+  initialPrefillText?: string;
+  isSharedInput?: boolean;
+  autoFocusMic?: boolean;
+  kcalLeft?: number;
+  proteinLeftG?: number;
   compact?: boolean;
 }
 
@@ -91,13 +110,34 @@ export const TellMeFoodBox: React.FC<TellMeFoodBoxProps> = ({
   settings,
   mealScans,
   selectedSlot,
+  selectedDate: controlledDate,
+  onChangeDate,
   onChangeSlot,
   onOpenCamera,
+  onOpenGalleryImport,
   onSaved,
+  initialPrefillText,
+  isSharedInput = false,
+  autoFocusMic = false,
+  kcalLeft = 700,
+  proteinLeftG = 35,
   compact = false,
 }) => {
   const { showToast } = useToast();
   const todayKey = toLocalDateKey();
+  const yesterdayKey = addDays(todayKey, -1);
+  const twoDaysAgoKey = addDays(todayKey, -2);
+  const minCatchupDate = addDays(todayKey, -7);
+
+  const [internalDate, setInternalDate] = useState<string>(todayKey);
+  const activeDate = controlledDate ?? internalDate;
+  const setActiveDate = (next: string) => {
+    const clamped = next > todayKey ? todayKey : next < minCatchupDate ? minCatchupDate : next;
+    setInternalDate(clamped);
+    onChangeDate?.(clamped);
+  };
+
+  const realLife = useMemo(() => getRealLifeSettings(settings), [settings]);
   const arabicDigits = Boolean(settings.arabicIndicDigits);
 
   const showProteinFeedback = useMemo(() => {
@@ -105,12 +145,13 @@ export const TellMeFoodBox: React.FC<TellMeFoodBoxProps> = ({
     return Boolean(profile.ageExplicitlySet && profile.dietGoal && (profile.proteinTargetG ?? 0) > 0);
   }, [profile]);
 
-  const [inputText, setInputText] = useState('');
+  const [inputText, setInputText] = useState(initialPrefillText ?? '');
   const [parsing, setParsing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [draftItems, setDraftItems] = useState<DraftFoodItem[]>([]);
   const [unmatchedText, setUnmatchedText] = useState<string[]>([]);
   const [parseSourceNote, setParseSourceNote] = useState<string | null>(null);
+  const [sharedNoticeVisible, setSharedNoticeVisible] = useState(Boolean(isSharedInput && initialPrefillText));
 
   // Voice states
   const speechSupported = useMemo(() => Boolean(getSpeechRecognitionCtor()), []);
@@ -121,8 +162,18 @@ export const TellMeFoodBox: React.FC<TellMeFoodBoxProps> = ({
   const [voiceStatusNote, setVoiceStatusNote] = useState<string | null>(null);
   const [editableTranscript, setEditableTranscript] = useState<string | null>(null);
 
-  // Modals & Post-save Fullness
+  // Real life helpers & Modals
   const [finderOpen, setFinderOpen] = useState(false);
+  const [menuHelperOpen, setMenuHelperOpen] = useState(false);
+  const [recallOpen, setRecallOpen] = useState(false);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [preciseToolsOpen, setPreciseToolsOpen] = useState(false);
+  const [barcodeInput, setBarcodeInput] = useState('');
+  const [barcodeBusy, setBarcodeBusy] = useState(false);
+  const [labelBusy, setLabelBusy] = useState(false);
+  const labelFileRef = useRef<HTMLInputElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
   const [swapTargetId, setSwapTargetId] = useState<string | null>(null);
   const [swapSearchHint, setSwapSearchHint] = useState('');
   const [consentOpen, setConsentOpen] = useState(false);
@@ -172,8 +223,26 @@ export const TellMeFoodBox: React.FC<TellMeFoodBoxProps> = ({
     };
   }, []);
 
+  useEffect(() => {
+    if (autoFocusMic) {
+      window.setTimeout(() => {
+        inputRef.current?.focus();
+      }, 150);
+    }
+  }, [autoFocusMic]);
+
+  useEffect(() => {
+    if (initialPrefillText && initialPrefillText.trim()) {
+      const cleaned = parseDeliveryOrSharedText(initialPrefillText).cleanedText;
+      setInputText(cleaned);
+      setSharedNoticeVisible(isSharedInput);
+      void parseText(cleaned);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialPrefillText]);
+
   const parseText = async (raw: string, forceOnlineAi = false) => {
-    const trimmed = raw.trim();
+    const trimmed = parseDeliveryOrSharedText(raw).cleanedText;
     if (!trimmed) {
       showToast('Type or say what you ate first.', 'info');
       return;
@@ -202,12 +271,18 @@ export const TellMeFoodBox: React.FC<TellMeFoodBoxProps> = ({
           },
         });
         if (res.ok && res.data.items.length > 0) {
-          if (res.data.mealType && onChangeSlot) {
+          const mapped = apiResponseToDraftItems(res.data);
+          const distinctSlots = new Set(mapped.map((m) => m.mealType || res.data.mealType || selectedSlot));
+          if (distinctSlots.size === 1 && res.data.mealType && onChangeSlot) {
             onChangeSlot(res.data.mealType);
           }
-          setDraftItems(apiResponseToDraftItems(res.data));
+          setDraftItems(mapped);
           setEditableTranscript(null);
-          setParseSourceNote('Estimated via AI · adjust with chips if needed');
+          setParseSourceNote(
+            distinctSlots.size > 1
+              ? `Split into ${distinctSlots.size} meals via AI · edit or save all`
+              : 'Estimated via AI · adjust with chips if needed'
+          );
           setParsing(false);
           return;
         }
@@ -216,28 +291,35 @@ export const TellMeFoodBox: React.FC<TellMeFoodBoxProps> = ({
       // fall through seamlessly to offline matcher
     }
 
-    // Local bilingual + Franco-Arabic parser fallback (works 100% offline)
-    const localRes = parseFoodTextLocally(
+    // Local bilingual + Franco-Arabic multi-meal parser (works 100% offline)
+    const groups = parseMultiMealTextLocally(
       trimmed,
       selectedSlot,
       settings.customFoodCatalog ?? []
     );
-    if (localRes.mealType !== selectedSlot && onChangeSlot) {
-      onChangeSlot(localRes.mealType);
+    const allItems = groups.flatMap((g) =>
+      g.items.map((it) => ({ ...it, mealType: g.mealType }))
+    );
+    const allUnmatched = groups.flatMap((g) => g.unmatchedSegments);
+
+    if (groups.length === 1 && groups[0].mealType !== selectedSlot && onChangeSlot) {
+      onChangeSlot(groups[0].mealType);
     }
 
-    setDraftItems(localRes.items);
-    setUnmatchedText(localRes.unmatchedSegments);
+    setDraftItems(allItems);
+    setUnmatchedText(allUnmatched);
     setEditableTranscript(null);
 
-    if (localRes.items.length === 0) {
+    if (allItems.length === 0) {
       setParseSourceNote(
-        'Could not match that offline — pick from list, add custom food, or ask AI.'
+        'Could not match that offline — pick from list, use 30s Recall, or ask AI.'
       );
-    } else if (localRes.unmatchedSegments.length > 0) {
+    } else if (allUnmatched.length > 0) {
       setParseSourceNote(
-        `Matched ${localRes.items.length} item(s) locally. Some words were skipped: "${localRes.unmatchedSegments.join(', ')}".`
+        `Matched ${allItems.length} item(s) locally. Some words were skipped: "${allUnmatched.join(', ')}".`
       );
+    } else if (groups.length > 1) {
+      setParseSourceNote(`Split into ${groups.length} meals offline · estimates only`);
     } else {
       setParseSourceNote('Matched offline from your food library · estimates only');
     }
@@ -271,19 +353,21 @@ export const TellMeFoodBox: React.FC<TellMeFoodBoxProps> = ({
         setInputText(res.data.transcript);
         setEditableTranscript(res.data.transcript);
       }
-      if (res.data.mealType && onChangeSlot) {
-        onChangeSlot(res.data.mealType);
-      }
       if (res.data.items.length > 0) {
-        setDraftItems(apiResponseToDraftItems(res.data));
+        const mapped = apiResponseToDraftItems(res.data);
+        const distinctSlots = new Set(mapped.map((m) => m.mealType || res.data.mealType || selectedSlot));
+        if (distinctSlots.size === 1 && res.data.mealType && onChangeSlot) {
+          onChangeSlot(res.data.mealType);
+        }
+        setDraftItems(mapped);
         setParseSourceNote('Heard & estimated (audio deleted from memory)');
       } else if (res.data.transcript) {
-        const local = parseFoodTextLocally(
+        const groups = parseMultiMealTextLocally(
           res.data.transcript,
           selectedSlot,
           settings.customFoodCatalog ?? []
         );
-        setDraftItems(local.items);
+        setDraftItems(groups.flatMap((g) => g.items.map((it) => ({ ...it, mealType: g.mealType }))));
       }
       setVoiceStatusNote(null);
     } catch {
@@ -475,48 +559,68 @@ export const TellMeFoodBox: React.FC<TellMeFoodBoxProps> = ({
     );
   };
 
-  const saveItemsList = async (itemsToSave: DraftFoodItem[]) => {
+  const saveItemsList = async (itemsToSave: DraftFoodItem[], forcedSlot?: MealType) => {
     if (itemsToSave.length === 0) return;
     setSaving(true);
     try {
-      const mealItems = itemsToSave.map(draftItemToMealFoodItem);
-      const totalCalories = roundKcal(itemsToSave.reduce((s, it) => s + it.kcal, 0));
-      const totalProteinG = roundProtein(itemsToSave.reduce((s, it) => s + it.proteinG, 0));
-      const totalSodiumMg = Math.round(itemsToSave.reduce((s, it) => s + it.sodiumMg, 0));
-      const totalAddedSugarG = Math.round(
-        itemsToSave.reduce((s, it) => s + it.baseAddedSugarG, 0)
-      );
-      const totalCarbsG = Math.round(itemsToSave.reduce((s, it) => s + it.baseCarbsG, 0));
-      const totalFatsG = Math.round(itemsToSave.reduce((s, it) => s + it.baseFatsG, 0));
+      // Group by slot if items come from multi-meal parsing
+      const bySlot = new Map<MealType, DraftFoodItem[]>();
+      for (const it of itemsToSave) {
+        const s = forcedSlot ?? it.mealType ?? selectedSlot;
+        const arr = bySlot.get(s) ?? [];
+        arr.push(it);
+        bySlot.set(s, arr);
+      }
 
-      const title = itemsToSave
-        .map((it) => `${it.name} (${it.portionLabel})`)
-        .join(' + ');
-      const debloat = computeDebloatImpact(totalSodiumMg, totalAddedSugarG);
-      const lowestConf = itemsToSave.some((i) => i.confidence === 'Low')
-        ? 'Low'
-        : itemsToSave.some((i) => i.confidence === 'Medium')
-        ? 'Medium'
-        : 'High';
+      let lastId = 0;
+      let lastSlot: MealType = selectedSlot;
+      let lastTitle = '';
+      let sumSavedKcal = 0;
+      let sumSavedPro = 0;
 
-      const id = await saveMealScanEntry({
-        date: todayKey,
-        timestamp: Date.now(),
-        mealType: selectedSlot,
-        mealTitle: title,
-        confidence: lowestConf,
-        items: mealItems,
-        totalCalories,
-        totalProteinG,
-        totalCarbsG,
-        totalFatsG,
-        totalSodiumMg,
-        totalAddedSugarG,
-        debloatStatus: debloat.status,
-        debloatHeadline: debloat.headline,
-        summaryNote: `${en.meals[selectedSlot]} · Tell me what you ate`,
-        isManual: true,
-      });
+      for (const [slotKey, slotItems] of bySlot.entries()) {
+        const mealItems = slotItems.map(draftItemToMealFoodItem);
+        const totalCalories = roundKcal(slotItems.reduce((s, it) => s + it.kcal, 0));
+        const totalProteinG = roundProtein(slotItems.reduce((s, it) => s + it.proteinG, 0));
+        const totalSodiumMg = Math.round(slotItems.reduce((s, it) => s + it.sodiumMg, 0));
+        const totalAddedSugarG = Math.round(
+          slotItems.reduce((s, it) => s + it.baseAddedSugarG, 0)
+        );
+        const totalCarbsG = Math.round(slotItems.reduce((s, it) => s + it.baseCarbsG, 0));
+        const totalFatsG = Math.round(slotItems.reduce((s, it) => s + it.baseFatsG, 0));
+
+        const title = slotItems.map((it) => `${it.name} (${it.portionLabel})`).join(' + ');
+        const debloat = computeDebloatImpact(totalSodiumMg, totalAddedSugarG);
+        const lowestConf = slotItems.some((i) => i.confidence === 'Low')
+          ? 'Low'
+          : slotItems.some((i) => i.confidence === 'Medium')
+          ? 'Medium'
+          : 'High';
+
+        lastId = await saveMealScanEntry({
+          date: activeDate,
+          timestamp: Date.now(),
+          mealType: slotKey,
+          mealTitle: title,
+          confidence: lowestConf,
+          items: mealItems,
+          totalCalories,
+          totalProteinG,
+          totalCarbsG,
+          totalFatsG,
+          totalSodiumMg,
+          totalAddedSugarG,
+          debloatStatus: debloat.status,
+          debloatHeadline: debloat.headline,
+          summaryNote: `${en.meals[slotKey]} · ${activeDate === todayKey ? 'Today' : activeDate}`,
+          isManual: true,
+          sourceKind: isSharedInput ? 'share_target' : 'normal',
+        });
+        lastSlot = slotKey;
+        lastTitle = title;
+        sumSavedKcal += totalCalories;
+        sumSavedPro += totalProteinG;
+      }
 
       const savedCatalogIds = itemsToSave
         .map((it) => it.catalogId)
@@ -535,13 +639,213 @@ export const TellMeFoodBox: React.FC<TellMeFoodBoxProps> = ({
         setParseSourceNote(null);
       }
 
-      setLastSavedEntry({ id, title });
+      setLastSavedEntry({ id: lastId, title: lastTitle });
       showToast(
-        `Saved ${itemsToSave.length === 1 ? itemsToSave[0].name : `${itemsToSave.length} items`} (~${totalCalories} kcal, ${totalProteinG} g protein)`
+        `Saved to ${activeDate === todayKey ? 'Today' : activeDate} (~${sumSavedKcal} kcal, ${sumSavedPro} g protein)`
       );
-      onSaved?.(id, selectedSlot);
+      onSaved?.(lastId, lastSlot);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSaveCurrentAsTemplate = async () => {
+    if (draftItems.length === 0) return;
+    const defaultTitle = draftItems.map((d) => d.name).slice(0, 2).join(' + ');
+    const tmpl: SavedMealTemplate = {
+      id: `tmpl-${Date.now()}`,
+      title: defaultTitle,
+      mealType: selectedSlot,
+      icon: draftItems[0]?.icon || '🍲',
+      portionLabel: draftItems.map((d) => d.portionLabel).join(', '),
+      kcal: roundKcal(draftItems.reduce((s, d) => s + d.kcal, 0)),
+      proteinG: roundProtein(draftItems.reduce((s, d) => s + d.proteinG, 0)),
+      sodiumMg: Math.round(draftItems.reduce((s, d) => s + d.sodiumMg, 0)),
+      items: draftItems.map((d) => ({
+        name: d.name,
+        portionLabel: d.portionLabel,
+        kcal: d.kcal,
+        proteinG: d.proteinG,
+        sodiumMg: d.sodiumMg,
+        icon: d.icon,
+      })),
+      createdAt: Date.now(),
+    };
+    await saveMealTemplate(tmpl);
+    showToast(`Saved "${tmpl.title}" as reusable family meal template`);
+  };
+
+  const handleUseTemplate = (tmpl: SavedMealTemplate) => {
+    const loaded: DraftFoodItem[] = tmpl.items.map((it, idx) => ({
+      id: `tmpl-draft-${Date.now()}-${idx}`,
+      name: it.name,
+      nameAr: '',
+      icon: it.icon || tmpl.icon || '🍲',
+      mealType: tmpl.mealType,
+      category: 'Egyptian home food',
+      portionLabel: it.portionLabel || tmpl.portionLabel,
+      quantity: 1,
+      unit: 'serving',
+      baseKcal: roundKcal(it.kcal),
+      baseProteinG: roundProtein(it.proteinG),
+      baseSodiumMg: it.sodiumMg || 400,
+      baseCarbsG: Math.round((it.kcal * 0.44) / 4),
+      baseFatsG: Math.round((it.kcal * 0.32) / 9),
+      baseAddedSugarG: 2,
+      extraKcal: 0,
+      extraProteinG: 0,
+      kcal: roundKcal(it.kcal),
+      proteinG: roundProtein(it.proteinG),
+      sodiumMg: it.sodiumMg || 400,
+      confidence: 'Medium',
+      followUpKind: 'hand_plate',
+      questionsQueue: [],
+      needsQuestion: false,
+      source: 'list',
+    }));
+    setDraftItems((prev) => [...prev, ...loaded]);
+    if (onChangeSlot) onChangeSlot(tmpl.mealType);
+    setTemplatesOpen(false);
+    setParseSourceNote(`Loaded template "${tmpl.title}" — edit portion below or save`);
+  };
+
+  const handleLookupBarcode = async () => {
+    const clean = barcodeInput.replace(/\D/g, '');
+    if (clean.length < 6) {
+      showToast('Enter a valid barcode (6+ digits).', 'info');
+      return;
+    }
+    if (!hasOnlineConsent(settings, 'food')) {
+      pendingConsentActionRef.current = () => {
+        void handleLookupBarcode();
+      };
+      setConsentOpen(true);
+      return;
+    }
+    setBarcodeBusy(true);
+    try {
+      const res = await apiRequest<{
+        name: string;
+        portionLabel: string;
+        kcal: number;
+        proteinG: number;
+        carbsG: number;
+        fatsG: number;
+        sodiumMg: number;
+      }>('/api/food-helper', {
+        method: 'POST',
+        timeoutMs: 12_000,
+        body: { mode: 'barcode', barcode: clean },
+      });
+      if (!res.ok) {
+        showToast(res.error || 'Product not found in Open Food Facts.', 'warning');
+      } else {
+        setDraftItems((prev) => [
+          ...prev,
+          {
+            id: `barcode-${Date.now()}`,
+            name: res.data.name,
+            nameAr: '',
+            icon: '🏷️',
+            mealType: selectedSlot,
+            category: 'Snacks',
+            portionLabel: res.data.portionLabel,
+            quantity: 1,
+            unit: 'serving',
+            baseKcal: roundKcal(res.data.kcal),
+            baseProteinG: roundProtein(res.data.proteinG),
+            baseSodiumMg: res.data.sodiumMg || 120,
+            baseCarbsG: res.data.carbsG || 0,
+            baseFatsG: res.data.fatsG || 0,
+            baseAddedSugarG: 0,
+            extraKcal: 0,
+            extraProteinG: 0,
+            kcal: roundKcal(res.data.kcal),
+            proteinG: roundProtein(res.data.proteinG),
+            sodiumMg: res.data.sodiumMg || 120,
+            confidence: 'High',
+            followUpKind: 'count',
+            questionsQueue: [],
+            needsQuestion: false,
+            source: 'local',
+          },
+        ]);
+        setBarcodeInput('');
+        setParseSourceNote('Loaded from Open Food Facts barcode database');
+      }
+    } finally {
+      setBarcodeBusy(false);
+    }
+  };
+
+  const handleLabelPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!hasOnlineConsent(settings, 'food')) {
+      showToast('Turn on AI Food Scan consent first to read nutrition labels.', 'info');
+      setConsentOpen(true);
+      return;
+    }
+    setLabelBusy(true);
+    try {
+      const assets = await prepareMealImageAssets(file);
+      const res = await apiRequest<{
+        productName: string;
+        servingLabel: string;
+        kcal: number;
+        proteinG: number;
+        carbsG: number;
+        fatsG: number;
+        sodiumMg: number;
+        addedSugarG: number;
+        confidence: 'High' | 'Medium' | 'Low';
+      }>('/api/food-helper', {
+        method: 'POST',
+        timeoutMs: 20_000,
+        body: {
+          mode: 'label',
+          imageBase64: assets.apiBase64,
+          mimeType: assets.mimeType,
+        },
+      });
+      if (!res.ok) {
+        showToast(res.error || 'Could not read nutrition label.', 'warning');
+      } else {
+        setDraftItems((prev) => [
+          ...prev,
+          {
+            id: `label-${Date.now()}`,
+            name: res.data.productName,
+            nameAr: '',
+            icon: '📋',
+            mealType: selectedSlot,
+            category: 'Snacks',
+            portionLabel: res.data.servingLabel,
+            quantity: 1,
+            unit: 'serving',
+            baseKcal: roundKcal(res.data.kcal),
+            baseProteinG: roundProtein(res.data.proteinG),
+            baseSodiumMg: res.data.sodiumMg || 120,
+            baseCarbsG: res.data.carbsG || 0,
+            baseFatsG: res.data.fatsG || 0,
+            baseAddedSugarG: res.data.addedSugarG || 0,
+            extraKcal: 0,
+            extraProteinG: 0,
+            kcal: roundKcal(res.data.kcal),
+            proteinG: roundProtein(res.data.proteinG),
+            sodiumMg: res.data.sodiumMg || 120,
+            confidence: res.data.confidence,
+            followUpKind: 'count',
+            questionsQueue: [],
+            needsQuestion: false,
+            source: 'photo',
+          },
+        ]);
+        setParseSourceNote('Read from nutrition label (location EXIF stripped)');
+      }
+    } finally {
+      setLabelBusy(false);
     }
   };
 
@@ -609,6 +913,55 @@ export const TellMeFoodBox: React.FC<TellMeFoodBoxProps> = ({
           </div>
         </div>
 
+        {/* Day Picker Bar (Today / Yesterday / 2 days ago / Pick date up to 7 days back) */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 inline-flex items-center gap-1 mr-0.5">
+            <Calendar className="w-3 h-3" /> For:
+          </span>
+          {[
+            { key: todayKey, label: 'Today' },
+            { key: yesterdayKey, label: 'Yesterday' },
+            { key: twoDaysAgoKey, label: '2 days ago' },
+          ].map((opt) => (
+            <button
+              key={opt.key}
+              type="button"
+              onClick={() => setActiveDate(opt.key)}
+              className={`px-2.5 py-1 rounded-xl text-[11px] font-bold min-h-[30px] border transition ${
+                activeDate === opt.key
+                  ? 'bg-[var(--accent)] text-[var(--accent-contrast)] border-transparent'
+                  : 'bg-slate-100 dark:bg-white/[0.05] border-slate-200 dark:border-white/10 text-slate-600 dark:text-slate-300'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+          <input
+            type="date"
+            value={activeDate}
+            min={minCatchupDate}
+            max={todayKey}
+            aria-label="Pick catch-up date (up to 7 days back)"
+            onChange={(e) => {
+              if (e.target.value) setActiveDate(e.target.value);
+            }}
+            className="px-2 py-1 rounded-xl bg-slate-100 dark:bg-white/[0.05] border border-slate-200 dark:border-white/10 text-[11px] font-semibold min-h-[30px]"
+          />
+        </div>
+
+        {sharedNoticeVisible && (
+          <div className="p-2.5 rounded-xl bg-[var(--accent-soft)] border border-[var(--accent)]/25 flex items-center justify-between gap-2 text-[11px] text-slate-700 dark:text-slate-200">
+            <span>{en.realLife.shareHonestNote}</span>
+            <button
+              type="button"
+              onClick={() => setSharedNoticeVisible(false)}
+              className="text-slate-500 hover:text-slate-900 dark:hover:text-white"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
         {/* Big Input Row */}
         <form
           onSubmit={(e) => {
@@ -618,10 +971,11 @@ export const TellMeFoodBox: React.FC<TellMeFoodBoxProps> = ({
           className="flex gap-2"
         >
           <input
+            ref={inputRef}
             type="text"
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
-            placeholder="What did you eat? (e.g., 2 eggs + baladi bread, نسكافيه بلبن)"
+            placeholder="Lunch was fiteer, dinner was mahshi · or 2 eggs + baladi bread"
             aria-label="What did you eat?"
             className="flex-1 min-w-0 px-3.5 py-3 rounded-2xl bg-slate-100 dark:bg-white/[0.06] border border-slate-200 dark:border-white/10 text-base min-h-[48px]"
           />
@@ -721,11 +1075,183 @@ export const TellMeFoodBox: React.FC<TellMeFoodBoxProps> = ({
           </button>
         </div>
 
+        {/* Secondary Real-Life Tools: Recall (30s) · Menu helper · Family templates · Gallery */}
+        <div className="flex flex-wrap gap-1.5">
+          <button
+            type="button"
+            onClick={() => setRecallOpen(true)}
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-100 dark:bg-white/[0.05] border border-slate-200 dark:border-white/10 text-[11px] font-bold text-slate-700 dark:text-slate-200 min-h-[34px]"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-[var(--accent)]" />
+            What did I eat? (30s)
+          </button>
+          <button
+            type="button"
+            onClick={() => setMenuHelperOpen(true)}
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-100 dark:bg-white/[0.05] border border-slate-200 dark:border-white/10 text-[11px] font-bold text-slate-700 dark:text-slate-200 min-h-[34px]"
+          >
+            <UtensilsCrossed className="w-3.5 h-3.5 text-[var(--accent)]" />
+            Menu helper
+          </button>
+          <button
+            type="button"
+            onClick={() => setTemplatesOpen((v) => !v)}
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-100 dark:bg-white/[0.05] border border-slate-200 dark:border-white/10 text-[11px] font-bold text-slate-700 dark:text-slate-200 min-h-[34px]"
+          >
+            <BookmarkPlus className="w-3.5 h-3.5 text-[var(--accent)]" />
+            Family templates ({(settings.mealTemplates ?? []).length})
+          </button>
+          {onOpenGalleryImport && realLife.galleryImportEnabled && (
+            <button
+              type="button"
+              onClick={onOpenGalleryImport}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-100 dark:bg-white/[0.05] border border-slate-200 dark:border-white/10 text-[11px] font-bold text-slate-700 dark:text-slate-200 min-h-[34px]"
+            >
+              <ImagePlus className="w-3.5 h-3.5 text-[var(--accent)]" />
+              Gallery batch
+            </button>
+          )}
+          {realLife.loggingDetail === 'precise' && (
+            <button
+              type="button"
+              onClick={() => setPreciseToolsOpen((v) => !v)}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-[var(--accent-soft)] border border-[var(--accent)]/30 text-[11px] font-bold text-[var(--accent)] min-h-[34px]"
+            >
+              <Barcode className="w-3.5 h-3.5" />
+              Precise tools
+            </button>
+          )}
+        </div>
+
+        {/* Reusable Family Meal Templates Drawer */}
+        {templatesOpen && (
+          <div className="p-3 rounded-2xl bg-slate-100 dark:bg-white/[0.04] border border-slate-200 dark:border-white/10 space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-bold text-slate-800 dark:text-slate-100">
+                Saved family & usual meals
+              </p>
+              <button
+                type="button"
+                onClick={() => setTemplatesOpen(false)}
+                className="text-xs text-slate-500"
+              >
+                Close
+              </button>
+            </div>
+            {(settings.mealTemplates ?? []).length === 0 ? (
+              <div className="space-y-2 text-xs text-slate-600 dark:text-slate-300">
+                <p>No saved templates yet. Parse or log any meal and tap "Save as template", or try this starter:</p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleUseTemplate({
+                      id: 'starter-moms-friday-lunch',
+                      title: "Mom's Friday lunch (rice + veg + chicken)",
+                      mealType: 'lunch',
+                      icon: '🍲',
+                      portionLabel: '1 generous plate',
+                      kcal: 940,
+                      proteinG: 42,
+                      sodiumMg: 950,
+                      items: [
+                        {
+                          name: "Mom's Friday lunch (rice + veg + chicken)",
+                          portionLabel: '1 generous plate',
+                          kcal: 940,
+                          proteinG: 42,
+                          sodiumMg: 950,
+                          icon: '🍲',
+                        },
+                      ],
+                      createdAt: Date.now(),
+                    })
+                  }
+                  className="px-3 py-2 rounded-xl bg-white dark:bg-[#0D131F] border border-slate-200 dark:border-white/10 font-semibold text-xs"
+                >
+                  🍲 Load "Mom's Friday lunch" (~940 kcal)
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                {(settings.mealTemplates ?? []).map((tmpl) => (
+                  <div
+                    key={tmpl.id}
+                    className="flex items-center justify-between gap-2 p-2 rounded-xl bg-white dark:bg-[#0D131F] border border-slate-200 dark:border-white/10"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => handleUseTemplate(tmpl)}
+                      className="flex-1 text-left text-xs min-w-0"
+                    >
+                      <p className="font-bold text-slate-900 dark:text-white truncate">
+                        {tmpl.icon} {tmpl.title}
+                      </p>
+                      <p className="text-[11px] text-slate-500">
+                        ~{tmpl.kcal} kcal · {tmpl.proteinG}g pro · {en.meals[tmpl.mealType]}
+                      </p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteMealTemplate(tmpl.id)}
+                      aria-label={`Delete template ${tmpl.title}`}
+                      className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Optional Precise Tools (only when Logging Detail = Precise) */}
+        {realLife.loggingDetail === 'precise' && preciseToolsOpen && (
+          <div className="p-3 rounded-2xl bg-[var(--accent-soft)] border border-[var(--accent)]/25 space-y-2.5">
+            <p className="text-xs font-bold text-slate-900 dark:text-white">
+              Precise mode tools (optional — never required)
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <input
+                type="text"
+                inputMode="numeric"
+                value={barcodeInput}
+                onChange={(e) => setBarcodeInput(e.target.value)}
+                placeholder="Barcode digits (Open Food Facts)"
+                className="flex-1 min-w-[160px] px-3 py-2 rounded-xl bg-white dark:bg-[#0D131F] border border-slate-200 dark:border-white/10 text-xs min-h-[38px]"
+              />
+              <button
+                type="button"
+                disabled={barcodeBusy}
+                onClick={handleLookupBarcode}
+                className="px-3 py-2 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-bold min-h-[38px]"
+              >
+                {barcodeBusy ? 'Looking up...' : 'Lookup barcode'}
+              </button>
+              <input
+                ref={labelFileRef}
+                type="file"
+                accept="image/*"
+                onChange={handleLabelPhoto}
+                className="hidden"
+              />
+              <button
+                type="button"
+                disabled={labelBusy}
+                onClick={() => labelFileRef.current?.click()}
+                className="px-3 py-2 rounded-xl bg-white dark:bg-[#0D131F] border border-slate-200 dark:border-white/10 text-xs font-bold min-h-[38px]"
+              >
+                {labelBusy ? 'Reading label...' : 'Nutrition label photo'}
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Honest voice & privacy note */}
         <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
           {speechSupported
-            ? 'Voice needs internet and a microphone permission. If it fails, type it or pick from the list. Audio is never stored after processing.'
-            : 'Voice note uses short mic recording (up to 30s) + internet. If it fails, type it or pick from the list. Audio is never stored after processing.'}
+            ? 'Voice needs internet and a microphone permission. Say two meals at once ("Lunch was fiteer, dinner was mahshi") to split automatically. Audio is never stored.'
+            : 'Voice note uses short mic recording (up to 30s) + internet. Audio is never stored after processing.'}
         </p>
 
         {voiceStatusNote && (
@@ -826,18 +1352,30 @@ export const TellMeFoodBox: React.FC<TellMeFoodBoxProps> = ({
                 Total: about {draftTotals.kcal} kcal · {draftTotals.proteinG} g protein
               </p>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                Estimate. Edit if it looks off.
+                Estimate · {activeDate === todayKey ? 'Today' : activeDate}
               </p>
             </div>
-            <button
-              type="button"
-              disabled={saving}
-              onClick={() => saveItemsList(draftItems)}
-              className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-bold min-h-[44px]"
-            >
-              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-              Save to {en.meals[selectedSlot]}
-            </button>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={handleSaveCurrentAsTemplate}
+                className="inline-flex items-center gap-1 px-3 py-2 rounded-xl bg-white dark:bg-[#0D131F] border border-slate-200 dark:border-white/10 text-xs font-semibold min-h-[40px]"
+              >
+                <BookmarkPlus className="w-3.5 h-3.5 text-[var(--accent)]" />
+                Save template
+              </button>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => saveItemsList(draftItems)}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-bold min-h-[44px]"
+              >
+                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                {new Set(draftItems.map((d) => d.mealType || selectedSlot)).size > 1
+                  ? `Save all ${new Set(draftItems.map((d) => d.mealType || selectedSlot)).size} meals`
+                  : `Save to ${en.meals[selectedSlot]}`}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -915,6 +1453,26 @@ export const TellMeFoodBox: React.FC<TellMeFoodBoxProps> = ({
           pendingConsentActionRef.current = () => setFinderOpen(true);
           setConsentOpen(true);
         }}
+      />
+
+      <MenuHelperModal
+        open={menuHelperOpen}
+        profile={profile}
+        settings={settings}
+        dateKey={activeDate}
+        mealSlot={selectedSlot}
+        kcalLeft={kcalLeft}
+        proteinLeftG={proteinLeftG}
+        onClose={() => setMenuHelperOpen(false)}
+        onSaved={onSaved}
+      />
+
+      <QuickRecallModal
+        open={recallOpen}
+        dateKey={activeDate}
+        initialSlot={selectedSlot}
+        onClose={() => setRecallOpen(false)}
+        onSaved={onSaved}
       />
 
       {/* Online AI Consent Gate for voice upload / AI text */}

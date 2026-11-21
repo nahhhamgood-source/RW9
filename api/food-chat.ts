@@ -42,7 +42,7 @@ const FOOD_CHAT_SYSTEM_PROMPT = `You are a practical Egyptian nutrition assistan
 The user tells you what they ate in English, Egyptian Arabic, or Franco-Arabic (e.g., "akalt 2 ra3if 3eish w foul", "شربت نسكافيه بلبن").
 Your job:
 1. If audio is provided, first transcribe accurately into "transcript" (keeping Egyptian/Arabic/English food words clear).
-2. Identify each distinct food/drink item in one sentence and detect mealType (breakfast, lunch, dinner, snack) from context or keep the provided default.
+2. Identify each distinct food/drink item in one sentence and detect mealType (breakfast, lunch, dinner, snack) from context or keep the provided default. If the user mentions multiple meals in one message (e.g. "lunch was fiteer, dinner was mahshi"), tag each item with its own item mealType ("breakfast", "lunch", "dinner", or "snack").
 3. Use deep Egyptian home & street food knowledge (ful medames, ta'miya, baladi loaf ~plate-size, fino, eish shami, fiteer, koshari, molokhia, mahshi, macaroni bechamel/tagine, jibna areesh/beida, shakshuka, hawawshi, shawarma, kibda, sogoq, pane, kofta, nescafe/shai/ahwa with milk/sugar).
 4. Express EVERY portion in everyday human units ONLY: cup (~150ml), mug (~250ml), big mug (~350ml), glass, baladi loaf, sandwich (small/regular/big), fist, plate (quarter/half/full), palm, piece, spoon, bowl.
 5. NEVER ask for grams, ounces, or exact macros. NEVER moralize about food or give medical advice.
@@ -68,6 +68,7 @@ const FOOD_CHAT_RESPONSE_SCHEMA = {
           name: { type: Type.STRING, description: 'Clear English food name' },
           nameAr: { type: Type.STRING, description: 'Short Egyptian Arabic name' },
           icon: { type: Type.STRING, description: 'Single relevant food emoji' },
+          mealType: { type: Type.STRING, description: 'Optional meal slot for this item: breakfast, lunch, dinner, or snack' },
           category: {
             type: Type.STRING,
             description: 'Breakfast, Egyptian home food, Street food, Fast food, Drinks, Sweets, Fruit, or Snacks',
@@ -380,10 +381,16 @@ export default async function handler(req: VercelLikeRequest, res: VercelLikeRes
 
       const needsQuestion = Boolean(raw.needsQuestion) && chips.length > 0;
 
+      const itemMealType =
+        typeof raw.mealType === 'string' && VALID_MEAL_TYPES.has(raw.mealType.trim().toLowerCase())
+          ? raw.mealType.trim().toLowerCase()
+          : undefined;
+
       return {
         name: String(raw.name || 'Food item').trim().slice(0, 80),
         nameAr: typeof raw.nameAr === 'string' ? raw.nameAr.trim().slice(0, 80) : '',
         icon: typeof raw.icon === 'string' && raw.icon.trim() ? raw.icon.trim().slice(0, 4) : '🍽️',
+        mealType: itemMealType,
         category: typeof raw.category === 'string' ? raw.category.trim() : 'Egyptian home food',
         portionLabel: String(raw.portionLabel || 'average portion').trim().slice(0, 60),
         quantity: Number.isFinite(Number(raw.quantity)) && Number(raw.quantity) > 0 ? Number(raw.quantity) : 1,

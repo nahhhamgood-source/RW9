@@ -7,12 +7,23 @@ import {
   WEIGH_IN_WEEK_GUIDANCE,
   computeFightCampPlan,
 } from '../../lib/fightCamp';
-import type { BodyMetricEntry, DailyLog, TrainingDayType, UserProfile } from '../../types';
+import { computeNutritionAverages } from '../../lib/realLifeFood';
+import type {
+  AppSettings,
+  BodyMetricEntry,
+  DailyLog,
+  MealScanEntry,
+  TrainingDayType,
+  UserProfile,
+} from '../../types';
 import { useToast } from '../ui/ToastProvider';
 
 interface FightCampCardProps {
   profile: UserProfile;
   bodyMetrics: BodyMetricEntry[];
+  dailyLogs?: DailyLog[];
+  mealScans?: MealScanEntry[];
+  settings?: AppSettings;
   todayLog?: DailyLog | null;
   todayMode: TrainingDayType;
   todayKey: string;
@@ -25,6 +36,9 @@ interface FightCampCardProps {
 export const FightCampCard: React.FC<FightCampCardProps> = ({
   profile,
   bodyMetrics,
+  dailyLogs,
+  mealScans,
+  settings,
   todayLog,
   todayMode,
   todayKey,
@@ -46,6 +60,25 @@ export const FightCampCard: React.FC<FightCampCardProps> = ({
         todayKey,
       }),
     [profile, bodyMetrics, todayLog, todayMode, todayKey]
+  );
+
+  const foodAvg = useMemo(
+    () =>
+      computeNutritionAverages({
+        todayKey,
+        daysBack: 7,
+        dailyLogs: dailyLogs ?? (todayLog ? [todayLog] : []),
+        mealScans: mealScans ?? [],
+        settings,
+      }),
+    [todayKey, dailyLogs, todayLog, mealScans, settings]
+  );
+
+  const hasRecentEvent = useMemo(
+    () =>
+      Boolean(todayLog?.eventMode?.active) ||
+      foodAvg.summaries.some((s) => s.hasEvent),
+    [todayLog, foodAvg.summaries]
   );
 
   if (!camp.allowed) {
@@ -197,6 +230,18 @@ export const FightCampCard: React.FC<FightCampCardProps> = ({
           </span>
         </div>
         <p className="text-[11px] text-slate-600 dark:text-slate-300">{camp.trainingDayTip}</p>
+        {foodAvg.avgCalories !== null && (
+          <p className="text-[11px] text-slate-600 dark:text-slate-300 font-mono-num">
+            7d food avg: <strong>{formatDisplayNumber(foodAvg.avgCalories, arabicDigits)} kcal</strong> ·{' '}
+            {formatDisplayNumber(foodAvg.avgProteinG ?? 0, arabicDigits)}g protein ({foodAvg.countedDays} tracked{' '}
+            {foodAvg.countedDays === 1 ? 'day' : 'days'}, untracked excluded)
+          </p>
+        )}
+        {hasRecentEvent && (
+          <p className="text-[11px] text-sky-600 dark:text-sky-300">
+            One event barely moves your weekly trend — tomorrow stays a normal day.
+          </p>
+        )}
         {camp.performanceEaseApplied && camp.performanceNote && (
           <p className="text-[11px] font-semibold text-emerald-500">{camp.performanceNote}</p>
         )}

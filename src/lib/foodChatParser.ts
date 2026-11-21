@@ -742,6 +742,79 @@ export function parseFoodTextLocally(
   };
 }
 
+export interface ParsedMealGroup {
+  mealType: MealType;
+  segmentText: string;
+  items: DraftFoodItem[];
+  unmatchedSegments: string[];
+}
+
+export function parseMultiMealTextLocally(
+  rawText: string,
+  defaultSlot: MealType,
+  customFoods: CustomFoodEntry[] = []
+): ParsedMealGroup[] {
+  const trimmed = rawText.trim();
+  if (!trimmed) return [];
+
+  // Look for explicit meal slot markers inside a multi-meal sentence
+  // e.g. "Lunch was fiteer and tea, dinner was mahshi" or "breakfast: eggs; lunch: koshari"
+  const slotPattern =
+    /(?:^|[.,;\n]\s*|\s+and\s+)(?=(breakfast|fetaar|fetar|morning meal|فطار|lunch|ghada|غدا|غداء|dinner|asha|عشا|عشاء|snack|snacks|سناك)\b)/gi;
+
+  const splitPoints: Array<{ index: number; slot: MealType }> = [];
+  let match: RegExpExecArray | null;
+  while ((match = slotPattern.exec(trimmed)) !== null) {
+    const word = (match[1] || '').toLowerCase();
+    let slot: MealType = defaultSlot;
+    if (/breakfast|fetaar|fetar|morning|فطار/.test(word)) slot = 'breakfast';
+    else if (/lunch|ghada|غدا/.test(word)) slot = 'lunch';
+    else if (/dinner|asha|عشا/.test(word)) slot = 'dinner';
+    else if (/snack|سناك/.test(word)) slot = 'snack';
+    splitPoints.push({ index: match.index, slot });
+  }
+
+  if (splitPoints.length <= 1) {
+    const single = parseFoodTextLocally(trimmed, splitPoints[0]?.slot ?? defaultSlot, customFoods);
+    return [
+      {
+        mealType: single.mealType,
+        segmentText: trimmed,
+        items: single.items,
+        unmatchedSegments: single.unmatchedSegments,
+      },
+    ];
+  }
+
+  const groups: ParsedMealGroup[] = [];
+  for (let i = 0; i < splitPoints.length; i++) {
+    const start = splitPoints[i].index;
+    const end = i + 1 < splitPoints.length ? splitPoints[i + 1].index : trimmed.length;
+    const chunk = trimmed
+      .slice(start, end)
+      .replace(/^[,;.\s]+/, '')
+      .replace(/^and\s+/i, '')
+      .trim();
+    if (!chunk) continue;
+    const parsed = parseFoodTextLocally(chunk, splitPoints[i].slot, customFoods);
+    const existing = groups.find((g) => g.mealType === parsed.mealType);
+    if (existing) {
+      existing.segmentText = `${existing.segmentText}; ${chunk}`;
+      existing.items.push(...parsed.items);
+      existing.unmatchedSegments.push(...parsed.unmatchedSegments);
+    } else {
+      groups.push({
+        mealType: parsed.mealType,
+        segmentText: chunk,
+        items: parsed.items,
+        unmatchedSegments: parsed.unmatchedSegments,
+      });
+    }
+  }
+
+  return groups;
+}
+
 export function apiResponseToDraftItems(api: FoodChatApiResponse): DraftFoodItem[] {
   return api.items.map((it, idx) => {
     const kind: FollowUpKind =
@@ -785,6 +858,7 @@ export function apiResponseToDraftItems(api: FoodChatApiResponse): DraftFoodItem
       name: it.name,
       nameAr: it.nameAr || '',
       icon: it.icon || '🍽️',
+      mealType: it.mealType,
       category: it.category || 'Egyptian home food',
       portionLabel: it.portionLabel || 'average portion',
       quantity: it.quantity || 1,
