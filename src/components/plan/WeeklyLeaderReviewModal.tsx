@@ -27,6 +27,7 @@ import type {
   WorkoutSession,
 } from '../../types';
 import { useToast } from '../ui/ToastProvider';
+import { getShareCardPalette } from '../../lib/themes';
 
 interface WeeklyLeaderReviewModalProps {
   profile: UserProfile;
@@ -274,20 +275,24 @@ export const WeeklyLeaderReviewModal: React.FC<WeeklyLeaderReviewModalProps> = (
   };
 
   const handleExportPng = () => {
+    const palette = getShareCardPalette(settings);
     const canvas = document.createElement('canvas');
     canvas.width = 720;
     canvas.height = 900;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    ctx.fillStyle = '#0B0F1A';
+    ctx.fillStyle = palette.bg;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    ctx.fillStyle = '#38BDF8';
+    ctx.fillStyle = palette.surface;
+    ctx.fillRect(28, 28, canvas.width - 56, canvas.height - 56);
+
+    ctx.fillStyle = palette.accent;
     ctx.font = 'bold 26px system-ui, sans-serif';
     ctx.fillText('ASCEND — WEEKLY LEADER REVIEW', 48, 72);
 
-    ctx.fillStyle = '#94A3B8';
+    ctx.fillStyle = palette.muted;
     ctx.font = '20px system-ui, sans-serif';
     ctx.fillText(`Week ending ${todayKey}`, 48, 108);
 
@@ -299,27 +304,27 @@ export const WeeklyLeaderReviewModal: React.FC<WeeklyLeaderReviewModalProps> = (
       `Skin & face consistency: ${stats.skinPct !== null ? `${stats.skinPct}%` : 'Not enough data yet'}`,
     ];
 
-    ctx.fillStyle = '#E2E8F0';
+    ctx.fillStyle = palette.text;
     ctx.font = 'bold 24px system-ui, sans-serif';
     rows.forEach((line, idx) => {
       ctx.fillText(line, 48, 185 + idx * 54);
     });
 
-    ctx.fillStyle = '#10B981';
+    ctx.fillStyle = palette.good;
     ctx.font = 'bold 22px system-ui, sans-serif';
     ctx.fillText('What went well:', 48, 500);
-    ctx.fillStyle = '#F8FAFC';
+    ctx.fillStyle = palette.text;
     ctx.font = '21px system-ui, sans-serif';
     ctx.fillText(stats.wentWell.slice(0, 62), 48, 536);
 
-    ctx.fillStyle = '#F59E0B';
+    ctx.fillStyle = palette.warn;
     ctx.font = 'bold 22px system-ui, sans-serif';
     ctx.fillText('ONE thing to fix:', 48, 620);
-    ctx.fillStyle = '#F8FAFC';
+    ctx.fillStyle = palette.text;
     ctx.font = '21px system-ui, sans-serif';
     ctx.fillText(stats.oneFix.slice(0, 62), 48, 656);
 
-    ctx.fillStyle = '#64748B';
+    ctx.fillStyle = palette.muted;
     ctx.font = '18px system-ui, sans-serif';
     ctx.fillText('Private habits excluded · Real on-device logs only', 48, 845);
 

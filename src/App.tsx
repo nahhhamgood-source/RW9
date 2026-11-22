@@ -63,6 +63,18 @@ import { ReminderCenterModal } from './components/modals/ReminderCenterModal';
 import { EventModeModal } from './components/food/EventModeModal';
 import { DailyOneQuestionModal } from './components/food/DailyOneQuestionModal';
 import { GalleryImportModal } from './components/food/GalleryImportModal';
+import { AppBrandLogo } from './components/ui/AppBrandLogo';
+import { PathPickerModal } from './components/plan/PathPickerModal';
+import {
+  applyLookAndFeelToDocument,
+  getLookAndFeelSettings,
+  playUiSound,
+} from './lib/themes';
+import {
+  buildRealBootLine,
+  getBadgeTitleForPath,
+  getMindsetPathsSettings,
+} from './lib/mindsetEngine';
 
 const PlanScreen = lazy(() =>
   import('./screens/PlanScreen').then((m) => ({ default: m.PlanScreen }))
@@ -153,6 +165,10 @@ const AppShell: React.FC = () => {
   const [coachInitialPrompt, setCoachInitialPrompt] = useState<string | undefined>(undefined);
   const [remindersOpen, setRemindersOpen] = useState(false);
   const [navDrawerOpen, setNavDrawerOpen] = useState(false);
+  const [pathPickerOpen, setPathPickerOpen] = useState(false);
+  const [bootLineDismissed, setBootLineDismissed] = useState(false);
+  const [launchFadeActive, setLaunchFadeActive] = useState(false);
+  const autoPickerCheckedRef = useRef(false);
   const [pedometerState, setPedometerState] = useState<PedometerState>(() => getPedometerState());
   const mainRef = useRef<HTMLElement | null>(null);
   const stepsQueueRef = useRef(0);
@@ -164,6 +180,7 @@ const AppShell: React.FC = () => {
     coachOpen ||
     remindersOpen ||
     navDrawerOpen ||
+    pathPickerOpen ||
     Boolean(eventModalDate) ||
     Boolean(oneQuestionDate) ||
     galleryModalOpen;
@@ -412,33 +429,60 @@ const AppShell: React.FC = () => {
   const growthPrograms =
     useLiveQuery(() => (dbReady ? db.growthPrograms.toArray() : []), [dbReady]) ?? [];
 
-  // Theme sync supporting 'system' | 'dark' | 'light' + dynamic <meta name="theme-color">
+  const exerciseLogs =
+    useLiveQuery(() => (dbReady ? db.exerciseLogs.toArray() : []), [dbReady]) ?? [];
+
+  // Look & Feel CSS-variable + theme mode + motion sync
   useEffect(() => {
-    const root = document.documentElement;
     const media = window.matchMedia?.('(prefers-color-scheme: dark)');
-
-    const applyTheme = () => {
-      const resolvedDark =
-        settings.theme === 'dark' || (settings.theme === 'system' && Boolean(media?.matches));
-      if (resolvedDark) {
-        root.classList.add('dark');
-      } else {
-        root.classList.remove('dark');
-      }
-      root.setAttribute('data-accent', settings.accent);
-      const meta = document.querySelector('meta[name="theme-color"]');
-      if (meta) {
-        meta.setAttribute('content', resolvedDark ? '#06090F' : '#F4F7FA');
-      }
+    const syncLook = () => {
+      applyLookAndFeelToDocument(settings, Boolean(media?.matches));
     };
-
-    applyTheme();
-    if (settings.theme === 'system' && media) {
-      media.addEventListener('change', applyTheme);
-      return () => media.removeEventListener('change', applyTheme);
+    syncLook();
+    if (media) {
+      media.addEventListener('change', syncLook);
+      return () => media.removeEventListener('change', syncLook);
     }
     return undefined;
-  }, [settings.theme, settings.accent]);
+  }, [settings]);
+
+  // Auto-open Path Picker once after onboarding if no path was selected yet
+  useEffect(() => {
+    if (!dbReady || onboardingOpen || autoPickerCheckedRef.current) return;
+    autoPickerCheckedRef.current = true;
+    const onboarded = Boolean(
+      profile.onboardingComplete || profile.onboardingDone || profile.onboardingSkipped
+    );
+    const mp = getMindsetPathsSettings(settings);
+    const sessionPrompted = sessionStorage.getItem('ascend_path_picker_seen') === '1';
+    if (
+      onboarded &&
+      mp.pathsEnabled &&
+      !mp.pickerCompleted &&
+      !mp.mainPathId &&
+      mp.inspirationIds.length === 0 &&
+      (mp.pickerBannerDismissCount ?? 0) === 0 &&
+      !sessionPrompted
+    ) {
+      sessionStorage.setItem('ascend_path_picker_seen', '1');
+      setPathPickerOpen(true);
+    }
+  }, [dbReady, onboardingOpen, profile, settings]);
+
+  // Optional brief (<600ms) logo fade on launch
+  const launchSplashDoneRef = useRef(false);
+  useEffect(() => {
+    if (!dbReady || launchSplashDoneRef.current) return;
+    launchSplashDoneRef.current = true;
+    const laf = getLookAndFeelSettings(settings);
+    const reduced = Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
+    if (laf.launchAnimation === 'logo_fade' && !reduced && laf.animationLevel !== 'off') {
+      setLaunchFadeActive(true);
+      const t = window.setTimeout(() => setLaunchFadeActive(false), 520);
+      return () => window.clearTimeout(t);
+    }
+    return undefined;
+  }, [dbReady, settings]);
 
   useEffect(() => {
     setDayStartHour4am(Boolean(settings.dayStartsAt4am));
@@ -793,6 +837,9 @@ const AppShell: React.FC = () => {
     );
   }
 
+  const laf = getLookAndFeelSettings(settings);
+  const displayAppName = laf.displayAppName || en.appName;
+
   if (!dbReady) {
     return (
       <div className="min-h-[100dvh] flex flex-col items-center justify-center px-4 py-8 gap-3">
@@ -800,18 +847,14 @@ const AppShell: React.FC = () => {
           className="w-12 h-12 rounded-2xl bg-[var(--accent-soft)] border border-[var(--accent)]/40 flex items-center justify-center"
           style={{ boxShadow: '0 0 24px var(--accent-glow)' }}
         >
-          <svg
-            viewBox="0 0 24 24"
+          <AppBrandLogo
+            iconId={laf.appIconId}
+            iconStyle={laf.iconStyle}
             className="w-6 h-6 text-[var(--accent)] animate-pulse"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.4"
-          >
-            <path d="M12 3L4 19h4l4-8 4 8h4L12 3z" strokeLinejoin="round" />
-          </svg>
+          />
         </div>
         <div className="text-center space-y-1">
-          <p className="font-display text-base font-bold tracking-tight">{en.appName}</p>
+          <p className="font-display text-base font-bold tracking-tight">{displayAppName}</p>
           <p className="text-xs text-slate-500 dark:text-slate-400">{en.shell.openingPlan}</p>
         </div>
       </div>
@@ -860,11 +903,53 @@ const AppShell: React.FC = () => {
 
   const isSubScreen = ['diet', 'more', 'dashboard', 'routine', 'academy', 'settings'].includes(screen);
   const avatarInitials = getInitials(profile.name);
+  const todayKeyShell = toLocalDateKey();
+  const createdMs = profile.createdAt || Date.now();
+  const dayNumberShell = Math.max(1, Math.floor((Date.now() - createdMs) / 86400000) + 1);
+  const weekStartKey = (() => {
+    const d = new Date(`${todayKeyShell}T12:00:00`);
+    d.setDate(d.getDate() - 6);
+    return toLocalDateKey(d);
+  })();
+  const weeklyWorkoutsShell = workouts.filter((w) => w.date >= weekStartKey).length;
+  const todayDoneCountShell = completions.filter((c) => c.date === todayKeyShell).length;
+  const realBootLine = buildRealBootLine({
+    dayNumber: dayNumberShell,
+    weeklySessions: weeklyWorkoutsShell,
+    todayCompletedCount: todayDoneCountShell,
+    settings,
+  });
+  const drawerBadgeTitle = getBadgeTitleForPath(
+    xpState.level,
+    settings,
+    getRankForLevel(xpState.level)
+  );
 
   return (
     <div className="h-[100dvh] min-h-[100dvh] w-full max-w-full overflow-x-clip flex flex-col">
-      {/* Top Bar: Left Menu/Back · Center ASCEND · Right Ask, Bell, More/Avatar */}
-      <header className="shrink-0 z-30 backdrop-blur-xl bg-[#F4F7FA]/85 dark:bg-[#06090F]/85 border-b border-slate-200/70 dark:border-white/10 no-print">
+      {launchFadeActive && (
+        <button
+          type="button"
+          onClick={() => setLaunchFadeActive(false)}
+          aria-label="Skip launch splash"
+          className="fixed inset-0 z-[90] flex flex-col items-center justify-center gap-3 bg-[var(--bg-page)] transition-opacity duration-300"
+        >
+          <div className="w-14 h-14 rounded-2xl bg-[var(--accent-soft)] border border-[var(--accent)]/40 flex items-center justify-center">
+            <AppBrandLogo
+              iconId={laf.appIconId}
+              iconStyle={laf.iconStyle}
+              className="w-7 h-7 text-[var(--accent)]"
+            />
+          </div>
+          <p className="font-display text-lg font-bold tracking-tight">{displayAppName}</p>
+        </button>
+      )}
+
+      {/* Top Bar: Left Menu/Back · Center Brand · Right Ask, Bell, More/Avatar */}
+      <header
+        className="shrink-0 z-30 backdrop-blur-xl border-b border-[var(--border-subtle)] no-print"
+        style={{ backgroundColor: 'color-mix(in srgb, var(--bg-page) 88%, transparent)' }}
+      >
         <div className="max-w-6xl mx-auto px-3 sm:px-4 h-14 grid grid-cols-3 items-center">
           <div className="flex items-center gap-1.5 justify-start">
             <button
@@ -889,25 +974,24 @@ const AppShell: React.FC = () => {
 
           <button
             type="button"
-            onClick={() => navigate('plan', 'now')}
+            onClick={() => {
+              playUiSound(settings, 'click');
+              navigate('plan', 'now');
+            }}
             className="flex items-center justify-center gap-2 whitespace-nowrap shrink-0 mx-auto min-h-[44px]"
           >
             <span
               className="w-6 h-6 rounded-full bg-[var(--accent-soft)] border border-[var(--accent)]/45 flex items-center justify-center shrink-0"
               style={{ boxShadow: '0 0 12px var(--accent-glow)' }}
             >
-              <svg
-                viewBox="0 0 24 24"
+              <AppBrandLogo
+                iconId={laf.appIconId}
+                iconStyle={laf.iconStyle}
                 className="w-3.5 h-3.5 text-[var(--accent)]"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.4"
-              >
-                <path d="M12 3L4 19h4l4-8 4 8h4L12 3z" strokeLinejoin="round" />
-              </svg>
+              />
             </span>
             <span className="font-display text-sm sm:text-base font-bold tracking-tight whitespace-nowrap">
-              {en.appName}
+              {displayAppName}
             </span>
           </button>
 
@@ -958,6 +1042,20 @@ const AppShell: React.FC = () => {
         }`}
       >
         <div className="max-w-6xl w-full mx-auto px-4 pt-4 min-w-0 space-y-3">
+          {laf.bootLineEnabled && !bootLineDismissed && (
+            <div className="px-3.5 py-2 rounded-xl bg-slate-100/80 dark:bg-white/[0.04] border border-[var(--border-subtle)] flex items-center justify-between gap-2 text-[11px] font-mono-num">
+              <span className="truncate text-[var(--accent)] font-semibold">{realBootLine}</span>
+              <button
+                type="button"
+                onClick={() => setBootLineDismissed(true)}
+                aria-label="Dismiss boot status line"
+                className="text-slate-400 hover:text-white shrink-0 px-1"
+              >
+                ×
+              </button>
+            </div>
+          )}
+
           {!isOnline && (
             <div className="p-3 rounded-2xl bg-sky-500/12 border border-sky-500/30 text-xs font-medium text-sky-700 dark:text-sky-300 flex items-center gap-2">
               <WifiOff className="w-4 h-4 shrink-0" />
@@ -991,6 +1089,7 @@ const AppShell: React.FC = () => {
                     dailyLogs={dailyLogs}
                     mealScans={mealScans}
                     workouts={workouts}
+                    exerciseLogs={exerciseLogs}
                     bodyMetrics={bodyMetrics}
                     goals={goals}
                     lifeList={lifeList}
@@ -998,6 +1097,7 @@ const AppShell: React.FC = () => {
                     scans={scans}
                     selectedDate={selectedDate}
                     initialTab={subTab}
+                    isOnline={isOnline}
                     onOpenQuickLog={(t) => openQuickLogWithTab(t)}
                     onOpenFoodBreakfast={() => {
                       setFoodDate(toLocalDateKey());
@@ -1014,6 +1114,7 @@ const AppShell: React.FC = () => {
                     onOpenEventModal={(dateKey) => setEventModalDate(dateKey)}
                     onOpenOneQuestionModal={(dateKey) => setOneQuestionDate(dateKey)}
                     onOpenGalleryImport={() => setGalleryModalOpen(true)}
+                    onOpenPathPicker={() => setPathPickerOpen(true)}
                     onNavigate={navigate}
                     onOpenCoach={(prompt) => openCoach(prompt)}
                   />
@@ -1126,10 +1227,12 @@ const AppShell: React.FC = () => {
                 <ErrorBoundary screenName="More">
                   <MoreScreen
                     profile={profile}
+                    settings={settings}
                     xpState={xpState}
                     onNavigate={navigate}
                     onOpenCoach={() => openCoach()}
                     onOpenReminders={() => setRemindersOpen(true)}
+                    onOpenPathPicker={() => setPathPickerOpen(true)}
                   />
                 </ErrorBoundary>
               )}
@@ -1187,6 +1290,7 @@ const AppShell: React.FC = () => {
                     profile={profile}
                     settings={settings}
                     onOpenOnboarding={() => setOnboardingOpen(true)}
+                    onOpenPathPicker={() => setPathPickerOpen(true)}
                   />
                 </ErrorBoundary>
               )}
@@ -1276,14 +1380,21 @@ const AppShell: React.FC = () => {
             className="fixed inset-0 bg-black/70 backdrop-blur-sm"
             onClick={() => setNavDrawerOpen(false)}
           />
-          <aside className="relative z-10 w-72 max-w-[85vw] h-full bg-white dark:bg-[#0C121D]/95 dark:backdrop-blur-2xl border-r border-slate-200 dark:border-white/10 p-5 flex flex-col justify-between overflow-y-auto">
+          <aside
+            className="relative z-10 w-72 max-w-[85vw] h-full backdrop-blur-2xl border-r border-[var(--border-subtle)] p-5 flex flex-col justify-between overflow-y-auto"
+            style={{ backgroundColor: 'color-mix(in srgb, var(--bg-surface-solid) 96%, transparent)' }}
+          >
             <div className="space-y-5">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <span className="w-7 h-7 rounded-xl bg-[var(--accent-soft)] border border-[var(--accent)]/40 flex items-center justify-center">
-                    <Sparkles className="w-3.5 h-3.5 text-[var(--accent)]" />
+                    <AppBrandLogo
+                      iconId={laf.appIconId}
+                      iconStyle={laf.iconStyle}
+                      className="w-3.5 h-3.5 text-[var(--accent)]"
+                    />
                   </span>
-                  <span className="font-display text-base font-bold">{en.appName}</span>
+                  <span className="font-display text-base font-bold">{displayAppName}</span>
                 </div>
                 <button
                   type="button"
@@ -1298,7 +1409,7 @@ const AppShell: React.FC = () => {
               <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-white/[0.04] border border-slate-200 dark:border-white/10 space-y-1">
                 {profile.name.trim() && <p className="text-sm font-bold">{profile.name.trim()}</p>}
                 <p className="text-xs text-[var(--accent)] font-semibold">
-                  Level {xpState.level} {getRankForLevel(xpState.level)} · {xpState.currentStreak}d streak
+                  Level {xpState.level} {drawerBadgeTitle} · {xpState.currentStreak}d streak
                 </p>
               </div>
 
@@ -1380,6 +1491,13 @@ const AppShell: React.FC = () => {
         }}
         onOpenQuitHabits={() => navigate('health', 'quit')}
         onOpenEventMode={(dk) => setEventModalDate(dk)}
+        onOpenPathPicker={() => setPathPickerOpen(true)}
+      />
+
+      <PathPickerModal
+        open={pathPickerOpen}
+        settings={settings}
+        onClose={() => setPathPickerOpen(false)}
       />
 
       <EventModeModal

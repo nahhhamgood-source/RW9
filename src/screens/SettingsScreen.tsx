@@ -5,8 +5,6 @@ import {
   Upload,
   Lock,
   Trash2,
-  Sun,
-  Moon,
   Bell,
   Smartphone,
   Info,
@@ -41,7 +39,7 @@ import {
   syncLocalNotifications,
 } from '../lib/notifications';
 import { usePWAInstall } from '../hooks/usePWAInstall';
-import { Monitor, Volume2, VolumeX, Sparkles, Check } from 'lucide-react';
+import { Volume2, VolumeX, Sparkles, Check } from 'lucide-react';
 import { en } from '../i18n/en';
 import {
   createDefaultRealLifeSettings,
@@ -56,7 +54,6 @@ import type {
   MindSubGoalId,
   PrayerKey,
   RealLifeFoodSettings,
-  ThemeMode,
   ToneMode,
   UserProfile,
 } from '../types';
@@ -64,6 +61,8 @@ import { useToast } from '../components/ui/ToastProvider';
 import { AboutMeSection } from '../components/settings/AboutMeSection';
 import { ConnectionsSection } from '../components/settings/ConnectionsSection';
 import { PrivacyInventorySection } from '../components/settings/PrivacyInventorySection';
+import { AppearanceSettingsSection } from '../components/settings/AppearanceSettingsSection';
+import { MindsetPathsSection } from '../components/settings/MindsetPathsSection';
 
 const FOCUS_AREA_OPTIONS: Array<{ id: FocusAreaId; label: string }> = [
   { id: 'face', label: 'Face' },
@@ -89,6 +88,7 @@ interface SettingsScreenProps {
   profile: UserProfile;
   settings: AppSettings;
   onOpenOnboarding: () => void;
+  onOpenPathPicker?: () => void;
 }
 
 const ACCENT_PRESETS: Array<{ id: AccentPreset; label: string; swatch: string }> = [
@@ -102,6 +102,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   profile,
   settings,
   onOpenOnboarding,
+  onOpenPathPicker,
 }) => {
   const { showToast } = useToast();
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
@@ -468,22 +469,43 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="font-display text-2xl font-bold">Settings &amp; Data</h1>
-        <p className="text-xs text-slate-500 dark:text-slate-400">
-          Local-first IndexedDB storage · Optional online AI features when opted in · v
-          {typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '2.2.0'}
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h1 className="font-display text-2xl font-bold">Settings &amp; Data</h1>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Local-first IndexedDB storage · Optional online AI features when opted in · v
+            {typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '2.2.0'}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {[
+            { id: 'appearance-settings', label: 'Appearance' },
+            { id: 'paths-settings', label: 'Paths' },
+          ].map((jump) => (
+            <button
+              key={jump.id}
+              type="button"
+              onClick={() => document.getElementById(jump.id)?.scrollIntoView({ behavior: 'smooth' })}
+              className="px-3 py-1.5 rounded-lg bg-[var(--accent-soft)] text-[var(--accent)] text-xs font-bold min-h-[34px]"
+            >
+              {jump.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* Appearance & Profile */}
+        {/* Appearance, Paths & Profile */}
         <div className="lg:col-span-6 space-y-4">
+          <AppearanceSettingsSection settings={settings} />
+
+          <MindsetPathsSection settings={settings} onOpenPicker={onOpenPathPicker} />
+
           <AboutMeSection profile={profile} />
 
           <div className="ascend-card p-4 space-y-4">
             <div className="flex items-center justify-between">
-              <h2 className="font-display text-base font-bold">Appearance &amp; Units</h2>
+              <h2 className="font-display text-base font-bold">Preferences, Tone &amp; Units</h2>
               <button
                 type="button"
                 onClick={onOpenOnboarding}
@@ -491,34 +513,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               >
                 {profile.name.trim() ? `Edit Profile (${profile.name.trim()})` : 'Edit Profile'}
               </button>
-            </div>
-
-            <div>
-              <span className="block text-xs font-medium mb-2">Theme Mode</span>
-              <div className="grid grid-cols-3 gap-2">
-                {([
-                  { id: 'system', label: 'System', icon: <Monitor className="w-4 h-4" /> },
-                  { id: 'dark', label: 'Dark', icon: <Moon className="w-4 h-4" /> },
-                  { id: 'light', label: 'Light', icon: <Sun className="w-4 h-4" /> },
-                ] as Array<{ id: ThemeMode; label: string; icon: React.ReactNode }>).map((t) => {
-                  const active = settings.theme === t.id;
-                  return (
-                    <button
-                      key={t.id}
-                      type="button"
-                      onClick={() => updateSettings({ theme: t.id })}
-                      className={`inline-flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-xs font-semibold border min-h-[44px] transition ${
-                        active
-                          ? 'bg-[var(--accent-soft)] text-[var(--accent)] border-[var(--accent)]/40'
-                          : 'bg-slate-100 dark:bg-white/5 border-transparent'
-                      }`}
-                    >
-                      {t.icon}
-                      {t.label}
-                    </button>
-                  );
-                })}
-              </div>
             </div>
 
             {/* Easy Mode vs Pro Mode */}

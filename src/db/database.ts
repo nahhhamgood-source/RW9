@@ -10,6 +10,13 @@ import {
   createDefaultRealLifeSettings,
 } from '../lib/realLifeFood';
 import { getEventTypeMeta } from '../data/eventPresets';
+import { createDefaultLookAndFeelSettings } from '../lib/themes';
+import {
+  createDefaultMindsetPathsSettings,
+  getActivePathIds,
+  getMindsetPathsSettings,
+  getPathDefinitionForUser,
+} from '../lib/mindsetEngine';
 import type {
   AboutMeItemKey,
   AboutMeProfile,
@@ -372,9 +379,9 @@ export function createDefaultAboutMe(weightKg = 74): AboutMeProfile {
     targetWeightKg: null,
     eatingPattern: 'Often skips breakfast (coffee with milk only) and overeats at lunch',
     identityFocus:
-      'Looksmaxxing / glow-up, tiny daily steps across face, body, mind, study & programming, optional light prayer check-ins',
+      'Looksmaxxing / glow-up, tiny daily bites across face, body, mind, cybersecurity, programming & building apps, optional light prayer check-ins',
     supportStyle:
-      'Shame-free quit support, friendly short picture-first coach, app handles the organizing',
+      'Kind, honest coaching, shame-free quit support, picture-first nutrition, app handles the organizing',
     statuses: {
       location_foods: 'suggested',
       training_camp: 'suggested',
@@ -525,6 +532,8 @@ export function createDefaultSettings(): AppSettings {
     lastWeeklyReviewDate: null,
     lastBackupDate: null,
     autoPedometer: false,
+    lookAndFeel: createDefaultLookAndFeelSettings(),
+    mindsetPaths: createDefaultMindsetPathsSettings(),
   };
 }
 
@@ -689,6 +698,20 @@ export function buildPlanForProfile(
     }
   }
 
+  // Subtle Mindset Path habit ordering boost (ONLY existing CURATED_PROTOCOLS, never alters safety rules)
+  if (settings?.mindsetPaths && settings.mindsetPaths.pathsEnabled !== false) {
+    const mp = getMindsetPathsSettings(settings);
+    const activePathIds = getActivePathIds(mp);
+    if (activePathIds.length > 0) {
+      const mainPath = getPathDefinitionForUser(activePathIds[0], mp);
+      for (const pid of mainPath.habitProtocolIds) {
+        if (PROTOCOL_MAP[pid]) {
+          boost(pid, 18, mainPath.shortName);
+        }
+      }
+    }
+  }
+
   if (candidateIds.size === 0) {
     boost('face-cleanse-am', 100, 'Face');
     boost('face-spf-daily', 98, 'Face');
@@ -795,7 +818,9 @@ export async function ensureDatabaseReady(): Promise<{
       settings.dismissedPatternIds === undefined ||
       settings.roughDayDates === undefined ||
       settings.dayModeByDate === undefined ||
-      settings.reminders?.maxPerDay === undefined;
+      settings.reminders?.maxPerDay === undefined ||
+      settings.lookAndFeel === undefined ||
+      settings.mindsetPaths === undefined;
     if (needsSync) {
       settings = {
         ...defaults,
@@ -820,6 +845,14 @@ export async function ensureDatabaseReady(): Promise<{
           ...defaults.reminders,
           ...settings.reminders,
           maxPerDay: Math.min(6, settings.reminders?.maxPerDay ?? 6),
+        },
+        lookAndFeel: {
+          ...defaults.lookAndFeel!,
+          ...(settings.lookAndFeel ?? {}),
+        },
+        mindsetPaths: {
+          ...defaults.mindsetPaths!,
+          ...(settings.mindsetPaths ?? {}),
         },
       };
       await db.settings.put(settings);

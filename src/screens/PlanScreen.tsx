@@ -25,6 +25,7 @@ import {
   Trash2,
   Trophy,
   Utensils,
+  Compass,
 } from 'lucide-react';
 import {
   addLifeGoal,
@@ -60,11 +61,22 @@ import { PatternInsightsCards } from '../components/plan/PatternInsightsCards';
 import { FightCampCard } from '../components/plan/FightCampCard';
 import { WeeklyLeaderReviewModal } from '../components/plan/WeeklyLeaderReviewModal';
 import { NextMorningCheckinCard } from '../components/food/NextMorningCheckinCard';
+import { DailyCutCard } from '../components/plan/DailyCutCard';
+import { OperatorConsoleCard } from '../components/plan/OperatorConsoleCard';
+import {
+  computeIdentityVotes,
+  getActivePathIds,
+  getBadgeTitleForPath,
+  getMindsetPathsSettings,
+} from '../lib/mindsetEngine';
+import { getLookAndFeelSettings, playUiSound } from '../lib/themes';
+import { getRankForLevel } from '../data/badges';
 import type {
   ActiveProtocolTask,
   AppSettings,
   BodyMetricEntry,
   DailyLog,
+  ExerciseSessionLog,
   FaceScanResult,
   GoalHorizon,
   LifeGoal,
@@ -94,6 +106,8 @@ interface PlanScreenProps {
   bodyMetrics: BodyMetricEntry[];
   goals: LifeGoal[];
   lifeList: LifeListItem[];
+  exerciseLogs?: ExerciseSessionLog[];
+  isOnline?: boolean;
   latestScan?: FaceScanResult | null;
   scans?: FaceScanResult[];
   selectedDate: string;
@@ -104,6 +118,7 @@ interface PlanScreenProps {
   onOpenEventModal?: (dateKey: string) => void;
   onOpenOneQuestionModal?: (dateKey: string) => void;
   onOpenGalleryImport?: () => void;
+  onOpenPathPicker?: () => void;
   onNavigate: (screen: string, subTab?: string) => void;
   onOpenCoach: (prompt?: string) => void;
 }
@@ -122,33 +137,6 @@ const PRAYER_ITEMS: Array<{ key: PrayerKey; label: string }> = [
   { key: 'maghrib', label: 'Maghrib' },
   { key: 'isha', label: 'Isha' },
 ];
-
-function playSoftDoneChime(enabled?: boolean): void {
-  try {
-    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-      navigator.vibrate(12);
-    }
-    if (!enabled || typeof window === 'undefined') return;
-    const AudioCtx =
-      window.AudioContext ||
-      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioCtx) return;
-    const ctx = new AudioCtx();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(587.33, ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.08);
-    gain.gain.setValueAtTime(0.05, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.16);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.17);
-  } catch {
-    // Ignore audio context autoplay errors
-  }
-}
 
 function getCurrentTimeBlock(): TimeBlock {
   const hr = new Date().getHours();
@@ -206,6 +194,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
   dailyLogs,
   mealScans,
   workouts,
+  exerciseLogs = [],
   bodyMetrics,
   goals,
   lifeList,
@@ -213,12 +202,14 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
   scans = [],
   selectedDate,
   initialTab,
+  isOnline = true,
   onOpenQuickLog,
   onOpenFoodBreakfast,
   onOpenFoodForDate,
   onOpenEventModal,
   onOpenOneQuestionModal,
   onOpenGalleryImport,
+  onOpenPathPicker,
   onNavigate,
   onOpenCoach,
 }) => {
@@ -683,7 +674,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
   const handleToggleDone = async (task: ActiveProtocolTask) => {
     const isNowDone = await toggleTaskCompletion(todayKey, task);
     if (isNowDone) {
-      playSoftDoneChime(settings.soundEnabled);
+      playUiSound(settings, 'done');
       setShowNowHowTo(false);
       showToast(
         getToneText(tone, {
@@ -692,6 +683,13 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
           serious: `Completed: ${cleanTaskTitle(task.title)} (+${task.xp} XP)`,
         })
       );
+    }
+  };
+
+  const handleCompleteProtocolFromCut = async (protocolId: string) => {
+    const matching = tasks.find((t) => t.protocolId === protocolId && t.enabled);
+    if (matching && !completedTodayIds.has(matching.id)) {
+      await handleToggleDone(matching);
     }
   };
 
@@ -1015,39 +1013,118 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
         primaryNowTask.category === 'training')
   );
 
+  const mp = getMindsetPathsSettings(settings);
+  const laf = getLookAndFeelSettings(settings);
+  const activePathIds = getActivePathIds(mp);
+  const showPickPathsBanner =
+    Boolean(onOpenPathPicker) &&
+    mp.pathsEnabled &&
+    !mp.pickerCompleted &&
+    activePathIds.length === 0 &&
+    (mp.pickerBannerDismissCount ?? 0) < 3;
+
+  const identityVotesToday = useMemo(
+    () =>
+      computeIdentityVotes({
+        settings,
+        completions,
+        workouts,
+        exerciseLogs,
+        todayKey,
+      }).todayVotes,
+    [settings, completions, workouts, exerciseLogs, todayKey]
+  );
+
+  const pathBadgeTitle = getBadgeTitleForPath(
+    xpState.level,
+    settings,
+    getRankForLevel(xpState.level)
+  );
+
   return (
     <div className="space-y-4">
-      {/* Top 4-chip Bar: Now · Today · Tomorrow · Goals */}
-      <div
-        role="tablist"
-        aria-label="Plan views"
-        className="grid grid-cols-4 gap-1.5 p-1 rounded-2xl bg-slate-200/80 dark:bg-white/[0.05] border border-slate-200 dark:border-white/10"
-      >
-        {([
-          { id: 'now', label: en.planChips.now },
-          { id: 'today', label: en.planChips.today },
-          { id: 'tomorrow', label: en.planChips.tomorrow },
-          { id: 'goals', label: en.planChips.goals },
-        ] as const).map((chip) => {
-          const active = tab === chip.id;
-          return (
-            <button
-              key={chip.id}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              onClick={() => setTab(chip.id)}
-              className={`py-2.5 px-2 rounded-xl text-sm font-semibold min-h-[44px] transition ${
-                active
-                  ? 'bg-white dark:bg-[var(--accent)] text-slate-900 dark:text-[var(--accent-contrast)] shadow-sm'
-                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              {chip.label}
-            </button>
-          );
-        })}
+      {/* Top 4-chip Bar + 1-tap Paths Button */}
+      <div className="flex items-center gap-1.5">
+        <div
+          role="tablist"
+          aria-label="Plan views"
+          className="flex-1 grid grid-cols-4 gap-1 p-1 rounded-2xl bg-slate-200/80 dark:bg-white/[0.05] border border-slate-200 dark:border-white/10"
+        >
+          {([
+            { id: 'now', label: en.planChips.now },
+            { id: 'today', label: en.planChips.today },
+            { id: 'tomorrow', label: en.planChips.tomorrow },
+            { id: 'goals', label: en.planChips.goals },
+          ] as const).map((chip) => {
+            const active = tab === chip.id;
+            return (
+              <button
+                key={chip.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setTab(chip.id)}
+                className={`py-2.5 px-1.5 rounded-xl text-xs sm:text-sm font-semibold min-h-[44px] transition ${
+                  active
+                    ? 'bg-white dark:bg-[var(--accent)] text-slate-900 dark:text-[var(--accent-contrast)] shadow-sm'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                {chip.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {onOpenPathPicker && (
+          <button
+            type="button"
+            onClick={onOpenPathPicker}
+            aria-label="Choose mindset paths"
+            className="inline-flex items-center gap-1 px-3 py-2.5 rounded-2xl bg-[var(--accent-soft)] text-[var(--accent)] border border-[var(--accent)]/35 text-xs font-bold min-h-[52px] shrink-0"
+          >
+            <Compass className="w-4 h-4" />
+            <span className="hidden sm:inline">Paths</span>
+          </button>
+        )}
       </div>
+
+      {/* Dismissible Pick Paths Banner (up to 3 dismissals) */}
+      {showPickPathsBanner && (
+        <section className="ascend-card p-3.5 bg-[var(--accent-soft)] border border-[var(--accent)]/40 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div className="min-w-0">
+            <p className="font-bold flex items-center gap-1.5">
+              <Compass className="w-4 h-4 text-[var(--accent)]" /> Choose who inspires you
+            </p>
+            <p className="text-[11px] text-slate-600 dark:text-slate-300">
+              Pick 1 main person &amp; up to 2 inspirations for your Daily Cut and habits.
+            </p>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={onOpenPathPicker}
+              className="px-3 py-2 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] font-bold min-h-[38px]"
+            >
+              Pick now
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                db.settings.update('app', {
+                  mindsetPaths: {
+                    ...mp,
+                    pickerBannerDismissCount: (mp.pickerBannerDismissCount ?? 0) + 1,
+                  },
+                })
+              }
+              className="px-2.5 py-2 rounded-xl bg-white/10 text-[11px] font-semibold min-h-[38px]"
+            >
+              Later
+            </button>
+          </div>
+        </section>
+      )}
 
       {/* 1. NOW VIEW */}
       {tab === 'now' && (
@@ -1212,6 +1289,39 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
               </span>
             </button>
           </div>
+
+          {/* Optional Operator Console right under Ring */}
+          {laf.operatorConsoleOnToday && (
+            <OperatorConsoleCard
+              settings={settings}
+              ringPct={todayPct}
+              todayVotes={identityVotesToday}
+              campDaysLeft={fightCampCountdownDays}
+              nextTask={primaryNowTask}
+              onRunNext={(t) => void handleToggleDone(t)}
+              onHideConsole={() =>
+                void db.settings.update('app', {
+                  lookAndFeel: { ...laf, operatorConsoleOnToday: false },
+                })
+              }
+            />
+          )}
+
+          {/* Fixed position directly under Today's Ring: Today's inspiration & Daily Cut */}
+          <DailyCutCard
+            profile={profile}
+            settings={settings}
+            dailyLogs={dailyLogs}
+            completions={completions}
+            workouts={workouts}
+            exerciseLogs={exerciseLogs}
+            tasks={tasks}
+            todayKey={todayKey}
+            isOnline={isOnline}
+            onOpenPathPicker={() => onOpenPathPicker?.()}
+            onCompleteTaskByProtocol={handleCompleteProtocolFromCut}
+            onVideoWatchedWin={(topic) => showToast(`Win logged: watched "${topic.slice(0, 32)}"`)}
+          />
 
           {/* Yesterday Gap Check-In Card (1 food prompt/day cap) */}
           {realLife.nextMorningCheckinEnabled && (
@@ -1380,6 +1490,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
             </div>
 
             <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              <span className="font-semibold text-[var(--accent)]">From: General — </span>
               {dayMode === 'gym' || dayMode === 'mma'
                 ? localFoodsConfirmed
                   ? 'Training fuel: easy carbs (baladi bread/oats/dates) + water 60–90m before, protein (eggs/chicken/kofta) after.'
@@ -1717,7 +1828,7 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
                     )}
                   </div>
                   <p className="text-xs text-slate-500 dark:text-slate-400">
-                    Level {xpState.level} · {xpState.streakFreezesRemaining} rest shield ready
+                    Level {xpState.level} {pathBadgeTitle} · {xpState.streakFreezesRemaining} rest shield ready
                   </p>
                 </div>
               </div>
@@ -2029,6 +2140,21 @@ export const PlanScreen: React.FC<PlanScreenProps> = ({
               </button>
             </div>
           </div>
+
+          <DailyCutCard
+            profile={profile}
+            settings={settings}
+            dailyLogs={dailyLogs}
+            completions={completions}
+            workouts={workouts}
+            exerciseLogs={exerciseLogs}
+            tasks={tasks}
+            todayKey={todayKey}
+            isOnline={isOnline}
+            onOpenPathPicker={() => onOpenPathPicker?.()}
+            onCompleteTaskByProtocol={handleCompleteProtocolFromCut}
+            onVideoWatchedWin={(topic) => showToast(`Win logged: watched "${topic.slice(0, 32)}"`)}
+          />
 
           {addingToday && (
             <form onSubmit={handleAddTodayTask} className="ascend-card p-4 space-y-3">

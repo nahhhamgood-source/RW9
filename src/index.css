@@ -163,13 +163,58 @@
   }
 
   .dark body {
-    background-color: #06090F;
-    background-image:
-      radial-gradient(ellipse 85% 42% at 50% -10%, rgba(56, 189, 248, 0.10), transparent 68%),
-      radial-gradient(ellipse 60% 35% at 92% 102%, rgba(16, 185, 129, 0.05), transparent 65%);
-    background-attachment: fixed;
-    color: #F1F5F9;
+    background-color: var(--bg-page, #06090F);
+    color: var(--text-primary, #F1F5F9);
   }
+}
+
+/* Font heading style toggle */
+[data-font-style="mono"] h1,
+[data-font-style="mono"] h2,
+[data-font-style="mono"] h3,
+[data-font-style="mono"] .font-display {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  letter-spacing: -0.02em;
+}
+
+/* Optional lightweight CSS backgrounds (ambient OFF by default, disabled with reduced-motion) */
+@keyframes ascendAmbientDrift {
+  0% { background-position: 0% 0%, 100% 100%; }
+  50% { background-position: 60% 25%, 40% 80%; }
+  100% { background-position: 0% 0%, 100% 100%; }
+}
+
+[data-bg-style="gradient"] body {
+  background-image:
+    radial-gradient(ellipse 85% 42% at 50% -10%, var(--accent-glow), transparent 68%),
+    radial-gradient(ellipse 60% 35% at 92% 102%, var(--accent-soft), transparent 65%);
+  background-attachment: fixed;
+}
+
+[data-bg-style="noise"] body {
+  background-image:
+    radial-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 0);
+  background-size: 16px 16px;
+}
+
+[data-bg-style="scanline"] body {
+  background-image:
+    repeating-linear-gradient(
+      0deg,
+      rgba(74, 222, 128, 0.035) 0px,
+      rgba(74, 222, 128, 0.035) 1px,
+      transparent 1px,
+      transparent 4px
+    ),
+    radial-gradient(ellipse 85% 40% at 50% -10%, var(--accent-glow), transparent 70%);
+}
+
+[data-bg-style="ambient"]:not([data-motion="off"]) body {
+  background-image:
+    radial-gradient(ellipse 75% 45% at 25% 15%, var(--accent-glow), transparent 65%),
+    radial-gradient(ellipse 65% 45% at 85% 85%, var(--accent-soft), transparent 65%);
+  background-size: 140% 140%;
+  animation: ascendAmbientDrift 18s ease-in-out infinite;
 }
 
 @keyframes ascendPanelEnter {
@@ -188,9 +233,9 @@
 }
 
 .ascend-card {
-  background-color: #FFFFFF;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 22px;
+  background-color: var(--bg-surface, #FFFFFF);
+  border: 1px solid var(--border-subtle, rgba(15, 23, 42, 0.08));
+  border-radius: var(--ascend-radius-card, 22px);
   box-shadow: 0 8px 24px -16px rgba(15, 23, 42, 0.08);
   transition:
     border-color 200ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -200,17 +245,39 @@
 }
 
 .dark .ascend-card {
-  background-color: rgba(13, 19, 31, 0.78);
+  background-color: var(--bg-surface, rgba(13, 19, 31, 0.78));
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
-  border: 1px solid rgba(56, 189, 248, 0.14);
+  border: 1px solid var(--border-subtle, rgba(56, 189, 248, 0.14));
   box-shadow:
     0 16px 36px -18px rgba(0, 0, 0, 0.78),
     inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
+/* Card Style customizations */
+[data-card-style="flat"] .ascend-card {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: none !important;
+  background-color: var(--bg-surface-solid, var(--bg-surface));
+}
+
+[data-card-style="outlined"] .ascend-card {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: none !important;
+  background-color: var(--bg-surface-solid, var(--bg-surface));
+  border-width: 1.5px;
+  border-color: var(--border-subtle);
+}
+
+/* Compact density spacing helper */
+[data-density="compact"] .ascend-card {
+  padding: 0.85rem;
+}
+
 .ascend-hero-glow {
-  background: radial-gradient(circle at 86% 12%, var(--accent-glow), transparent 58%), #FFFFFF;
+  background: radial-gradient(circle at 86% 12%, var(--accent-glow), transparent 58%), var(--bg-surface-solid, #FFFFFF);
   border-color: color-mix(in srgb, var(--accent) 28%, rgba(14, 165, 233, 0.16));
   box-shadow: 0 12px 28px -14px var(--accent-glow);
 }
@@ -218,7 +285,7 @@
 .dark .ascend-hero-glow {
   background:
     radial-gradient(circle at 86% 12%, var(--accent-glow), transparent 58%),
-    rgba(12, 18, 30, 0.88);
+    var(--bg-surface, rgba(12, 18, 30, 0.88));
   border-color: color-mix(in srgb, var(--accent) 30%, rgba(56, 189, 248, 0.18));
   box-shadow:
     0 18px 40px -18px rgba(0, 0, 0, 0.84),
@@ -235,13 +302,23 @@
 }
 
 .dark .ascend-glass-dock {
-  background-color: rgba(10, 15, 25, 0.90);
+  background-color: color-mix(in srgb, var(--bg-surface-solid, #0A0F19) 92%, transparent);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
-  border: 1px solid rgba(56, 189, 248, 0.18);
+  border: 1px solid var(--border-subtle, rgba(56, 189, 248, 0.18));
   box-shadow:
     0 18px 42px -12px rgba(0, 0, 0, 0.88),
     inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+[data-motion="off"] .ascend-panel-enter,
+[data-motion="off"] *,
+[data-motion="off"] *::before,
+[data-motion="off"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
 }
 
 @media (prefers-reduced-motion: reduce) {

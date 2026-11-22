@@ -12,6 +12,7 @@ import {
   Wind,
   ShieldCheck,
   PartyPopper,
+  Compass,
 } from 'lucide-react';
 import {
   createDefaultSettings,
@@ -60,6 +61,7 @@ interface QuickLogSheetProps {
   onOpenMealScanner?: (mealType?: MealType) => void;
   onOpenQuitHabits?: () => void;
   onOpenEventMode?: (dateKey: string) => void;
+  onOpenPathPicker?: () => void;
 }
 
 const MOOD_FACES = [
@@ -83,6 +85,7 @@ export const QuickLogSheet: React.FC<QuickLogSheetProps> = ({
   onOpenMealScanner,
   onOpenQuitHabits,
   onOpenEventMode,
+  onOpenPathPicker,
 }) => {
   const { showToast } = useToast();
   const normalizedInitial: QuickLogTab = initialTab === 'skin' ? 'photo' : initialTab;
@@ -345,14 +348,28 @@ export const QuickLogSheet: React.FC<QuickLogSheetProps> = ({
             <h2 className="font-display text-lg font-bold">{en.quickAdd.title}</h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">Saved locally for {dateKey}</p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close Quick Add"
-            className="w-11 h-11 rounded-full flex items-center justify-center hover:bg-slate-100 dark:hover:bg-white/5"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-1.5">
+            {onOpenPathPicker && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenPathPicker();
+                }}
+                className="inline-flex items-center gap-1 px-2.5 py-2 rounded-xl bg-[var(--accent-soft)] text-[var(--accent)] text-xs font-bold min-h-[38px]"
+              >
+                <Compass className="w-3.5 h-3.5" /> Paths
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close Quick Add"
+              className="w-11 h-11 rounded-full flex items-center justify-center hover:bg-slate-100 dark:hover:bg-white/5"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         <div className="flex gap-1.5 overflow-x-auto pb-2 mb-4">

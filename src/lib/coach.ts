@@ -3,6 +3,7 @@ import { isAboutMeItemConfirmed, isUnder18OrGrowing } from '../db/database';
 import { addDays, toLocalDateKey } from './date';
 import { getPslTierMeta, PSL_HONEST_DISCLAIMER } from './faceMetricsConstants';
 import { detectUserPatterns } from './patterns';
+import { getMindsetPathsSettings, getPathDefinitionForUser } from './mindsetEngine';
 import type {
   ActiveProtocolTask,
   AppSettings,
@@ -216,6 +217,12 @@ export function answerCoachQuery(query: string, ctx: CoachContext): CoachRespons
       bullets.push(`Pattern noticed: ${detectedPatterns.cards[0].headline}`);
     }
 
+    const mp = ctx.settings ? getMindsetPathsSettings(ctx.settings) : null;
+    if (mp?.pathsEnabled && mp.mainPathId) {
+      const activePath = getPathDefinitionForUser(mp.mainPathId, mp);
+      bullets.push(`Path alignment (From: ${activePath.shortName}): ${activePath.weeklyFocus}`);
+    }
+
     return {
       title: isRoughDay ? 'Today’s Gentle 2-Step Plan' : 'Today’s Priority Stack',
       bullets: bullets.slice(0, 4),
@@ -358,14 +365,20 @@ export function answerCoachQuery(query: string, ctx: CoachContext): CoachRespons
     };
   }
 
-  // Default personalized response
+  // Default personalized response (keeps light path note ONLY when not in distress/safety)
+  const mp = ctx.settings ? getMindsetPathsSettings(ctx.settings) : null;
+  const activePath =
+    mp?.pathsEnabled && mp.mainPathId ? getPathDefinitionForUser(mp.mainPathId, mp) : null;
+
   return {
     title: 'Offline Coach',
     bullets: [
       detectedPatterns.cards[0]
         ? `From your logs: ${detectedPatterns.cards[0].headline}`
         : 'I read directly from your local ASCEND logs, meals, workouts, and PSL LAB scans.',
-      'Ask about today’s plan, Egyptian meal swaps, puffy face, skin basics, scan results, height/posture, or rough days.',
+      activePath
+        ? `Active Mindset Path (From: ${activePath.name}): ${activePath.takeThis}`
+        : 'Ask about today’s plan, Egyptian meal swaps, puffy face, skin basics, scan results, height/posture, or rough days.',
       'All offline guidance runs privately on your phone with zero internet calls.',
     ],
     moreDetail: 'For severe acne, pain, injury, or medical cuts, always check with a licensed doctor.',

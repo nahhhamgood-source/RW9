@@ -24,17 +24,22 @@ import {
   Sparkles,
   TrendingUp,
   Utensils,
+  Compass,
 } from 'lucide-react';
 import { EmptyState } from '../components/ui/Skeletons';
-import type { UserProfile, XpState } from '../types';
+import { MINDSET_PATHS } from '../data/pathsCatalog';
+import { getBadgeTitleForPath, getMindsetPathsSettings } from '../lib/mindsetEngine';
+import type { AppSettings, UserProfile, XpState } from '../types';
 import { getRankForLevel } from '../data/badges';
 
 interface MoreScreenProps {
   profile: UserProfile;
+  settings?: AppSettings;
   xpState: XpState;
   onNavigate: (screen: string, subTab?: string) => void;
   onOpenCoach: () => void;
   onOpenReminders: () => void;
+  onOpenPathPicker?: () => void;
 }
 
 interface ModuleLink {
@@ -48,15 +53,41 @@ interface ModuleLink {
 
 export const MoreScreen: React.FC<MoreScreenProps> = ({
   profile,
+  settings,
   xpState,
   onNavigate,
   onOpenCoach,
   onOpenReminders,
+  onOpenPathPicker,
 }) => {
   const [search, setSearch] = useState('');
+  const [pathFilter, setPathFilter] = useState<'all' | 'real_person' | 'story' | 'custom'>('all');
+  const [pathQuery, setPathQuery] = useState('');
+  const mp = getMindsetPathsSettings(settings);
+  const rankLabel = getBadgeTitleForPath(
+    xpState.level,
+    settings,
+    getRankForLevel(xpState.level)
+  );
 
   const modules: ModuleLink[] = useMemo(
     () => [
+      {
+        id: 'mindset-paths',
+        label: 'Mindset Paths & Daily Cut',
+        desc: 'Pick Real athletes or Story archetypes, mode, Daily Video & Chapters',
+        category: 'Plan',
+        icon: <Compass className="w-4 h-4 text-[var(--accent)]" />,
+        action: () => (onOpenPathPicker ? onOpenPathPicker() : onNavigate('settings')),
+      },
+      {
+        id: 'look-feel',
+        label: 'Look & Feel (Themes)',
+        desc: '9 true-black/light themes, custom accent hex, corners, motion & icons',
+        category: 'System',
+        icon: <Palette className="w-4 h-4 text-[var(--accent)]" />,
+        action: () => onNavigate('settings'),
+      },
       {
         id: 'diet',
         label: 'Diet',
@@ -218,7 +249,7 @@ export const MoreScreen: React.FC<MoreScreenProps> = ({
         action: () => onNavigate('dashboard'),
       },
     ],
-    [onNavigate, onOpenCoach, onOpenReminders]
+    [onNavigate, onOpenCoach, onOpenReminders, onOpenPathPicker]
   );
 
   const filteredModules = useMemo(() => {
@@ -232,6 +263,19 @@ export const MoreScreen: React.FC<MoreScreenProps> = ({
     );
   }, [modules, search]);
 
+  const filteredDirectoryPaths = useMemo(() => {
+    const q = pathQuery.trim().toLowerCase();
+    return MINDSET_PATHS.filter((p) => {
+      if (pathFilter !== 'all' && p.category !== pathFilter) return false;
+      if (!q) return true;
+      return (
+        p.name.toLowerCase().includes(q) ||
+        p.oneLineIdea.toLowerCase().includes(q) ||
+        p.takeThis.toLowerCase().includes(q)
+      );
+    });
+  }, [pathFilter, pathQuery]);
+
   return (
     <div className="space-y-4">
       {/* Header + Profile Summary */}
@@ -240,7 +284,7 @@ export const MoreScreen: React.FC<MoreScreenProps> = ({
           <h1 className="font-display text-2xl font-bold">More &amp; All Tools</h1>
           <p className="text-xs text-slate-500 dark:text-slate-400">
             {profile.name.trim() ? `${profile.name.trim()} · ` : ''}
-            Level {xpState.level} {getRankForLevel(xpState.level)} · {xpState.currentStreak}d streak
+            Level {xpState.level} {rankLabel} · {xpState.currentStreak}d streak
           </p>
         </div>
         <button
@@ -296,6 +340,84 @@ export const MoreScreen: React.FC<MoreScreenProps> = ({
           ))}
         </div>
       )}
+
+      {/* Paths Directory (Search + Real people / Story / My custom filter) */}
+      <section className="ascend-card p-4 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-bold flex items-center gap-1.5">
+              <Compass className="w-4 h-4 text-[var(--accent)]" /> Paths Directory
+            </h2>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              Browse all Mindset Paths by category or open the full picker.
+            </p>
+          </div>
+          {onOpenPathPicker && (
+            <button
+              type="button"
+              onClick={onOpenPathPicker}
+              className="px-3 py-1.5 rounded-xl bg-[var(--accent)] text-[var(--accent-contrast)] text-xs font-bold min-h-[36px]"
+            >
+              Pick Paths
+            </button>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="search"
+            value={pathQuery}
+            onChange={(e) => setPathQuery(e.target.value)}
+            placeholder="Filter paths (Khabib, Goggins, Hacker, Strategist...)"
+            className="flex-1 min-w-[180px] px-3 py-2 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs min-h-[38px]"
+          />
+          <div className="flex items-center gap-1">
+            {([
+              { id: 'all', label: 'All' },
+              { id: 'real_person', label: 'Real people' },
+              { id: 'story', label: 'Story' },
+              { id: 'custom', label: 'My custom' },
+            ] as const).map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setPathFilter(tab.id)}
+                className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold min-h-[34px] ${
+                  pathFilter === tab.id
+                    ? 'bg-[var(--accent)] text-[var(--accent-contrast)]'
+                    : 'bg-slate-100 dark:bg-white/5'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid sm:grid-cols-2 gap-2">
+          {filteredDirectoryPaths.map((p) => {
+            const active = mp.mainPathId === p.id || mp.inspirationIds.includes(p.id);
+            return (
+              <div
+                key={p.id}
+                className={`p-3 rounded-xl border text-xs space-y-1 ${
+                  active
+                    ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
+                    : 'border-slate-200 dark:border-white/10 bg-slate-50/70 dark:bg-white/[0.02]'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-bold truncate">{p.name}</span>
+                  {active && (
+                    <span className="text-[10px] font-bold text-[var(--accent)] shrink-0">Active</span>
+                  )}
+                </div>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">{p.oneLineIdea}</p>
+              </div>
+            );
+          })}
+        </div>
+      </section>
 
       {/* Restored & Reachable Index */}
       <section className="ascend-card p-4 space-y-2 text-xs">

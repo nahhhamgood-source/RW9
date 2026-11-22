@@ -286,6 +286,8 @@ export interface AppSettings {
   reminders: ReminderPreferences;
   lastWeeklyReviewDate: string | null;
   lastBackupDate?: string | null;
+  lookAndFeel?: LookAndFeelSettings;
+  mindsetPaths?: MindsetPathsSettings;
 }
 
 export type FoodCatalogCategory =
@@ -798,3 +800,165 @@ export interface GrowthProgramProgress {
   completedDays: number[];
   updatedAt: number;
 }
+
+// ============================================================================
+// Look & Feel + Mindset Paths + Daily Cut + Daily Motivation Video
+// ============================================================================
+
+export type ThemePresetId =
+  | 'default'
+  | 'obsidian'
+  | 'carbon'
+  | 'noir_gold'
+  | 'blood_noir'
+  | 'terminal'
+  | 'void_violet'
+  | 'steel'
+  | 'monochrome'
+  | 'light_clean';
+
+export type CornerStyle = 'sharp' | 'soft' | 'pill';
+export type CardStyle = 'flat' | 'glass' | 'outlined';
+export type IconStyle = 'line' | 'filled';
+export type DensityMode = 'comfortable' | 'compact';
+export type FontHeadingStyle = 'sans' | 'mono';
+export type BackgroundStyle = 'none' | 'noise' | 'gradient' | 'scanline' | 'ambient';
+export type AnimationLevel = 'off' | 'light' | 'full';
+export type HapticLevel = 'off' | 'light';
+export type LaunchAnimationStyle = 'none' | 'logo_fade';
+export type AppIconId = 'peak' | 'monolith' | 'orbit' | 'prism' | 'shield' | 'pulse';
+
+export interface LookAndFeelSettings {
+  preset: ThemePresetId;
+  scheduleEnabled: boolean; // dark 19:00-07:00, light_clean 07:00-19:00
+  surpriseDateKey?: string | null;
+  surprisePreset?: ThemePresetId | null;
+  customAccentHex?: string | null;
+  cornerStyle: CornerStyle;
+  cardStyle: CardStyle;
+  iconStyle: IconStyle;
+  density: DensityMode;
+  fontStyle: FontHeadingStyle;
+  textScalePct: number; // 100..130
+  backgroundStyle: BackgroundStyle;
+  batterySaverMode?: boolean;
+  animationLevel: AnimationLevel;
+  haptics: HapticLevel;
+  soundsEnabled: boolean; // OFF by default
+  launchAnimation: LaunchAnimationStyle;
+  bootLineEnabled: boolean;
+  operatorConsoleOnToday: boolean;
+  appIconId: AppIconId;
+  displayAppName: string; // private display name, default "ASCEND"
+}
+
+export type MindsetPathId =
+  | 'eagle'
+  | 'callous_mind'
+  | 'finisher'
+  | 'operator'
+  | 'rebel_mind'
+  | 'underdog_strategist'
+  | 'strategist'
+  | 'grinder'
+  | 'craftsman'
+  | 'reinventor'
+  | 'loyalty_family'
+  | 'custom';
+
+export type PathSelectionMode = 'mix_all' | 'one_per_day' | 'single';
+
+export interface CustomPathConfig {
+  name: string;
+  identityStatement: string; // "I am the kind of person who..."
+  habitProtocolIds: string[]; // up to 3 existing CURATED_PROTOCOLS IDs
+}
+
+export interface DailyCutLesson {
+  id: string;
+  pathId: MindsetPathId;
+  dayIndex: number; // 1..30
+  title: string;
+  idea: string; // 2-3 sentences, own words
+  ideaSpoilerFree: string; // safe 2-3 sentence summary without plot reveals
+  matureSafeSummary: string; // age-appropriate summary for <18 or unknown age
+  arabicHint?: string;
+  moveToday: string; // 1 concrete micro-action
+  protocolId: string; // existing CURATED_PROTOCOLS ID
+  realityCheck: string; // Take/Leave/Cost reminder
+  watchMoreTitle?: string; // plain text only
+  watchSearchQuery?: string; // clean search query, no copyrighted links
+  focusTag?: 'fight_camp' | 'study' | 'sleep' | 'general';
+}
+
+export interface SavedCutEntry {
+  lessonId: string;
+  pathId: MindsetPathId;
+  title: string;
+  idea: string;
+  moveToday: string;
+  protocolId: string;
+  realityCheck: string;
+  savedAt: number;
+  actedDates: string[];
+}
+
+export interface WatchlistEntry {
+  id: string;
+  title: string;
+  pathId: MindsetPathId;
+  watched: boolean;
+  addedAt: number;
+}
+
+export interface MySavedVideo {
+  id: string;
+  url: string;
+  title: string;
+  whySaved: string;
+  pathId: MindsetPathId;
+  createdAt: number;
+}
+
+export interface ChannelFollow {
+  id: string;
+  name: string;
+  pathId?: MindsetPathId;
+  createdAt: number;
+}
+
+export interface MindsetPathsSettings {
+  pathsEnabled: boolean;
+  pickerCompleted: boolean;
+  pickerBannerDismissCount: number; // max 3 dismissals
+  mode: PathSelectionMode;
+  mainPathId: MindsetPathId | null;
+  inspirationIds: MindsetPathId[]; // up to 2 inspirations
+  todayPersonOverrideDate?: string | null;
+  todayPersonOverrideId?: MindsetPathId | null;
+  hiddenPathIds: MindsetPathId[];
+  spoilerFreeDefault: boolean;
+  customPath: CustomPathConfig;
+  // Daily Cut tracking
+  dailyCutHistory: Record<string, string>; // YYYY-MM-DD -> lessonId (prevent 14-day repeats)
+  dailyCutSwapCountByDate: Record<string, number>;
+  actedCutIdsByDate: Record<string, string[]>;
+  savedCuts: SavedCutEntry[];
+  watchlist: WatchlistEntry[];
+  // Daily Motivation Video
+  videoMuted: boolean;
+  videosPerDayCap: number; // default 1
+  myVideos: MySavedVideo[];
+  channelsFollowed: ChannelFollow[];
+  videoFeedbackByDate: Record<
+    string,
+    { topic: string; helped: boolean | null; watched: boolean; actionAdded?: string; updatedAt?: number }
+  >;
+  videoOpenCountByDate: Record<string, number>;
+  // Notifications
+  dailyCutNotifEnabled: boolean;
+  dailyCutNotifTime: string;
+  dailyVideoNotifEnabled: boolean;
+  dailyVideoNotifTime: string;
+}
+

@@ -1,5 +1,6 @@
 import { addDays } from './date';
 import { getRealLifeSettings } from './realLifeFood';
+import { getMindsetPathsSettings, getPathDisplayName } from './mindsetEngine';
 import type { AppSettings, DailyLog, ExerciseSessionLog, ToneMode } from '../types';
 
 export interface DueReminder {
@@ -422,6 +423,31 @@ export async function syncLocalNotifications(
           },
         });
       }
+
+      const mp = getMindsetPathsSettings(settings);
+      if (mp.pathsEnabled && mp.dailyCutNotifEnabled) {
+        const pathLabel = mp.mainPathId ? getPathDisplayName(mp.mainPathId, mp) : 'General';
+        notifications.push({
+          id: 112,
+          title: safeTitle("Today's cut is ready"),
+          body: safeBody(`From: ${pathLabel}`),
+          schedule: {
+            on: parseHm(mp.dailyCutNotifTime || '09:00'),
+            repeats: true,
+          },
+        });
+      }
+      if (mp.pathsEnabled && mp.dailyVideoNotifEnabled && !mp.videoMuted) {
+        notifications.push({
+          id: 113,
+          title: safeTitle("Today's video is ready"),
+          body: safeBody("Today's video is ready"),
+          schedule: {
+            on: parseHm(mp.dailyVideoNotifTime || '17:00'),
+            repeats: true,
+          },
+        });
+      }
     }
 
     const capLimit = Math.max(1, Math.min(6, settings.reminders.maxPerDay ?? 6));
@@ -690,6 +716,28 @@ export function getInAppDueReminders(
         category: 'checkin',
       });
     }
+  }
+
+  const mp = getMindsetPathsSettings(settings);
+  if (mp.pathsEnabled && mp.dailyCutNotifEnabled && hhmm >= (mp.dailyCutNotifTime || '09:00') && hhmm < '22:00') {
+    const pathLabel = mp.mainPathId ? getPathDisplayName(mp.mainPathId, mp) : 'General';
+    pushIfActive({
+      id: 'daily-cut',
+      title: "Today's cut is ready",
+      body: `From: ${pathLabel} — open Plan -> Today for 1 small move.`,
+      time: mp.dailyCutNotifTime || '09:00',
+      category: 'checkin',
+    });
+  }
+
+  if (mp.pathsEnabled && mp.dailyVideoNotifEnabled && !mp.videoMuted && hhmm >= (mp.dailyVideoNotifTime || '17:00') && hhmm < '22:30') {
+    pushIfActive({
+      id: 'daily-video',
+      title: "Today's video is ready",
+      body: "Today's video is ready",
+      time: mp.dailyVideoNotifTime || '17:00',
+      category: 'checkin',
+    });
   }
 
   const maxCap = Math.max(1, Math.min(6, settings.reminders.maxPerDay ?? 6));

@@ -229,7 +229,10 @@ export const FightCampCard: React.FC<FightCampCardProps> = ({
             Floor {camp.calorieFloor} kcal
           </span>
         </div>
-        <p className="text-[11px] text-slate-600 dark:text-slate-300">{camp.trainingDayTip}</p>
+        <p className="text-[11px] text-slate-600 dark:text-slate-300">
+          <span className="font-semibold text-[var(--accent)]">From: General · Fight Camp — </span>
+          {camp.trainingDayTip}
+        </p>
         {foodAvg.avgCalories !== null && (
           <p className="text-[11px] text-slate-600 dark:text-slate-300 font-mono-num">
             7d food avg: <strong>{formatDisplayNumber(foodAvg.avgCalories, arabicDigits)} kcal</strong> ·{' '}
